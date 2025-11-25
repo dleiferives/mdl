@@ -59,3 +59,15 @@ fn test_many_ident() {
 		count++
 	}
 }
+
+fn test_next_token() {
+	str := '_ a a10 AA = a+ =a [ a '
+	mut l := qlex(str)
+	mut count := 0
+	kinds := [TokenKind.ident, .ident, .ident, .ident, .assign, .ident, .plus, .assign, .ident,
+		.invalid, .ident]
+	for t in l {
+		assert t.kind == kinds[count], '${t} is not with ${kinds[count]}'
+		count++
+	}
+}

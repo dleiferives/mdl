@@ -153,8 +153,46 @@ fn test_source_parse() {
 	assert expected == res
 }
 
-fn test_define_parse() {
-	str := 'a := b;'
+// fn test_define_parse() {
+// 	str := 'eff a := b;'
+// 	res := parse(str)
+// 	print(res)
+// }
+
+fn test_lexer_stringliteral() {
+	mut l := qlex('"a"')
+	res := l.next_token()
+	expected := Token{
+		kind: .lit_string
+		str:  '"a"'
+		pos:  0
+	}
+	assert res == expected
+}
+
+fn test_define_dictionary() {
+	str := 'data a := { "a" : bb };'
 	res := parse(str)
-	print(res)
+	expected := [
+		Expr(Define{
+			source: .data
+			name:   Identifier{
+				name: 'a'
+			}
+			value:  Expr(Dictionary{
+				entries: [
+					DictionaryEntry{
+						kind:  .dictentk_string
+						str:   String{
+							value: '"a"'
+						}
+						value: Expr(Identifier{
+							name: 'bb'
+						})
+					},
+				]
+			})
+		}),
+	]
+	assert res == expected
 }

@@ -7,6 +7,8 @@ mut:
 
 enum TokenKind {
 	invalid
+	lit_string
+	lit_integer
 	eof
 	ident
 	define
@@ -26,7 +28,14 @@ enum TokenKind {
 	assign
 	semicolon
 	colon
+	comma
+	lcarrot
+	rcarrot
+	ampersand
+	dot
 	plus
+	lsquare
+	rsquare
 	lparen
 	rparen
 	lcurly
@@ -89,6 +98,54 @@ pub fn (mut l Lexer) skip_whitespace() {
 		}
 
 		l.index++
+	}
+}
+
+pub fn (mut l Lexer) read_integer() Token {
+	start := l.index
+	iter: for (l.index < l.src.len) {
+		r := l.src[l.index]
+		match true {
+			is_digit(r) {}
+			else { break iter }
+		}
+		l.index++
+	}
+	str := l.src[start..l.index]
+
+	return Token{
+		kind: .lit_integer
+		str:  str
+		pos:  start
+	}
+}
+
+pub fn (mut l Lexer) read_string() Token {
+	start := l.index
+	mut counter := 0
+	iter: for (l.index < l.src.len) {
+		r := l.src[l.index]
+		match r {
+			`\\` {
+				l.index++
+			}
+			`\"` {
+				if counter == 1 {
+					l.index++
+					break iter
+				}
+				counter++
+			}
+			else {}
+		}
+		l.index++
+	}
+	str := l.src[start..l.index]
+
+	return Token{
+		kind: .lit_string
+		str:  str
+		pos:  start
 	}
 }
 
@@ -209,15 +266,49 @@ pub fn (mut l Lexer) next_token() Token {
 			l.index++
 			return Token{.rcurly, '}', l.index - 1}
 		}
+		`[` {
+			l.index++
+			return Token{.lsquare, '{', l.index - 1}
+		}
+		`]` {
+			l.index++
+			return Token{.rsquare, '}', l.index - 1}
+		}
+		`,` {
+			l.index++
+			return Token{.comma, ',', l.index - 1}
+		}
+		`.` {
+			l.index++
+			return Token{.dot, '.', l.index - 1}
+		}
 		`;` {
 			l.index++
 			return Token{.semicolon, ';', l.index - 1}
+		}
+		`<` {
+			l.index++
+			return Token{.lcarrot, '<', l.index - 1}
+		}
+		`>` {
+			l.index++
+			return Token{.rcarrot, '>', l.index - 1}
+		}
+		`&` {
+			l.index++
+			return Token{.ampersand, '&', l.index - 1}
+		}
+		`\"` {
+			return l.read_string()
 		}
 		else {}
 	}
 	match true {
 		is_alpha(p) {
 			return l.read_identifier()
+		}
+		is_digit(p) {
+			return l.read_integer()
 		}
 		else {
 			start := l.index
@@ -258,7 +349,15 @@ fn (t TokenKind) precidence() Precidence {
 }
 
 // AST
-type Expr = BinaryExpr | Identifier | Invalid | Define
+type Expr = BinaryExpr
+	| Identifier
+	| Invalid
+	| Define
+	| Dictionary
+	| Macro
+	| Integer
+	| String
+	| IdentifierChain
 
 enum ValueType {
 	effemeral
@@ -280,6 +379,55 @@ struct Define {
 	source ValueType
 	name   Identifier
 	value  Expr
+}
+
+enum IdentifierChainKind {
+	identchk_ident
+	identchk_macro
+	identchk_array_integer
+	identchk_array_macro
+}
+
+struct IdentifierChain {
+mut:
+	kind          IdentifierChainKind
+	ident         ?Identifier
+	array_integer ?int
+	macro         ?&Macro
+	next          ?&IdentifierChain
+}
+
+struct Macro {
+mut:
+	referable   bool
+	ident_chain IdentifierChain
+}
+
+struct Integer {
+	value int
+}
+
+struct String {
+	value string
+}
+
+enum DictionaryEntryKind {
+	dictentk_integer
+	dictentk_string
+	dictentk_macro
+}
+
+struct DictionaryEntry {
+mut:
+	kind    DictionaryEntryKind
+	integer ?int
+	str     ?String
+	macro   ?Macro
+	value   Expr
+}
+
+struct Dictionary {
+	entries []DictionaryEntry
 }
 
 struct Invalid {}
@@ -339,6 +487,95 @@ fn (mut p Parser) parse_definition() Expr {
 	panic('was expecting a define??')
 }
 
+fn (mut p Parser) parse_arrayaccess() ?IdentifierChain {
+	if p.current.kind == .lsquare {
+		p.consume(.lsquare)
+
+		p.consume(.rsquare)
+	}
+	return none
+}
+
+fn (mut p Parser) parse_identchainrec() IdentifierChain {
+}
+
+fn (mut p Parser) parse_identchainstart() IdentifierChain {
+	first := p.current
+	mut result := IdentifierChain{}
+	match first.kind {
+		.ident {
+			result.kind = .identchk_ident
+			result.ident = p.parse_ident()
+			result.next = p.parse_identchainrec()
+		}
+		.lcarrot {
+			result.kind = .identchk_macro
+			result.macro = p.parse_macro()
+			result.next = p.parse_identchainrec()
+		}
+		else {}
+	}
+	return result
+}
+
+fn (mut p Parser) parse_macro() Macro {
+	mut result := Macro{}
+	p.consume(.lcarrot)
+	result.referable = p.consume(.ampersand)
+	result.ident_chain = p.parse_identchain()
+	p.consume(.rcarrot)
+	return result
+}
+
+fn (mut p Parser) parse_dictionary_entry() DictionaryEntry {
+	// Some Name
+
+	mut result := DictionaryEntry{}
+	match p.current.kind {
+		.lit_string {
+			result.kind = DictionaryEntryKind.dictentk_string
+			result.str = String{p.current.str}
+			p.advance()
+		}
+		.lit_integer {
+			result.kind = DictionaryEntryKind.dictentk_integer
+			result.integer = p.current.str.int()
+			p.advance()
+		}
+		// in this case it must be a macro otherwise the code is poorly formed
+		.lcarrot {
+			result.macro = p.parse_macro()
+		}
+		else {
+			panic('illegal state when parsing dictionary entry')
+		}
+	}
+	// COLON
+	p.consume(.colon)
+	// EXPR
+	result.value = p.parse_expr(0)
+	return result
+}
+
+fn (mut p Parser) parse_dictionary() Dictionary {
+	p.consume(.lcurly)
+	if p.next.kind == .rcurly {
+		return Dictionary{}
+	}
+	mut result := []DictionaryEntry{}
+	for p.current.kind != .rcurly {
+		if p.current.kind == .comma {
+			panic('illegal state dictionary improperly setup')
+		}
+		result << p.parse_dictionary_entry()
+		if p.current.kind == .comma {
+			p.consume(.comma)
+		}
+	}
+	p.consume(.rcurly)
+	return Dictionary{result}
+}
+
 fn (mut p Parser) parse_prefix() Expr {
 	match p.current.kind {
 		.ident {
@@ -346,6 +583,10 @@ fn (mut p Parser) parse_prefix() Expr {
 		}
 		.kw_reg, .kw_data, .kw_eff {
 			return p.parse_definition()
+		}
+		.lcurly {
+			// TODO: cover cases when it would be a bloc instead
+			return Expr(p.parse_dictionary())
 		}
 		else {
 			print('\n\nillegal state hit... ${p}\n')

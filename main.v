@@ -28,20 +28,6 @@ enum TokenKind {
 	kw_void
 	kw_namespace
 	// TODO: add the rest of the binary operations that we will support
-	minus
-	star
-	percent
-	dotdot
-	store          // <-
-	lte            // <=
-	gte            // >=
-	ne             // !=
-	plus_assign    // +=
-	minus_assign   // -=
-	star_assign    // *=
-	slash_assign   // /=
-	percent_assign // %=
-	swap           // ><
 	eq
 	assign
 	semicolon
@@ -53,6 +39,20 @@ enum TokenKind {
 	ampersand
 	dot
 	plus
+	minus
+	star
+	percent
+	dotdot
+	store
+	lte
+	gte
+	ne
+	plus_assign
+	minus_assign
+	star_assign
+	slash_assign
+	percent_assign
+	swap
 	lsquare
 	rsquare
 	lparen
@@ -68,7 +68,7 @@ struct Token {
 }
 
 pub fn is_alpha(c rune) bool {
-	return (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_`
+	return (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_` || c == `#` // Updated
 }
 
 pub fn is_digit(c rune) bool {
@@ -163,6 +163,28 @@ pub fn (mut l Lexer) read_string() Token {
 
 	return Token{
 		kind: .lit_string
+		str:  str
+		pos:  start
+	}
+}
+
+pub fn (mut l Lexer) read_char() Token {
+	start := l.index
+	l.index++
+
+	if l.index < l.src.len && l.src[l.index] == `\\` {
+		l.index += 2
+	} else if l.index < l.src.len {
+		l.index++
+	}
+
+	if l.index < l.src.len && l.src[l.index] == `'` {
+		l.index++
+	}
+
+	str := l.src[start..l.index]
+	return Token{
+		kind: .lit_char
 		str:  str
 		pos:  start
 	}
@@ -275,12 +297,64 @@ pub fn (mut l Lexer) next_token() Token {
 			}
 		}
 		`/` {
-			l.index++
-			return Token{.slash, '/', l.index - 1}
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.slash_assign, '/=', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.slash, '/', l.index - 1}
+				}
+			}
 		}
 		`+` {
-			l.index++
-			return Token{.plus, '+', l.index - 1}
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.plus_assign, '+=', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.plus, '+', l.index - 1}
+				}
+			}
+		}
+		`-` {
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.minus_assign, '-=', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.minus, '-', l.index - 1}
+				}
+			}
+		}
+		`*` {
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.star_assign, '*=', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.star, '*', l.index - 1}
+				}
+			}
+		}
+		`%` {
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.percent_assign, '%=', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.percent, '%', l.index - 1}
+				}
+			}
 		}
 		`{` {
 			l.index++
@@ -300,38 +374,85 @@ pub fn (mut l Lexer) next_token() Token {
 		}
 		`[` {
 			l.index++
-			return Token{.lsquare, '{', l.index - 1}
+			return Token{.lsquare, '[', l.index - 1}
 		}
 		`]` {
 			l.index++
-			return Token{.rsquare, '}', l.index - 1}
+			return Token{.rsquare, ']', l.index - 1}
 		}
 		`,` {
 			l.index++
 			return Token{.comma, ',', l.index - 1}
 		}
 		`.` {
-			l.index++
-			return Token{.dot, '.', l.index - 1}
+			match pp {
+				`.` {
+					l.index += 2
+					return Token{.dotdot, '..', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.dot, '.', l.index - 1}
+				}
+			}
 		}
 		`;` {
 			l.index++
 			return Token{.semicolon, ';', l.index - 1}
 		}
 		`<` {
-			l.index++
-			return Token{.lcarrot, '<', l.index - 1}
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.lte, '<=', l.index - 2}
+				}
+				`-` {
+					l.index += 2
+					return Token{.store, '<-', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.lcarrot, '<', l.index - 1}
+				}
+			}
 		}
 		`>` {
-			l.index++
-			return Token{.rcarrot, '>', l.index - 1}
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.gte, '>=', l.index - 2}
+				}
+				`<` {
+					l.index += 2
+					return Token{.swap, '><', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.rcarrot, '>', l.index - 1}
+				}
+			}
 		}
 		`&` {
 			l.index++
 			return Token{.ampersand, '&', l.index - 1}
 		}
+		`!` {
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.ne, '!=', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.invalid, '!', l.index - 1}
+				}
+			}
+		}
 		`\"` {
 			return l.read_string()
+		}
+		`'` {
+			return l.read_char()
 		}
 		else {}
 	}
@@ -375,7 +496,10 @@ type Precidence = u8
 // TODO: should move
 fn (t TokenKind) precidence() Precidence {
 	return match t {
-		.eq { 2 }
+		.assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .percent_assign, .store { 1 } // Updated
+		.eq, .ne, .lte, .gte, .lcarrot, .rcarrot, .swap { 2 } // Updated
+		.plus, .minus { 3 } // Updated
+		.star, .slash, .percent { 4 } // Updated
 		else { 0 }
 	}
 }
@@ -389,10 +513,16 @@ type Expr = BinaryExpr
 	| Macro
 	| Integer
 	| String
+	| Char
+	| List
+	| Range
+	| Store
 	| IdentifierChain
 	| FunctionDefinition
+	| FunctionInlineDefinition
 	| IfStatement
 	| FunctionCall
+	| StringSlice
 
 struct IfStatement {
 	condition Expr
@@ -460,6 +590,30 @@ struct String {
 	value string
 }
 
+struct Char {
+	value string
+}
+
+struct List {
+	entries []Expr
+}
+
+struct Range {
+	start ?Expr
+	end   ?Expr
+}
+
+struct Store {
+	left  Expr
+	right Expr
+}
+
+struct StringSlice {
+	target Expr
+	start  ?Expr
+	end    ?Expr
+}
+
 enum DictionaryEntryKind {
 	dictentk_integer
 	dictentk_string
@@ -504,6 +658,20 @@ struct FunctionDefinition {
 	args        []FunctionArgument
 	return_type Type
 	block       Block
+}
+
+struct FunctionInlineArgument {
+	source   ValueType
+	name     Identifier
+	arg_type Type
+	op       TokenKind
+	value    Expr
+}
+
+struct FunctionInlineDefinition {
+	ident Identifier
+	args  []FunctionInlineArgument
+	block Block
 }
 
 struct Invalid {}
@@ -752,6 +920,64 @@ fn (mut p Parser) parse_dictionary() Dictionary {
 	return Dictionary{result}
 }
 
+fn (mut p Parser) parse_list() List {
+	p.consume(.lsquare)
+	mut entries := []Expr{}
+
+	if p.current.kind != .rsquare {
+		entries << p.parse_expr(0)
+
+		for p.current.kind == .comma {
+			p.consume(.comma)
+			if p.current.kind == .rsquare {
+				break
+			}
+			entries << p.parse_expr(0)
+		}
+	}
+
+	p.consume(.rsquare)
+	return List{entries}
+}
+
+fn (mut p Parser) parse_range(left ?Expr) Range {
+	p.consume(.dotdot)
+
+	mut end := ?Expr(none)
+	if p.current.kind != .rparen && p.current.kind != .semicolon {
+		end = p.parse_expr(0)
+	}
+
+	return Range{
+		start: left
+		end:   end
+	}
+}
+
+fn (mut p Parser) parse_string_slice(target Expr) Expr {
+	p.consume(.lsquare)
+	mut start_expr := ?Expr(none)
+	mut end_expr := ?Expr(none)
+
+	if p.current.kind != .colon && p.current.kind != .rsquare {
+		start_expr = p.parse_expr(0)
+	}
+
+	p.consume(.colon)
+
+	if p.current.kind != .rsquare {
+		end_expr = p.parse_expr(0)
+	}
+
+	p.consume(.rsquare)
+
+	return Expr(StringSlice{
+		target: target
+		start:  start_expr
+		end:    end_expr
+	})
+}
+
 fn (mut p Parser) parse_function_argument() FunctionArgument {
 	mut source := ValueType.effemeral
 	match p.current.kind {
@@ -815,6 +1041,77 @@ fn (mut p Parser) parse_function_definition() Expr {
 		args:        args
 		return_type: ret_ty
 		block:       block
+	})
+}
+
+fn (mut p Parser) parse_function_inline_argument() FunctionInlineArgument {
+	mut source := ValueType.effemeral
+	match p.current.kind {
+		.kw_reg { source = .register }
+		.kw_data { source = .data }
+		.kw_eff { source = .effemeral }
+		else { panic('expected argument source: reg | data | eff') }
+	}
+	p.advance()
+
+	if p.current.kind != .ident {
+		panic('expected identifier for function argument name')
+	}
+	name := p.parse_ident()
+	p.consume(.colon)
+	arg_type := p.parse_type()
+
+	op := p.current.kind
+	match op {
+		.assign, .store {
+			p.advance()
+		}
+		else {
+			panic('expected "=" or "<-" for inline function argument assignment')
+		}
+	}
+
+	value := p.parse_expr(0)
+
+	return FunctionInlineArgument{
+		source:   source
+		name:     name
+		arg_type: arg_type
+		op:       op
+		value:    value
+	}
+}
+
+fn (mut p Parser) parse_function_inline_arguments() []FunctionInlineArgument {
+	mut args := []FunctionInlineArgument{}
+	p.consume(.lcarrot)
+
+	if p.current.kind != .rcarrot {
+		args << p.parse_function_inline_argument()
+		for p.current.kind == .comma {
+			p.consume(.comma)
+			args << p.parse_function_inline_argument()
+		}
+	}
+
+	p.consume(.rcarrot)
+	return args
+}
+
+fn (mut p Parser) parse_function_inline_definition() Expr {
+	if p.current.kind != .ident {
+		panic('expected function identifier for inline function definition')
+	}
+	ident := p.parse_ident()
+
+	args := p.parse_function_inline_arguments()
+
+	block := p.parse_block()
+
+	return Expr(FunctionInlineDefinition{
+		ident: ident
+		args:  args
+		block: block
 	})
 }
 
@@ -903,6 +1200,22 @@ fn (mut p Parser) parse_prefix() Expr {
 				return p.parse_function_call(name_chain)
 			}
 
+			if p.current.kind == .lsquare {
+				p.lexer.index = saved_index
+				p.current = saved_current
+				p.next = saved_next
+
+				mut target_ident_chain := Expr(p.parse_identchainstart())
+				if p.current.kind == .lsquare {
+					next_token := p.next
+					if next_token.kind == .colon
+						|| (next_token.kind == .lit_integer && p.lexer.peek() == `:`) {
+						return p.parse_string_slice(target_ident_chain)
+					}
+				}
+				return target_ident_chain
+			}
+
 			p.lexer.index = saved_index
 			p.current = saved_current
 			p.next = saved_next
@@ -920,22 +1233,46 @@ fn (mut p Parser) parse_prefix() Expr {
 			}
 		}
 		.kw_reg, .kw_data, .kw_eff {
+			if p.next.kind == .ident && p.lexer.peekn(2) == `<` {
+				return p.parse_function_inline_definition()
+			}
 			return p.parse_definition()
 		}
 		.kw_fn {
 			return p.parse_function_definition()
 		}
 		.lcurly {
-			// TODO: cover cases when it would be a bloc instead
 			return Expr(p.parse_dictionary())
 		}
-		// .lit_integ// er {
-		// 	return Expr(Integer{
-		// 		value: p.current.str.int()
-		// 	})
-		// }
+		.lsquare {
+			return Expr(p.parse_list())
+		}
+		.dotdot {
+			return Expr(p.parse_range(none))
+		}
+		.lit_integer {
+			val := p.current.str.int()
+			p.advance()
+			return Expr(Integer{
+				value: val
+			})
+		}
+		.lit_string {
+			val := p.current.str
+			p.advance()
+			return Expr(String{
+				value: val
+			})
+		}
+		.lit_char {
+			val := p.current.str
+			p.advance()
+			return Expr(Char{
+				value: val
+			})
+		}
 		else {
-			print('\n\nillegal state hit... ${p}\n')
+			print('\n\nillegal state hit... ${p.current}\n')
 			p.advance()
 			return Expr(Invalid{})
 		}
@@ -946,6 +1283,11 @@ fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
 	mut left := p.parse_prefix()
 
 	for {
+		if p.current.kind == .dotdot {
+			left = Expr(p.parse_range(left))
+			continue
+		}
+
 		prec := p.current.kind.precidence()
 		if prec <= min_prec {
 			break
@@ -953,12 +1295,8 @@ fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
 		op := p.current.kind
 		p.advance()
 
-		// TODO: handle other comparison operators
-		if op == .eq {
-			right := p.parse_expr(prec + 1)
-			left = Expr(BinaryExpr{left, op, right})
-			continue
-		}
+		right := p.parse_expr(prec + 1)
+		left = Expr(BinaryExpr{left, op, right})
 	}
 	return left
 }
@@ -968,16 +1306,29 @@ fn (mut p Parser) parse_statement() Expr {
 
 	// If we have some form of operator on our statement?
 	// TODO: handle other things as I add them
-	if p.current.kind == .assign {
-		op := p.current.kind
-		p.advance()
-		right := p.parse_expr(0)
-		p.consume(.semicolon)
-		return Expr(BinaryExpr{
-			left:     left
-			operator: op
-			right:    right
-		})
+	match p.current.kind {
+		.assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .percent_assign, .eq,
+		.ne, .lte, .gte, .lcarrot, .rcarrot, .swap, .plus, .minus, .star, .slash, .percent { // Updated
+			op := p.current.kind
+			p.advance()
+			right := p.parse_expr(0)
+			p.consume(.semicolon)
+			return Expr(BinaryExpr{
+				left:     left
+				operator: op
+				right:    right
+			})
+		}
+		.store {
+			p.advance()
+			right := p.parse_expr(0)
+			p.consume(.semicolon)
+			return Expr(Store{
+				left:  left
+				right: right
+			})
+		}
+		else {}
 	}
 
 	p.consume(.semicolon)
@@ -1056,6 +1407,77 @@ fn unparse_one(ex Expr) string {
 			result += ')'
 			return result
 		}
+		FunctionDefinition {
+			result += 'fn ' + ex.ident.name + '('
+			for i, arg in ex.args {
+				if i > 0 {
+					result += ', '
+				}
+				result += match arg.source {
+					.register { 'reg ' }
+					.data { 'data ' }
+					.effemeral { 'eff ' }
+				}
+				result += arg.name.name + ': '
+				result += match arg.arg_type {
+					.int { 'Int' }
+					.float { 'Float' }
+					.list { 'List' }
+					.string { 'String' }
+					.dict { 'Dict' }
+					.void { 'Void' }
+				}
+			}
+			result += '): '
+			result += match ex.return_type {
+				.int { 'Int' }
+				.float { 'Float' }
+				.list { 'List' }
+				.string { 'String' }
+				.dict { 'Dict' }
+				.void { 'Void' }
+			}
+			result += ' {\n'
+			for expr in ex.block.exprs {
+				result += '  ' + unparse_one(expr) + ';\n'
+			}
+			result += '}'
+			return result
+		}
+		FunctionInlineDefinition {
+			result += ex.ident.name + '<'
+			for i, arg in ex.args {
+				if i > 0 {
+					result += ', '
+				}
+				result += match arg.source {
+					.register { 'reg ' }
+					.data { 'data ' }
+					.effemeral { 'eff ' }
+				}
+				result += arg.name.name + ': '
+				result += match arg.arg_type {
+					.int { 'Int' }
+					.float { 'Float' }
+					.list { 'List' }
+					.string { 'String' }
+					.dict { 'Dict' }
+					.void { 'Void' }
+				}
+				result += ' ' + match arg.op {
+					.assign { '=' }
+					.store { '<-' }
+					else { panic('invalid op') }
+				} + ' '
+				result += unparse_one(arg.value)
+			}
+			result += '> {\n'
+			for expr in ex.block.exprs {
+				result += '  ' + unparse_one(expr) + ';\n'
+			}
+			result += '}'
+			return result
+		}
 		Macro {
 			result += '<'
 			if ex.referable {
@@ -1097,6 +1519,116 @@ fn unparse_one(ex Expr) string {
 		}
 		Identifier {
 			result += ex.name
+		}
+		Define {
+			result += match ex.source {
+				.register { 'reg ' }
+				.data { 'data ' }
+				.effemeral { 'eff ' }
+			}
+			result += ex.name.name
+			result += ' := '
+			result += unparse_one(ex.value)
+			return result
+		}
+		BinaryExpr {
+			result += unparse_one(ex.left)
+			result += ' ' + match ex.operator {
+				.eq { '==' }
+				.assign { '=' }
+				.plus { '+' }
+				.minus { '-' }
+				.star { '*' }
+				.slash { '/' }
+				.percent { '%' }
+				.dotdot { '..' }
+				.lte { '<=' }
+				.gte { '>=' }
+				.ne { '!=' }
+				.plus_assign { '+=' }
+				.minus_assign { '-=' }
+				.star_assign { '*=' }
+				.slash_assign { '/=' }
+				.percent_assign { '%=' }
+				.swap { '><' }
+				else { panic('unhandled binary operator for unparse') }
+			} + ' '
+			result += unparse_one(ex.right)
+			return result
+		}
+		Integer {
+			result += ex.value.str()
+			return result
+		}
+		String {
+			result += '"' + ex.value + '"'
+			return result
+		}
+		Char {
+			result += "'" + ex.value + "'"
+			return result
+		}
+		List {
+			result += '['
+			for i, entry in ex.entries {
+				if i > 0 {
+					result += ', '
+				}
+				result += unparse_one(entry)
+			}
+			result += ']'
+			return result
+		}
+		Dictionary {
+			result += '{'
+			for i, entry in ex.entries {
+				if i > 0 {
+					result += ', '
+				}
+				match entry.kind {
+					.dictentk_string {
+						result += '"' + (entry.str or { panic('no unparse') }).value + '"'
+					}
+					.dictentk_integer {
+						result += (entry.integer or { panic('no unparse') }).str()
+					}
+					.dictentk_macro {
+						result += unparse_one(Expr(entry.macro or { panic('no unparse') }))
+					}
+				}
+				result += ': ' + unparse_one(entry.value)
+			}
+			result += '}'
+			return result
+		}
+		Range {
+			if start := ex.start {
+				result += unparse_one(start)
+			}
+			result += '..'
+			if end := ex.end {
+				result += unparse_one(end)
+			}
+			return result
+		}
+		Store {
+			result += unparse_one(ex.left)
+			result += ' <- '
+			result += unparse_one(ex.right)
+			return result
+		}
+		StringSlice {
+			result += unparse_one(ex.target)
+			result += '['
+			if start := ex.start {
+				result += unparse_one(start)
+			}
+			result += ':'
+			if end := ex.end {
+				result += unparse_one(end)
+			}
+			result += ']'
+			return result
 		}
 		else {
 			print(ex)

@@ -68,7 +68,7 @@ cat_and_say("Blocky"," Place...");
 // "Blocky, Place..."
 #+end_src
 
-Or just using the type system.
+Or just letting the macro system solve automatically.
 #+begin_src
 namespace utils = {
     data cat_output := "";

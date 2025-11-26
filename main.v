@@ -1,5 +1,7 @@
 module main
 
+// TODO: inline functions... later problem lol
+
 struct Pratt {
 mut:
 	id int
@@ -9,6 +11,7 @@ enum TokenKind {
 	invalid
 	lit_string
 	lit_integer
+	lit_char
 	eof
 	ident
 	define
@@ -22,13 +25,29 @@ enum TokenKind {
 	kw_list
 	kw_string
 	kw_dict
+	kw_void
 	kw_namespace
 	// TODO: add the rest of the binary operations that we will support
+	minus
+	star
+	percent
+	dotdot
+	store          // <-
+	lte            // <=
+	gte            // >=
+	ne             // !=
+	plus_assign    // +=
+	minus_assign   // -=
+	star_assign    // *=
+	slash_assign   // /=
+	percent_assign // %=
+	swap           // ><
 	eq
 	assign
 	semicolon
 	colon
 	comma
+	slash
 	lcarrot
 	rcarrot
 	ampersand
@@ -184,6 +203,7 @@ pub fn (mut l Lexer) read_identifier() Token {
 		'List' { TokenKind.kw_list }
 		'String' { TokenKind.kw_string }
 		'Dict' { TokenKind.kw_dict }
+		'Void' { TokenKind.kw_void }
 		'namespace' { TokenKind.kw_namespace }
 		else { TokenKind.ident }
 	}
@@ -254,6 +274,10 @@ pub fn (mut l Lexer) next_token() Token {
 				}
 			}
 		}
+		`/` {
+			l.index++
+			return Token{.slash, '/', l.index - 1}
+		}
 		`+` {
 			l.index++
 			return Token{.plus, '+', l.index - 1}
@@ -265,6 +289,14 @@ pub fn (mut l Lexer) next_token() Token {
 		`}` {
 			l.index++
 			return Token{.rcurly, '}', l.index - 1}
+		}
+		`(` {
+			l.index++
+			return Token{.lparen, '(', l.index - 1}
+		}
+		`)` {
+			l.index++
+			return Token{.rparen, ')', l.index - 1}
 		}
 		`[` {
 			l.index++
@@ -358,6 +390,21 @@ type Expr = BinaryExpr
 	| Integer
 	| String
 	| IdentifierChain
+	| FunctionDefinition
+	| IfStatement
+	| FunctionCall
+
+struct IfStatement {
+	condition Expr
+	block     Block
+}
+
+type FunctionChainElement = Identifier | Macro
+
+struct FunctionCall {
+	name_chain []FunctionChainElement
+	args       []Expr
+}
 
 enum ValueType {
 	effemeral
@@ -432,6 +479,33 @@ struct Dictionary {
 	entries []DictionaryEntry
 }
 
+struct Block {
+	exprs []Expr
+}
+
+// todo add user created... though those would be dicts so like.. allow renaming?
+enum Type {
+	int
+	float
+	list
+	string
+	dict
+	void
+}
+
+struct FunctionArgument {
+	source   ValueType
+	name     Identifier
+	arg_type Type
+}
+
+struct FunctionDefinition {
+	ident       Identifier
+	args        []FunctionArgument
+	return_type Type
+	block       Block
+}
+
 struct Invalid {}
 
 fn (mut p Parser) consume(kind TokenKind) bool {
@@ -456,6 +530,38 @@ fn (mut p Parser) parse_ident() Identifier {
 	p.advance()
 	return Identifier{
 		name: cur.str
+	}
+}
+
+fn (mut p Parser) parse_type() Type {
+	match p.current.kind {
+		.kw_int {
+			p.advance()
+			return Type.int
+		}
+		.kw_float {
+			p.advance()
+			return Type.float
+		}
+		.kw_list {
+			p.advance()
+			return Type.list
+		}
+		.kw_string {
+			p.advance()
+			return Type.string
+		}
+		.kw_dict {
+			p.advance()
+			return Type.dict
+		}
+		.kw_void {
+			p.advance()
+			return Type.void
+		}
+		else {
+			panic('expected type keyword (Int, Float, List, String, Dict, Void) got ${p.current}')
+		}
 	}
 }
 
@@ -646,20 +752,182 @@ fn (mut p Parser) parse_dictionary() Dictionary {
 	return Dictionary{result}
 }
 
-fn (mut p Parser) parse_prefix() Expr {
+fn (mut p Parser) parse_function_argument() FunctionArgument {
+	mut source := ValueType.effemeral
+	match p.current.kind {
+		.kw_reg { source = .register }
+		.kw_data { source = .data }
+		.kw_eff { source = .effemeral }
+		else { panic('expected argument source: reg | data | eff') }
+	}
+	p.advance()
+
+	// identifier
+	if p.current.kind != .ident {
+		panic('expected identifier for function argument name')
+	}
+	name := p.parse_ident()
+	p.consume(.colon)
+	// type
+	arg_type := p.parse_type()
+
+	return FunctionArgument{
+		source:   source
+		name:     name
+		arg_type: arg_type
+	}
+}
+
+fn (mut p Parser) parse_function_arguments() []FunctionArgument {
+	mut args := []FunctionArgument{}
+	p.consume(.lparen)
+
+	if p.current.kind != .rparen {
+		args << p.parse_function_argument()
+		for p.current.kind == .comma {
+			p.consume(.comma)
+			args << p.parse_function_argument()
+		}
+	}
+
+	p.consume(.rparen)
+	return args
+}
+
+fn (mut p Parser) parse_function_definition() Expr {
+	p.consume(.kw_fn)
+
+	if p.current.kind != .ident {
+		panic('expected function identifier after "fn"')
+	}
+	ident := p.parse_ident()
+
+	args := p.parse_function_arguments()
+
+	p.consume(.colon)
+
+	ret_ty := p.parse_type()
+
+	block := p.parse_block()
+
+	return Expr(FunctionDefinition{
+		ident:       ident
+		args:        args
+		return_type: ret_ty
+		block:       block
+	})
+}
+
+fn (mut p Parser) parse_if_statement() Expr {
+	p.consume(.kw_if)
+	p.consume(.lparen)
+
+	condition := p.parse_expr(0)
+
+	p.consume(.rparen)
+
+	block := p.parse_block()
+
+	return Expr(IfStatement{
+		condition: condition
+		block:     block
+	})
+}
+
+fn (mut p Parser) parse_function_identifier_chain() []FunctionChainElement {
+	mut chain := []FunctionChainElement{}
+
 	match p.current.kind {
 		.ident {
-			return Expr(p.parse_ident())
+			chain << FunctionChainElement(p.parse_ident())
+		}
+		.lcarrot {
+			chain << FunctionChainElement(*p.parse_macro())
+		}
+		else {
+			panic('expected identifier or macro at start of function chain')
+		}
+	}
+
+	for p.current.kind == .slash {
+		p.consume(.slash)
+
+		match p.current.kind {
+			.ident {
+				chain << FunctionChainElement(p.parse_ident())
+			}
+			.lcarrot {
+				chain << FunctionChainElement(*p.parse_macro())
+			}
+			else {
+				panic('expected identifier or macro after "/" in function chain')
+			}
+		}
+	}
+
+	return chain
+}
+
+fn (mut p Parser) parse_function_call(name_chain []FunctionChainElement) Expr {
+	mut args := []Expr{}
+
+	p.consume(.lparen)
+
+	if p.current.kind != .rparen {
+		args << p.parse_expr(0)
+
+		for p.current.kind == .comma {
+			p.consume(.comma)
+			args << p.parse_expr(0)
+		}
+	}
+
+	p.consume(.rparen)
+
+	return Expr(FunctionCall{
+		name_chain: name_chain
+		args:       args
+	})
+}
+
+fn (mut p Parser) parse_prefix() Expr {
+	match p.current.kind {
+		.ident, .lcarrot {
+			saved_index := p.lexer.index
+			saved_current := p.current
+			saved_next := p.next
+
+			name_chain := p.parse_function_identifier_chain()
+
+			if p.current.kind == .lparen {
+				return p.parse_function_call(name_chain)
+			}
+
+			p.lexer.index = saved_index
+			p.current = saved_current
+			p.next = saved_next
+
+			match p.current.kind {
+				.ident {
+					return Expr(p.parse_ident())
+				}
+				.lcarrot {
+					return Expr(*p.parse_macro())
+				}
+				else {
+					panic('unexpected token in parse_prefix')
+				}
+			}
 		}
 		.kw_reg, .kw_data, .kw_eff {
 			return p.parse_definition()
 		}
+		.kw_fn {
+			return p.parse_function_definition()
+		}
 		.lcurly {
 			// TODO: cover cases when it would be a bloc instead
 			return Expr(p.parse_dictionary())
-		}
-		.lcarrot {
-			return Expr(*p.parse_macro())
 		}
 		// .lit_integ// er {
 		// 	return Expr(Integer{
@@ -716,6 +984,18 @@ fn (mut p Parser) parse_statement() Expr {
 	return left
 }
 
+fn (mut p Parser) parse_block() Block {
+	p.consume(.lcurly)
+	mut exprs := []Expr{}
+	for p.current.kind != .rcurly && p.current.kind != .eof {
+		exprs << p.parse_statement()
+	}
+	p.consume(.rcurly)
+	return Block{
+		exprs: exprs
+	}
+}
+
 fn parse(str string) []Expr {
 	mut p := Parser{
 		lexer: Lexer{
@@ -737,13 +1017,51 @@ fn parse(str string) []Expr {
 fn unparse_one(ex Expr) string {
 	mut result := ''
 	match ex {
+		IfStatement {
+			result += 'if ('
+			result += unparse_one(ex.condition)
+			result += ') {\n'
+			for expr in ex.block.exprs {
+				result += '  ' + unparse_one(expr) + ';\n'
+			}
+			result += '}'
+			return result
+		}
+		FunctionCall {
+			for i, element in ex.name_chain {
+				if i > 0 {
+					result += '/'
+				}
+				match element {
+					Identifier {
+						result += element.name
+					}
+					Macro {
+						result += '<'
+						if element.referable {
+							result += '&'
+						}
+						result += unparse_one(Expr(element.ident_chain))
+						result += '>'
+					}
+				}
+			}
+			result += '('
+			for i, arg in ex.args {
+				if i > 0 {
+					result += ', '
+				}
+				result += unparse_one(arg)
+			}
+			result += ')'
+			return result
+		}
 		Macro {
 			result += '<'
 			if ex.referable {
 				result += '&'
 			}
 			result += unparse_one(Expr(ex.ident_chain))
-
 			result += '>'
 			return result
 		}

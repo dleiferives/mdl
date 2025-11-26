@@ -232,3 +232,15 @@ fn test_parse_macro_ident_chain_digit() {
 	res := parse(str)
 	assert unparse(res) + ';' == str
 }
+
+fn test_parse_function_def() {
+	str := 'fn a(): Void{}'
+	res := parse(str)
+	print(res)
+}
+
+fn test_parse_function_de2f() {
+	str := 'fn a(reg b: Int): Void{ reg a := b;};'
+	res := parse(str)
+	print(res)
+}

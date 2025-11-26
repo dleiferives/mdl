@@ -385,6 +385,7 @@ enum IdentifierChainKind {
 	identchk_ident
 	identchk_macro
 	identchk_array_integer
+	identchk_integer
 	identchk_array_macro
 }
 
@@ -393,6 +394,7 @@ mut:
 	kind          IdentifierChainKind
 	ident         ?Identifier
 	array_integer ?int
+	integer       ?int
 	macro         ?&Macro
 	next          ?&IdentifierChain
 }
@@ -487,42 +489,110 @@ fn (mut p Parser) parse_definition() Expr {
 	panic('was expecting a define??')
 }
 
-fn (mut p Parser) parse_arrayaccess() ?IdentifierChain {
+fn (mut p Parser) parse_arrayaccess() ?&IdentifierChain {
 	if p.current.kind == .lsquare {
+		mut result := &IdentifierChain{}
 		p.consume(.lsquare)
+		match p.current.kind {
+			.lit_integer {
+				result.kind = .identchk_array_integer
+				result.array_integer = p.current.str.int()
+				p.advance()
+			}
+			.lcarrot {
+				result.kind = .identchk_array_macro
+				result.macro = p.parse_macro()
+			}
+			else {
+				panic('impossible state in parsing array access')
+			}
+		}
 
 		p.consume(.rsquare)
+		next := p.parse_arrayaccess()
+		result.next = next
+		return result
 	}
 	return none
 }
 
-fn (mut p Parser) parse_identchainrec() IdentifierChain {
-}
+fn (mut p Parser) parse_identchainrec() ?&IdentifierChain {
+	if p.current.kind != .dot {
+		return none
+	}
+	p.consume(.dot)
 
-fn (mut p Parser) parse_identchainstart() IdentifierChain {
 	first := p.current
-	mut result := IdentifierChain{}
+	mut result := &IdentifierChain{}
+	mut resultptr := result
 	match first.kind {
 		.ident {
 			result.kind = .identchk_ident
 			result.ident = p.parse_ident()
+			result.next = p.parse_arrayaccess()
+			for result.next != none {
+				result = result.next or { panic('impossible') }
+			}
 			result.next = p.parse_identchainrec()
 		}
 		.lcarrot {
 			result.kind = .identchk_macro
 			result.macro = p.parse_macro()
+			result.next = p.parse_arrayaccess()
+			for result.next != none {
+				result = result.next or { panic('impossible') }
+			}
+			result.next = p.parse_identchainrec()
+		}
+		.lit_integer {
+			result.kind = .identchk_integer
+			result.integer = p.current.str.int()
+			p.advance()
+			result.next = p.parse_arrayaccess()
+			for result.next != none {
+				result = result.next or { panic('impossible') }
+			}
 			result.next = p.parse_identchainrec()
 		}
 		else {}
 	}
-	return result
+	return resultptr
 }
 
-fn (mut p Parser) parse_macro() Macro {
-	mut result := Macro{}
+fn (mut p Parser) parse_identchainstart() IdentifierChain {
+	first := p.current
+	mut resultt := IdentifierChain{}
+	mut result := &resultt
+	match first.kind {
+		.ident {
+			result.kind = .identchk_ident
+			result.ident = p.parse_ident()
+			result.next = p.parse_arrayaccess()
+			for result.next != none {
+				result = result.next or { panic('impossible') }
+			}
+			result.next = p.parse_identchainrec()
+		}
+		.lcarrot {
+			result.kind = .identchk_macro
+			result.macro = p.parse_macro()
+			result.next = p.parse_arrayaccess()
+			for result.next != none {
+				result = result.next or { panic('impossible') }
+			}
+			result.next = p.parse_identchainrec()
+		}
+		else {}
+	}
+	return resultt
+}
+
+fn (mut p Parser) parse_macro() &Macro {
+	mut result := &Macro{}
 	p.consume(.lcarrot)
 	result.referable = p.consume(.ampersand)
-	result.ident_chain = p.parse_identchain()
+	result.ident_chain = p.parse_identchainstart()
+
 	p.consume(.rcarrot)
 	return result
 }
@@ -588,6 +658,14 @@ fn (mut p Parser) parse_prefix() Expr {
 			// TODO: cover cases when it would be a bloc instead
 			return Expr(p.parse_dictionary())
 		}
+		.lcarrot {
+			return Expr(*p.parse_macro())
+		}
+		// .lit_integ// er {
+		// 	return Expr(Integer{
+		// 		value: p.current.str.int()
+		// 	})
+		// }
 		else {
 			print('\n\nillegal state hit... ${p}\n')
 			p.advance()
@@ -654,4 +732,65 @@ fn parse(str string) []Expr {
 		statements << stmt
 	}
 	return statements
+}
+
+fn unparse_one(ex Expr) string {
+	mut result := ''
+	match ex {
+		Macro {
+			result += '<'
+			if ex.referable {
+				result += '&'
+			}
+			result += unparse_one(Expr(ex.ident_chain))
+
+			result += '>'
+			return result
+		}
+		IdentifierChain {
+			match ex.kind {
+				.identchk_ident {
+					result += unparse_one(Expr(ex.ident or { panic('no unparse') }))
+				}
+				.identchk_macro {
+					result += unparse_one(Expr(*ex.macro or { panic('no unparse') }))
+				}
+				.identchk_array_integer {
+					result += '['
+					result += (ex.array_integer or { panic('no unparse') }).str()
+					result += ']'
+				}
+				.identchk_integer {
+					result += (ex.integer or { panic('no unparse') }).str()
+				}
+				.identchk_array_macro {
+					result += '['
+					result += unparse_one(Expr(*ex.macro or { panic('no unparse') }))
+					result += ']'
+				}
+			}
+			if ex.next != none {
+				if (*ex.next).kind !in [.identchk_array_integer, .identchk_array_macro] {
+					result += '.'
+				}
+				result += unparse_one(Expr(*ex.next))
+			}
+			return result
+		}
+		Identifier {
+			result += ex.name
+		}
+		else {
+			print(ex)
+		}
+	}
+	return result
+}
+
+fn unparse(exprs []Expr) string {
+	mut result := ''
+	for ex in exprs {
+		result += unparse_one(ex)
+	}
+	return result
 }

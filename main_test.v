@@ -61,7 +61,7 @@ fn test_many_ident() {
 }
 
 fn test_next_token() {
-	str := '_ a a10 AA = a+ =a [ a '
+	str := '_ a a10 AA = a+ =a ~ a '
 	mut l := qlex(str)
 	mut count := 0
 	kinds := [TokenKind.ident, .ident, .ident, .ident, .assign, .ident, .plus, .assign, .ident,
@@ -195,4 +195,40 @@ fn test_define_dictionary() {
 		}),
 	]
 	assert res == expected
+}
+
+fn test_parse_macro_ident() {
+	str := '<aaaaa>;'
+	res := parse(str)
+	assert unparse(res) + ';' == str
+}
+
+fn test_parse_macro_ident_chain() {
+	str := '<aaaaa.bbbb>;'
+	res := parse(str)
+	assert unparse(res) + ';' == str
+}
+
+fn test_parse_macro_ident_chain_long() {
+	str := '<a.b.c.d.e.f.g.h.i.j.k>;'
+	res := parse(str)
+	assert unparse(res) + ';' == str
+}
+
+fn test_parse_macro_ident_chain_array() {
+	str := '<a[100]>;'
+	res := parse(str)
+	assert unparse(res) + ';' == str
+}
+
+fn test_parse_macro_ident_chain_arraymacro() {
+	str := '<a[<b[10]>]>;'
+	res := parse(str)
+	assert unparse(res) + ';' == str
+}
+
+fn test_parse_macro_ident_chain_digit() {
+	str := '<a[<b.10>]>;'
+	res := parse(str)
+	assert unparse(res) + ';' == str
 }

@@ -14,6 +14,7 @@ Now what do I mean by this? One of the outcomes that is-- nearly-- impossible to
 
 *** In minecraft datapack `mcfunction` code
 /Concatenate output/
+
 =cat_and_say.mcfunction=
 #+begin_src
 #inputs :
@@ -24,7 +25,9 @@ $say "$(A)$(B)"
 #+end_src
 
 And then the calling code
+
 /Call Code/
+
 =main.mcfunction=
 #+begin_src
 data modify storage example:main cat_and_say_args set value {A:"Hello,",B:" World!"}

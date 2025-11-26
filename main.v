@@ -582,7 +582,7 @@ mut:
 	ident         ?Identifier
 	array_integer ?int
 	integer       ?int
-	macro         ?Macro
+	macro         ?&Macro
 	next          ?&IdentifierChain
 }
 
@@ -1208,7 +1208,7 @@ fn (mut p Parser) parse_function_identifier_chain() ([]Identifier, []FunctionCha
 
 		// If we have a slash after the path, it's a namespace path
 		if p.current.kind == .slash && temp_path.len > 1 {
-			namespace_path = temp_path[..temp_path.len - 1]
+			namespace_path = temp_path.clone()
 			chain << FunctionChainElement(temp_path.last())
 		} else {
 			// Restore and parse normally
@@ -1471,7 +1471,7 @@ fn (mut p Parser) parse_prefix() Expr {
 					if p.next.kind == .ident {
 						p.advance()
 						p.advance()
-						p.advance()
+						p.advance() // now at the value
 						if p.current.kind == .lit_string {
 							p.lexer.index = saved_index
 							p.current = saved_current
@@ -1491,6 +1491,7 @@ fn (mut p Parser) parse_prefix() Expr {
 					return p.parse_namespace_alias()
 				}
 			}
+			panic('illegal state in parsing namespace prefix')
 		}
 		.kw_return {
 			return p.parse_return_statement()
@@ -1547,7 +1548,7 @@ fn (mut p Parser) parse_prefix() Expr {
 					return Expr(*p.parse_macro())
 				}
 				else {
-					panic('unexpected token in parse_prefix')
+					panic('unexpected token in parse_prefix for ident/lcarrot') // Should ideally be caught earlier
 				}
 			}
 		}
@@ -1599,6 +1600,7 @@ fn (mut p Parser) parse_prefix() Expr {
 			return Expr(Invalid{})
 		}
 	}
+	panic('Unhandled case in parse_prefix - reached end of function without return')
 }
 
 fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
@@ -1840,7 +1842,7 @@ fn unparse_one(ex Expr) string {
 					result += unparse_one(Expr(ex.ident or { panic('no unparse') }))
 				}
 				.identchk_macro {
-					result += unparse_one(Expr(*ex.macro or { panic('no unparse') }))
+					result += unparse_one(Expr(ex.macro or { panic('no unparse') }))
 				}
 				.identchk_array_integer {
 					result += '['
@@ -1852,7 +1854,7 @@ fn unparse_one(ex Expr) string {
 				}
 				.identchk_array_macro {
 					result += '['
-					result += unparse_one(Expr(*ex.macro or { panic('no unparse') }))
+					result += unparse_one(Expr(ex.macro or { panic('no unparse') }))
 					result += ']'
 				}
 			}
@@ -1866,6 +1868,7 @@ fn unparse_one(ex Expr) string {
 		}
 		Identifier {
 			result += ex.name
+			return result
 		}
 		Define {
 			result += match ex.source {

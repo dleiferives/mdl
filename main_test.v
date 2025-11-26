@@ -242,5 +242,5 @@ fn test_parse_function_def() {
 fn test_parse_function_de2f() {
 	str := 'fn a(reg b: Int): Void{ reg a := b;};'
 	res := parse(str)
-	print(res)
+	print(unparse(res))
 }

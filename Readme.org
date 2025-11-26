@@ -1,0 +1,79 @@
+#+title: Minecraft Datapack Language
+
+This is the parser for the Minecraft Datapack Language. The backend will be
+rewriten somepoint soon. There is an already existing version of this, the ebnf
+I came up with a while ago, and I have a simple python parser thing that takes a
+reduced form of it and makes it into functioning minecraft datapack code. [[https://github.com/dleiferives/computer_craft_dp/][Mainly
+made for this project.]]
+
+** Examples
+
+The basis of the language is on the use of calling functions with arguments to allow the manipulation of commands directly. This behaviour can be exploited to create a higher level language directly!
+
+Now what do I mean by this? One of the outcomes that is-- nearly-- impossible to achieve in normal Minecraft command blocks/ datapacks is the concatination of strings. However with function calls it becomes trivial.
+
+*** In minecraft datapack `mcfunction` code
+/Concatenate output/
+=cat_and_say.mcfunction=
+#+begin_src
+#inputs :
+# A : Some literal
+# B : Some other literal
+$data modify storage example:utils cat_output set value "$(A)($B)"
+$say "$(A)$(B)"
+#+end_src
+
+And then the calling code
+/Call Code/
+=main.mcfunction=
+#+begin_src
+data modify storage example:main cat_and_say_args set value {A:"Hello,",B:" World!"}
+function example:cat_and_say with storage example:main cat_and_say_args
+#+end_src
+
+Which then will output =Hello, World!= and store it to =example:utils cat_output=
+*** In mdl
+In a direct translation this could be
+#+begin_src
+// utils.mcf
+data cat_output := "";
+
+fn cat_and_say(eff A: String, eff B: String) : Void {
+    utils.cat_output = "<A><B>";
+    $say "<A><B>";
+}
+// main.mcf
+namespace utils = "utils.mcf'
+utils/cat_and_say("Hello,"," World!");
+#+end_src
+
+Or using inlining
+#+begin_src
+namespace utils = {
+    data cat_output := "";
+};
+
+// Define an inline function with default values
+cat_and_say<data A: string = "Hello,", data B: String = " World!"> {
+    utils.cat_output = "<A><B>";
+    $say "<A><B>";
+}
+
+cat_and_say();
+// "Hello, World!"
+cat_and_say("Blocky"," Place...");
+// "Blocky, Place..."
+#+end_src
+
+Or just using the type system.
+#+begin_src
+namespace utils = {
+    data cat_output := "";
+};
+
+data A := "Hello,";
+data B := " World!";
+utils.cat_output = "<A><B>";
+$say "<A><B>";
+
+#+end_src

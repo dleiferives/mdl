@@ -198,7 +198,7 @@ type Precidence = u8
 // TODO: should move
 fn (t TokenKind) precidence() Precidence {
 	return match t {
-		.assign { 1 }
+		.eq { 2 }
 		else { 0 }
 	}
 }
@@ -257,9 +257,11 @@ fn (mut p Parser) parse_prefix() Expr {
 fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
 	mut left := p.parse_prefix()
 
-	mut prec := p.current.kind.precidence()
-	for prec < min_prec {
-		prec = p.current.kind.precidence()
+	for {
+		prec := p.current.kind.precidence()
+		if prec <= min_prec {
+			break
+		}
 		op := p.current.kind
 		p.advance()
 
@@ -269,9 +271,6 @@ fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
 			left = Expr(BinaryExpr{left, op, right})
 			continue
 		}
-
-		right := p.parse_expr(prec + 1)
-		left = Expr(BinaryExpr{left, op, right})
 	}
 	return left
 }

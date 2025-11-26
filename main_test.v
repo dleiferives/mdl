@@ -73,7 +73,7 @@ fn test_next_token() {
 }
 
 fn test_parse_1() {
-	str := 'a = b'
+	str := 'a = b;'
 	res := parse(str)
 	expected := Expr(BinaryExpr{
 		left:     Expr(Identifier{
@@ -84,5 +84,54 @@ fn test_parse_1() {
 			name: 'b'
 		})
 	})
+	assert res[0] == expected
+}
+
+fn test_parse_statement() {
+	str := 'a = b; b = c;'
+	res := parse(str)
+	expected := [
+		Expr(BinaryExpr{
+			left:     Expr(Identifier{
+				name: 'a'
+			})
+			operator: .assign
+			right:    Expr(Identifier{
+				name: 'b'
+			})
+		}),
+		Expr(BinaryExpr{
+			left:     Expr(Identifier{
+				name: 'b'
+			})
+			operator: .assign
+			right:    Expr(Identifier{
+				name: 'c'
+			})
+		}),
+	]
+	assert res == expected
+}
+
+fn test_parse_statement2() {
+	str := 'a = a == b;'
+	res := parse(str)
+	expected := [
+		Expr(BinaryExpr{
+			left:     Expr(Identifier{
+				name: 'a'
+			})
+			operator: .assign
+			right:    Expr(BinaryExpr{
+				left:     Expr(Identifier{
+					name: 'a'
+				})
+				operator: .eq
+				right:    Expr(Identifier{
+					name: 'b'
+				})
+			})
+		}),
+	]
 	assert res == expected
 }

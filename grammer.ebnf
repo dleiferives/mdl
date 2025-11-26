@@ -1,0 +1,89 @@
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+letter = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" ;
+
+special = "!" | "@" | "#" | "$" | "%" | "^" | "&" | "*" | "(" | ")" | "-" | "_" | "=" | "+" | "[" | "]" | "{" | "}" | ";" | ":" | "'" | '"' | "," | "." | "<" | ">" | "/" | "?" | "\\" | "|" ;
+
+charachter = digit | letter | special ;
+
+escape = "\\" , ( "n" | "t" | "\\" | '"' | "'" | "r" | "b" | "f" ) ;
+
+space = " " | "\t" | "\b" | "\n" | "\r" | "\f";
+any_space = space, {space};
+
+integer = ["-"], digit, { digit } ;
+
+string = '"', { charachter | " " | escape }, '"' ;
+char = "'",charachter,"'";
+
+dictionary_entry = (number | string),{space},":",{space},(list|macro|integer|string|dictionary);
+dictionary_entries = dictionary_entry, {{space},",",{space},dictionary_entry};
+dictionary = "{",{space},dictionary_entries,{space},"}";
+
+
+list_entry = list | string | integer | macro | dictionary | char;
+list_entries = list_entry, {{space},",",{space},list_entry};
+list = "[",{space},list_entries,{space},"]";
+
+identifier = (letter | "#" | "_"), {letter | digit | "#" | "_"};
+
+function_identifier_chain = identifier, {"/", identifier};
+reg_identifier_chain = identifier, {".", identifier};
+data_identifier_chain = identifier, {array_access}, {".", identifier, {array_access}};
+identifier_chain = reg_identifier_chain | data_identifier_chain;
+referable = ["&"], identifier_chain;
+
+macro = "<",referable,">";
+number = integer | macro;
+array_access = "[", number ,"]";
+
+range = ([number], "..", number) | (number, "..", [number]);
+range_condition = (reg_identifier_chain,":",any_space,range);
+
+conditional_expressions = "<" | ">" | "<=" | ">=" | "==";
+comparison = reg_identifier_chain, {space}, conditional_expressions, {space}, reg_identifier_chain;
+
+type = "Int" | "Float" | "List" | "String" | "Dict";
+source = "reg" | "eff" | "data";
+
+reg_operations = "%=" |"*="|"+="|"-="|"/="|"<"|"=="|">"|"><";
+operation = reg_identifier_chain, any_space, reg_operations, any_space, (reg_identifier_chain | integer);
+
+string_access = data_identifier_chain, "[",{space},number,{space},":",{space},number,{space},"]";
+
+data_literal_expression = string | integer | list | dictionary;
+data_expression = function_call | string_access | data_identifier_chain | macro | data_literal_expression | referable;
+reg_literal_expression = integer;
+reg_expression = function_call | reg_identifier_chain | macro | reg_literal_expression;
+expression = reg_expression  | data_expression;
+
+define = (source,any_space,identifier,any_space,":=",any_space,(reg_identifier_chain|data_identifier_chain)) | ("fn",any_space,identifier,any_space,":=",any_space,function_identifier_chain);
+
+reg_lhs = ("reg", any_space, identifier) | reg_identifier_chain;
+reg_rhs = reg_expression;
+
+data_lhs = ("data", any_space, identifier) | data_identifier_chain;
+data_rhs = data_expression;
+
+set = (reg_lhs, any_space, "=", any_space, reg_rhs) |( data_lhs, any_space, "=", any_space, data_rhs);
+store = (reg_lhs, any_space, "<-", any_space, data_rhs) | (data_lhs, any_space, "<-", any_space, reg_rhs) | ((data_lhs | reg_lhs), any_space);
+assignment = store | set;
+
+function_namespace_argument = source,any_space,identifier,{space},":",any_space,type;
+function_namespace_arguments = "(",{space},[function_namespace_argument,{{space},",",{space},function_namespace_argument},{space}],")";
+function_namespace_definition = "fn",{space},identifier,{space},function_namespace_arguments,{space},block;
+
+function_inline_argument = source,any_space,identifier,{space},":",any_space,type,{space},("="|"<-"),{space},(reg_rhs|data_rhs);
+function_inline_arguments = {space},[function_inline_argument,{{space},",",{space},function_inline_argument},{space}];
+function_inline_definition = identifier,{space},"<",function_inline_arguments,{space}">",{space},block;
+
+function_definition = function_namespace_definition | function_inline_definition;
+
+if_statement = "if", "(", comparison | range_condition | expression ,")", block;
+
+function_call_argument = expression;
+function_call_arguments = [function_call_argument,{{space},",",{space},function_call_argument}];
+function_call = function_identifier_chain,{space},"(",{space},function_call_arguments,{space},")";
+
+statement = if_statement | ((define | assignment | operation | function_call),{space},";");
+block ="{",{space|statement},"}";

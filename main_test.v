@@ -71,3 +71,18 @@ fn test_next_token() {
 		count++
 	}
 }
+
+fn test_parse_1() {
+	str := 'a = b'
+	res := parse(str)
+	expected := Expr(BinaryExpr{
+		left:     Expr(Identifier{
+			name: 'a'
+		})
+		operator: .assign
+		right:    Expr(Identifier{
+			name: 'b'
+		})
+	})
+	assert res == expected
+}

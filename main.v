@@ -18,13 +18,6 @@ enum TokenKind {
 	rparen
 }
 
-enum Precidence {
-	lowest
-	assign
-	sum
-	prefix
-}
-
 struct Token {
 	kind TokenKind
 	str  string
@@ -192,8 +185,26 @@ pub fn (mut l Lexer) next() ?Token {
 	return t
 }
 
+// PARSER -> Turns into the ast
+struct Parser {
+mut:
+	lexer   Lexer
+	current Token
+	next    Token
+}
+
+type Precidence = u8
+
+// TODO: should move
+fn (t TokenKind) precidence() Precidence {
+	return match t {
+		.assign { 1 }
+		else { 0 }
+	}
+}
+
 // AST
-type Expr = BinaryExpr | Identifier
+type Expr = BinaryExpr | Identifier | Invalid
 
 struct BinaryExpr {
 	left     Expr
@@ -203,4 +214,71 @@ struct BinaryExpr {
 
 struct Identifier {
 	name string
+}
+
+struct Invalid {}
+
+fn (mut p Parser) advance() {
+	p.current = p.next
+	p.next = p.lexer.next_token()
+}
+
+fn (mut p Parser) left_denotation(expr Expr) Expr {
+	match p.current.kind {
+		.plus {
+			op_prec := p.current.kind.precidence()
+			p.advance()
+			right := p.parse_expression(op_prec)
+			return Expr(BinaryExpr{
+				left:     expr
+				operator: .plus
+				right:    right
+			})
+		}
+		.assign {
+			op_prec := p.current.kind.precidence()
+			p.advance()
+			right := p.parse_expression(op_prec)
+			return Expr(BinaryExpr{
+				left:     expr
+				operator: .assign
+				right:    right
+			})
+		}
+		else {
+			return Expr(Invalid{})
+		}
+	}
+}
+
+fn (mut p Parser) parse_expression(precidence Precidence) Expr {
+	mut left := match p.current.kind {
+		.ident {
+			name := p.current.str
+			p.advance()
+			Expr(Identifier{
+				name: name
+			})
+		}
+		else {
+			return Expr(Invalid{})
+		}
+	}
+
+	for precidence < p.current.kind.precidence() {
+		left = p.left_denotation(left)
+	}
+	return left
+}
+
+fn parse(str string) Expr {
+	mut p := Parser{
+		lexer: Lexer{
+			src:   str
+			index: 0
+		}
+	}
+	p.current = p.lexer.next_token()
+	p.next = p.lexer.next_token()
+	return p.parse_expression(0)
 }

@@ -36,7 +36,7 @@ list = "[",{space},list_entries,{space},"]";
 
 identifier = (letter | "#" | "_"), {letter | digit | "#" | "_"};
 
-function_identifier_chain = identifier, {"/", identifier};
+function_identifier_chain = (identifier | macro), {"/", (identifier | macro};
 reg_identifier_chain = identifier, {".", identifier};
 data_identifier_chain = identifier, {array_access}, {".", identifier, {array_access}};
 identifier_chain = reg_identifier_chain | data_identifier_chain;
@@ -80,7 +80,7 @@ assignment = store | set;
 
 function_namespace_argument = source,any_space,identifier,{space},":",any_space,type;
 function_namespace_arguments = "(",{space},[function_namespace_argument,{{space},",",{space},function_namespace_argument},{space}],")";
-function_namespace_definition = "fn",{space},identifier,{space},function_namespace_arguments,{space},block;
+function_namespace_definition = "fn",{space},identifier,{space},function_namespace_arguments,{space},":",any_space,type,{space},block;
 
 function_inline_argument = source,any_space,identifier,{space},":",any_space,type,{space},("="|"<-"),{space},(reg_rhs|data_rhs);
 function_inline_arguments = {space},[function_inline_argument,{{space},",",{space},function_inline_argument},{space}];

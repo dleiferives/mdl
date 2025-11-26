@@ -27,6 +27,7 @@ enum TokenKind {
 	kw_dict
 	kw_void
 	kw_namespace
+	kw_return
 	// TODO: add the rest of the binary operations that we will support
 	eq
 	assign
@@ -68,7 +69,7 @@ struct Token {
 }
 
 pub fn is_alpha(c rune) bool {
-	return (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_` || c == `#` // Updated
+	return (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_` || c == `#`
 }
 
 pub fn is_digit(c rune) bool {
@@ -227,6 +228,7 @@ pub fn (mut l Lexer) read_identifier() Token {
 		'Dict' { TokenKind.kw_dict }
 		'Void' { TokenKind.kw_void }
 		'namespace' { TokenKind.kw_namespace }
+		'return' { TokenKind.kw_return }
 		else { TokenKind.ident }
 	}
 
@@ -496,10 +498,10 @@ type Precidence = u8
 // TODO: should move
 fn (t TokenKind) precidence() Precidence {
 	return match t {
-		.assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .percent_assign, .store { 1 } // Updated
-		.eq, .ne, .lte, .gte, .lcarrot, .rcarrot, .swap { 2 } // Updated
-		.plus, .minus { 3 } // Updated
-		.star, .slash, .percent { 4 } // Updated
+		.assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .percent_assign, .store { 1 }
+		.eq, .ne, .lte, .gte, .lcarrot, .rcarrot, .swap { 2 }
+		.plus, .minus { 3 }
+		.star, .slash, .percent { 4 }
 		else { 0 }
 	}
 }
@@ -523,6 +525,13 @@ type Expr = BinaryExpr
 	| IfStatement
 	| FunctionCall
 	| StringSlice
+	| NamespaceDefinition
+	| NamespaceImport
+	| NamespaceAlias
+	| ReturnStatement
+	| InterpolatedString
+	| QualifiedIdentifier
+	| ReferenceExpr
 
 struct IfStatement {
 	condition Expr
@@ -532,8 +541,9 @@ struct IfStatement {
 type FunctionChainElement = Identifier | Macro
 
 struct FunctionCall {
-	name_chain []FunctionChainElement
-	args       []Expr
+	namespace_path []Identifier
+	name_chain     []FunctionChainElement
+	args           []Expr
 }
 
 enum ValueType {
@@ -572,7 +582,7 @@ mut:
 	ident         ?Identifier
 	array_integer ?int
 	integer       ?int
-	macro         ?&Macro
+	macro         ?Macro
 	next          ?&IdentifierChain
 }
 
@@ -649,6 +659,7 @@ enum Type {
 
 struct FunctionArgument {
 	source   ValueType
+	is_ref   bool
 	name     Identifier
 	arg_type Type
 }
@@ -672,6 +683,43 @@ struct FunctionInlineDefinition {
 	ident Identifier
 	args  []FunctionInlineArgument
 	block Block
+}
+
+struct NamespaceDefinition {
+	name  Identifier
+	block Block
+}
+
+struct NamespaceImport {
+	name Identifier
+	path String
+}
+
+struct NamespaceAlias {
+	name Identifier
+}
+
+struct ReturnStatement {
+	value ?Expr
+}
+
+struct InterpolatedStringPart {
+	is_macro bool
+	text     string
+	macro    ?Macro
+}
+
+struct InterpolatedString {
+	parts []InterpolatedStringPart
+}
+
+struct QualifiedIdentifier {
+	namespace_path []Identifier
+	name           Identifier
+}
+
+struct ReferenceExpr {
+	target Expr
 }
 
 struct Invalid {}
@@ -988,7 +1036,12 @@ fn (mut p Parser) parse_function_argument() FunctionArgument {
 	}
 	p.advance()
 
-	// identifier
+	mut is_ref := false
+	if p.current.kind == .ampersand {
+		is_ref = true
+		p.consume(.ampersand)
+	}
+
 	if p.current.kind != .ident {
 		panic('expected identifier for function argument name')
 	}
@@ -999,6 +1052,7 @@ fn (mut p Parser) parse_function_argument() FunctionArgument {
 
 	return FunctionArgument{
 		source:   source
+		is_ref:   is_ref
 		name:     name
 		arg_type: arg_type
 	}
@@ -1131,19 +1185,51 @@ fn (mut p Parser) parse_if_statement() Expr {
 	})
 }
 
-fn (mut p Parser) parse_function_identifier_chain() []FunctionChainElement {
+fn (mut p Parser) parse_function_identifier_chain() ([]Identifier, []FunctionChainElement) {
+	mut namespace_path := []Identifier{}
 	mut chain := []FunctionChainElement{}
 
-	match p.current.kind {
-		.ident {
-			chain << FunctionChainElement(p.parse_ident())
+	if p.current.kind == .ident {
+		saved_index := p.lexer.index
+		saved_current := p.current
+		saved_next := p.next
+
+		mut temp_path := []Identifier{}
+		temp_path << p.parse_ident()
+
+		for p.current.kind == .dot {
+			p.consume(.dot)
+			if p.current.kind == .ident {
+				temp_path << p.parse_ident()
+			} else {
+				break
+			}
 		}
-		.lcarrot {
-			chain << FunctionChainElement(*p.parse_macro())
+
+		// If we have a slash after the path, it's a namespace path
+		if p.current.kind == .slash && temp_path.len > 1 {
+			namespace_path = temp_path[..temp_path.len - 1]
+			chain << FunctionChainElement(temp_path.last())
+		} else {
+			// Restore and parse normally
+			p.lexer.index = saved_index
+			p.current = saved_current
+			p.next = saved_next
+
+			match p.current.kind {
+				.ident {
+					chain << FunctionChainElement(p.parse_ident())
+				}
+				.lcarrot {
+					chain << FunctionChainElement(*p.parse_macro())
+				}
+				else {
+					panic('expected identifier or macro at start of function chain')
+				}
+			}
 		}
-		else {
-			panic('expected identifier or macro at start of function chain')
-		}
+	} else if p.current.kind == .lcarrot {
+		chain << FunctionChainElement(*p.parse_macro())
 	}
 
 	for p.current.kind == .slash {
@@ -1162,63 +1248,296 @@ fn (mut p Parser) parse_function_identifier_chain() []FunctionChainElement {
 		}
 	}
 
-	return chain
+	return namespace_path, chain
 }
 
-fn (mut p Parser) parse_function_call(name_chain []FunctionChainElement) Expr {
+fn (mut p Parser) parse_function_call(namespace_path []Identifier, name_chain []FunctionChainElement) Expr {
 	mut args := []Expr{}
 
 	p.consume(.lparen)
 
 	if p.current.kind != .rparen {
-		args << p.parse_expr(0)
+		if p.current.kind == .ampersand {
+			args << p.parse_reference_expr()
+		} else {
+			args << p.parse_expr(0)
+		}
 
 		for p.current.kind == .comma {
 			p.consume(.comma)
-			args << p.parse_expr(0)
+			if p.current.kind == .ampersand {
+				args << p.parse_reference_expr()
+			} else {
+				args << p.parse_expr(0)
+			}
 		}
 	}
 
 	p.consume(.rparen)
 
 	return Expr(FunctionCall{
-		name_chain: name_chain
-		args:       args
+		namespace_path: namespace_path
+		name_chain:     name_chain
+		args:           args
+	})
+}
+
+fn (mut p Parser) parse_namespace_definition() Expr {
+	p.consume(.kw_namespace)
+
+	if p.current.kind != .ident {
+		panic('expected identifier after namespace')
+	}
+	name := p.parse_ident()
+
+	p.consume(.assign)
+
+	block := p.parse_block()
+
+	return Expr(NamespaceDefinition{
+		name:  name
+		block: block
+	})
+}
+
+fn (mut p Parser) parse_namespace_import() Expr {
+	p.consume(.kw_namespace)
+
+	if p.current.kind != .ident {
+		panic('expected identifier after namespace')
+	}
+	name := p.parse_ident()
+
+	p.consume(.assign)
+
+	if p.current.kind != .lit_string {
+		panic('expected string literal for namespace import path')
+	}
+	path := String{
+		value: p.current.str
+	}
+	p.advance()
+
+	return Expr(NamespaceImport{
+		name: name
+		path: path
+	})
+}
+
+fn (mut p Parser) parse_namespace_alias() Expr {
+	p.consume(.kw_namespace)
+
+	if p.current.kind != .ident {
+		panic('expected identifier after namespace')
+	}
+	name := p.parse_ident()
+
+	return Expr(NamespaceAlias{
+		name: name
+	})
+}
+
+fn (mut p Parser) parse_return_statement() Expr {
+	p.consume(.kw_return)
+
+	if p.current.kind == .semicolon {
+		return Expr(ReturnStatement{
+			value: none
+		})
+	}
+
+	value := p.parse_expr(0)
+
+	return Expr(ReturnStatement{
+		value: value
+	})
+}
+
+fn (mut p Parser) parse_interpolated_string(str_value string) Expr {
+	mut parts := []InterpolatedStringPart{}
+	mut current_text := ''
+	mut i := 1
+
+	for i < str_value.len - 1 {
+		if str_value[i] == `<` {
+			if current_text.len > 0 {
+				parts << InterpolatedStringPart{
+					is_macro: false
+					text:     current_text
+					macro:    none
+				}
+				current_text = ''
+			}
+
+			mut macro_start := i
+			mut macro_end := i + 1
+			for macro_end < str_value.len - 1 && str_value[macro_end] != `>` {
+				macro_end++
+			}
+
+			if macro_end < str_value.len - 1 {
+				macro_str := str_value[macro_start..macro_end + 1]
+				// Parse the macro by creating a mini lexer
+				mut macro_lexer := Lexer{
+					src:   macro_str
+					index: 0
+				}
+				mut macro_parser := Parser{
+					lexer: macro_lexer
+				}
+				macro_parser.current = macro_parser.lexer.next_token()
+				macro_parser.next = macro_parser.lexer.next_token()
+
+				parsed_macro := macro_parser.parse_macro()
+
+				parts << InterpolatedStringPart{
+					is_macro: true
+					text:     ''
+					macro:    *parsed_macro
+				}
+
+				i = macro_end + 1
+				continue
+			}
+		}
+
+		current_text += str_value[i].ascii_str()
+		i++
+	}
+
+	if current_text.len > 0 {
+		parts << InterpolatedStringPart{
+			is_macro: false
+			text:     current_text
+			macro:    none
+		}
+	}
+
+	return Expr(InterpolatedString{
+		parts: parts
+	})
+}
+
+fn (mut p Parser) parse_qualified_identifier() Expr {
+	mut namespace_path := []Identifier{}
+
+	namespace_path << p.parse_ident()
+
+	for p.current.kind == .dot {
+		p.consume(.dot)
+		if p.current.kind == .ident {
+			namespace_path << p.parse_ident()
+		} else {
+			break
+		}
+	}
+
+	name := namespace_path.pop()
+
+	if namespace_path.len > 0 {
+		return Expr(QualifiedIdentifier{
+			namespace_path: namespace_path
+			name:           name
+		})
+	}
+
+	return Expr(name)
+}
+
+fn (mut p Parser) parse_reference_expr() Expr {
+	p.consume(.ampersand)
+	target := p.parse_expr(5)
+	return Expr(ReferenceExpr{
+		target: target
 	})
 }
 
 fn (mut p Parser) parse_prefix() Expr {
 	match p.current.kind {
+		.kw_namespace {
+			if p.next.kind == .ident {
+				saved_index := p.lexer.index
+				saved_current := p.current
+				saved_next := p.next
+
+				p.advance()
+				p.advance()
+
+				if p.current.kind == .assign {
+					p.lexer.index = saved_index
+					p.current = saved_current
+					p.next = saved_next
+
+					if p.next.kind == .ident {
+						p.advance()
+						p.advance()
+						p.advance()
+						if p.current.kind == .lit_string {
+							p.lexer.index = saved_index
+							p.current = saved_current
+							p.next = saved_next
+							return p.parse_namespace_import()
+						} else if p.current.kind == .lcurly {
+							p.lexer.index = saved_index
+							p.current = saved_current
+							p.next = saved_next
+							return p.parse_namespace_definition()
+						}
+					}
+				} else if p.current.kind == .semicolon {
+					p.lexer.index = saved_index
+					p.current = saved_current
+					p.next = saved_next
+					return p.parse_namespace_alias()
+				}
+			}
+		}
+		.kw_return {
+			return p.parse_return_statement()
+		}
+		.ampersand {
+			return p.parse_reference_expr()
+		}
 		.ident, .lcarrot {
 			saved_index := p.lexer.index
 			saved_current := p.current
 			saved_next := p.next
 
-			name_chain := p.parse_function_identifier_chain()
+			namespace_path, name_chain := p.parse_function_identifier_chain()
 
 			if p.current.kind == .lparen {
-				return p.parse_function_call(name_chain)
-			}
-
-			if p.current.kind == .lsquare {
-				p.lexer.index = saved_index
-				p.current = saved_current
-				p.next = saved_next
-
-				mut target_ident_chain := Expr(p.parse_identchainstart())
-				if p.current.kind == .lsquare {
-					next_token := p.next
-					if next_token.kind == .colon
-						|| (next_token.kind == .lit_integer && p.lexer.peek() == `:`) {
-						return p.parse_string_slice(target_ident_chain)
-					}
-				}
-				return target_ident_chain
+				return p.parse_function_call(namespace_path, name_chain)
 			}
 
 			p.lexer.index = saved_index
 			p.current = saved_current
 			p.next = saved_next
+
+			if p.current.kind == .ident {
+				saved2_index := p.lexer.index
+				saved2_current := p.current
+				saved2_next := p.next
+
+				mut temp_idents := []Identifier{}
+				temp_idents << p.parse_ident()
+
+				for p.current.kind == .dot && p.next.kind == .ident {
+					p.consume(.dot)
+					temp_idents << p.parse_ident()
+				}
+
+				if temp_idents.len > 1 && p.current.kind != .lparen {
+					name := temp_idents.pop()
+					return Expr(QualifiedIdentifier{
+						namespace_path: temp_idents
+						name:           name
+					})
+				}
+
+				p.lexer.index = saved2_index
+				p.current = saved2_current
+				p.next = saved2_next
+			}
 
 			match p.current.kind {
 				.ident {
@@ -1260,6 +1579,9 @@ fn (mut p Parser) parse_prefix() Expr {
 		.lit_string {
 			val := p.current.str
 			p.advance()
+			if val.contains('<') && val.contains('>') {
+				return p.parse_interpolated_string(val)
+			}
 			return Expr(String{
 				value: val
 			})
@@ -1302,13 +1624,25 @@ fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
 }
 
 fn (mut p Parser) parse_statement() Expr {
+	if p.current.kind == .kw_return {
+		ret := p.parse_return_statement()
+		p.consume(.semicolon)
+		return ret
+	}
+
+	if p.current.kind == .kw_namespace {
+		ns := p.parse_prefix()
+		p.consume(.semicolon)
+		return ns
+	}
+
 	left := p.parse_expr(0)
 
 	// If we have some form of operator on our statement?
 	// TODO: handle other things as I add them
 	match p.current.kind {
 		.assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .percent_assign, .eq,
-		.ne, .lte, .gte, .lcarrot, .rcarrot, .swap, .plus, .minus, .star, .slash, .percent { // Updated
+		.ne, .lte, .gte, .lcarrot, .rcarrot, .swap, .plus, .minus, .star, .slash, .percent {
 			op := p.current.kind
 			p.advance()
 			right := p.parse_expr(0)
@@ -1379,6 +1713,16 @@ fn unparse_one(ex Expr) string {
 			return result
 		}
 		FunctionCall {
+			for i, ns in ex.namespace_path {
+				if i > 0 {
+					result += '.'
+				}
+				result += ns.name
+			}
+			if ex.namespace_path.len > 0 {
+				result += '/'
+			}
+
 			for i, element in ex.name_chain {
 				if i > 0 {
 					result += '/'
@@ -1417,6 +1761,9 @@ fn unparse_one(ex Expr) string {
 					.register { 'reg ' }
 					.data { 'data ' }
 					.effemeral { 'eff ' }
+				}
+				if arg.is_ref {
+					result += '&'
 				}
 				result += arg.name.name + ': '
 				result += match arg.arg_type {
@@ -1628,6 +1975,65 @@ fn unparse_one(ex Expr) string {
 				result += unparse_one(end)
 			}
 			result += ']'
+			return result
+		}
+		NamespaceDefinition {
+			result += 'namespace ' + ex.name.name + ' = {\n'
+			for expr in ex.block.exprs {
+				result += '  ' + unparse_one(expr) + ';\n'
+			}
+			result += '}'
+			return result
+		}
+		NamespaceImport {
+			result += 'namespace ' + ex.name.name + ' = "' + ex.path.value + '"'
+			return result
+		}
+		NamespaceAlias {
+			result += 'namespace ' + ex.name.name
+			return result
+		}
+		ReturnStatement {
+			result += 'return'
+			if val := ex.value {
+				result += ' ' + unparse_one(val)
+			}
+			return result
+		}
+		InterpolatedString {
+			result += '"'
+			for part in ex.parts {
+				if part.is_macro {
+					if m := part.macro {
+						result += '<'
+						if m.referable {
+							result += '&'
+						}
+						result += unparse_one(Expr(m.ident_chain))
+						result += '>'
+					}
+				} else {
+					result += part.text
+				}
+			}
+			result += '"'
+			return result
+		}
+		QualifiedIdentifier {
+			for i, ns in ex.namespace_path {
+				if i > 0 {
+					result += '.'
+				}
+				result += ns.name
+			}
+			if ex.namespace_path.len > 0 {
+				result += '.'
+			}
+			result += ex.name.name
+			return result
+		}
+		ReferenceExpr {
+			result += '&' + unparse_one(ex.target)
 			return result
 		}
 		else {

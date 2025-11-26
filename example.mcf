@@ -1,0 +1,40 @@
+// file1.mcf
+namespace string = {
+    data ascii_lut := ['\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08', '\t', '\n', '\x0b', '\x0c', '\r', '\x0e', '\x0f', '\x10', '\x11', '\x12', '\x13', '\x14', '\x15', '\x16', '\x17', '\x18', '\x19', '\x1a', '\x1b', '\x1c', '\x1d', '\x1e', '\x1f', ' ', '!', '"', '#', '$', '%', '&', "'", '(', ')', '*', '+', ',', '-', '.', '/', '0',... etc ];
+    reg counter := 0;
+
+    fn cat(eff a: String,eff b:String) : String {
+        counter += 1;
+        return "<a><b>";
+    }
+
+    // effemeral values cannot have identification chains, they only exist for the lifetime of their block. as such they are soely an identifier for a macro
+    fn lookup_ascii(reg index: Int, data dest: &String) : Void {
+       eff idx := <index>;
+       <dest> = ascii_lut[idx];
+    }
+}
+
+data output := "";
+
+fn add_token(reg id: Int):Void{
+    data new_token := "";
+    string/lookup_ascii(id, &new_token);
+    string/cat(output,new_token);
+}
+
+fn get_counter() : Int{
+    return string.counter;
+}
+
+
+// file2.mcf
+namespace dinosaur;
+namespace work = "file1.mcf"
+
+reg new_counter := work/get_counter();
+reg counter_other := work.string.counter;
+
+// file3.mcf
+namespace file2 = "file2.mcf"
+data tmp := file2.dinosaur.work.output

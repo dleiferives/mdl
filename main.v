@@ -525,6 +525,7 @@ type Expr = BinaryExpr
 	| IfStatement
 	| FunctionCall
 	| StringSlice
+	| IndexExpr
 	| NamespaceDefinition
 	| NamespaceImport
 	| NamespaceAlias
@@ -624,6 +625,11 @@ struct StringSlice {
 	end    ?Expr
 }
 
+struct IndexExpr {
+	target Expr
+	index  Expr
+}
+
 enum DictionaryEntryKind {
 	dictentk_integer
 	dictentk_string
@@ -656,25 +662,29 @@ enum Type {
 	dict
 	void
 }
+type ReferenceInternal = Type | ReferenceType
+
+struct ReferenceType {
+	base ReferenceInternal
+}
 
 struct FunctionArgument {
 	source   ValueType
-	is_ref   bool
 	name     Identifier
-	arg_type Type
+	arg_type ReferenceInternal
 }
 
 struct FunctionDefinition {
 	ident       Identifier
 	args        []FunctionArgument
-	return_type Type
+	return_type ReferenceInternal
 	block       Block
 }
 
 struct FunctionInlineArgument {
 	source   ValueType
 	name     Identifier
-	arg_type Type
+	arg_type ReferenceInternal
 	op       TokenKind
 	value    Expr
 }
@@ -733,6 +743,14 @@ fn (mut p Parser) consume(kind TokenKind) bool {
 	return false
 }
 
+fn (mut p Parser) consume_silent(kind TokenKind) bool {
+	if p.current.kind == kind {
+		p.advance()
+		return true
+	}
+	return false
+}
+
 fn (mut p Parser) advance() {
 	p.current = p.next
 	p.next = p.lexer.next_token()
@@ -749,7 +767,14 @@ fn (mut p Parser) parse_ident() Identifier {
 	}
 }
 
-fn (mut p Parser) parse_type() Type {
+fn (mut p Parser) parse_type() ReferenceInternal {
+	if p.current.kind == .ampersand {
+		p.consume(.ampersand) // consume the '&'
+		base_type := p.parse_type() // recursively parse the underlying type
+		return ReferenceType{
+			base: base_type
+		}
+	}
 	match p.current.kind {
 		.kw_int {
 			p.advance()
@@ -912,7 +937,7 @@ fn (mut p Parser) parse_identchainstart() IdentifierChain {
 fn (mut p Parser) parse_macro() &Macro {
 	mut result := &Macro{}
 	p.consume(.lcarrot)
-	result.referable = p.consume(.ampersand)
+	result.referable = p.consume_silent(.ampersand)
 	result.ident_chain = p.parse_identchainstart()
 
 	p.consume(.rcarrot)
@@ -1002,28 +1027,53 @@ fn (mut p Parser) parse_range(left ?Expr) Range {
 	}
 }
 
-fn (mut p Parser) parse_string_slice(target Expr) Expr {
+fn (mut p Parser) parse_bracket_postfix(target Expr) Expr {
 	p.consume(.lsquare)
-	mut start_expr := ?Expr(none)
-	mut end_expr := ?Expr(none)
 
-	if p.current.kind != .colon && p.current.kind != .rsquare {
-		start_expr = p.parse_expr(0)
+	if p.current.kind == .colon {
+		mut end_expr := ?Expr(none)
+		p.consume(.colon)
+		if p.current.kind != .rsquare {
+			end_expr = p.parse_expr(0)
+		}
+		p.consume(.rsquare)
+		return Expr(StringSlice{
+			target: target
+			start:  none
+			end:    end_expr
+		})
 	}
 
-	p.consume(.colon)
-
-	if p.current.kind != .rsquare {
-		end_expr = p.parse_expr(0)
+	if p.current.kind == .rsquare {
+		p.consume(.rsquare)
+		return Expr(StringSlice{
+			target: target
+			start:  none
+			end:    none
+		})
 	}
 
-	p.consume(.rsquare)
+	first_expr := p.parse_expr(0)
 
-	return Expr(StringSlice{
-		target: target
-		start:  start_expr
-		end:    end_expr
-	})
+	if p.current.kind == .colon {
+		p.consume(.colon)
+		mut end_expr := ?Expr(none)
+		if p.current.kind != .rsquare {
+			end_expr = p.parse_expr(0)
+		}
+		p.consume(.rsquare)
+		return Expr(StringSlice{
+			target: target
+			start:  first_expr
+			end:    end_expr
+		})
+	} else {
+		p.consume(.rsquare)
+		return Expr(IndexExpr{
+			target: target
+			index:  first_expr
+		})
+	}
 }
 
 fn (mut p Parser) parse_function_argument() FunctionArgument {
@@ -1036,12 +1086,6 @@ fn (mut p Parser) parse_function_argument() FunctionArgument {
 	}
 	p.advance()
 
-	mut is_ref := false
-	if p.current.kind == .ampersand {
-		is_ref = true
-		p.consume(.ampersand)
-	}
-
 	if p.current.kind != .ident {
 		panic('expected identifier for function argument name')
 	}
@@ -1052,7 +1096,6 @@ fn (mut p Parser) parse_function_argument() FunctionArgument {
 
 	return FunctionArgument{
 		source:   source
-		is_ref:   is_ref
 		name:     name
 		arg_type: arg_type
 	}
@@ -1603,8 +1646,24 @@ fn (mut p Parser) parse_prefix() Expr {
 	panic('Unhandled case in parse_prefix - reached end of function without return')
 }
 
+fn (mut p Parser) parse_postfix(mut left Expr) Expr {
+	for {
+		match p.current.kind {
+			.lsquare {
+				left = p.parse_bracket_postfix(left)
+			}
+			else {
+				return left
+			}
+		}
+	}
+	return left
+}
+
 fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
 	mut left := p.parse_prefix()
+
+	left = p.parse_postfix(mut left)
 
 	for {
 		if p.current.kind == .dotdot {
@@ -1701,6 +1760,24 @@ fn parse(str string) []Expr {
 	return statements
 }
 
+fn unparse_type(t ReferenceInternal) string {
+	match t {
+		Type {
+			return match t {
+				.int { 'Int' }
+				.float { 'Float' }
+				.list { 'List' }
+				.string { 'String' }
+				.dict { 'Dict' }
+				.void { 'Void' }
+			}
+		}
+		ReferenceType {
+			return '&' + unparse_type(t.base)
+		}
+	}
+}
+
 fn unparse_one(ex Expr) string {
 	mut result := ''
 	match ex {
@@ -1764,28 +1841,11 @@ fn unparse_one(ex Expr) string {
 					.data { 'data ' }
 					.effemeral { 'eff ' }
 				}
-				if arg.is_ref {
-					result += '&'
-				}
 				result += arg.name.name + ': '
-				result += match arg.arg_type {
-					.int { 'Int' }
-					.float { 'Float' }
-					.list { 'List' }
-					.string { 'String' }
-					.dict { 'Dict' }
-					.void { 'Void' }
-				}
+				result += unparse_type(arg.arg_type)
 			}
 			result += '): '
-			result += match ex.return_type {
-				.int { 'Int' }
-				.float { 'Float' }
-				.list { 'List' }
-				.string { 'String' }
-				.dict { 'Dict' }
-				.void { 'Void' }
-			}
+			result += unparse_type(ex.return_type)
 			result += ' {\n'
 			for expr in ex.block.exprs {
 				result += '  ' + unparse_one(expr) + ';\n'
@@ -1805,14 +1865,7 @@ fn unparse_one(ex Expr) string {
 					.effemeral { 'eff ' }
 				}
 				result += arg.name.name + ': '
-				result += match arg.arg_type {
-					.int { 'Int' }
-					.float { 'Float' }
-					.list { 'List' }
-					.string { 'String' }
-					.dict { 'Dict' }
-					.void { 'Void' }
-				}
+				result += unparse_type(arg.arg_type)
 				result += ' ' + match arg.op {
 					.assign { '=' }
 					.store { '<-' }
@@ -1977,6 +2030,13 @@ fn unparse_one(ex Expr) string {
 			if end := ex.end {
 				result += unparse_one(end)
 			}
+			result += ']'
+			return result
+		}
+		IndexExpr {
+			result += unparse_one(ex.target)
+			result += '['
+			result += unparse_one(ex.index)
 			result += ']'
 			return result
 		}

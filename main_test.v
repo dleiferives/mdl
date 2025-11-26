@@ -135,3 +135,26 @@ fn test_parse_statement2() {
 	]
 	assert res == expected
 }
+
+fn test_source_parse() {
+	str := 'reg a := b;'
+	res := parse(str)
+	expected := [
+		Expr(Define{
+			source: .register
+			name:   Identifier{
+				name: 'a'
+			}
+			value:  Expr(Identifier{
+				name: 'b'
+			})
+		}),
+	]
+	assert expected == res
+}
+
+fn test_define_parse() {
+	str := 'a := b;'
+	res := parse(str)
+	print(res)
+}

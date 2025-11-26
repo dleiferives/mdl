@@ -9,13 +9,28 @@ enum TokenKind {
 	invalid
 	eof
 	ident
+	define
+	kw_if
+	kw_fn
+	kw_reg
+	kw_data
+	kw_eff
+	kw_int
+	kw_float
+	kw_list
+	kw_string
+	kw_dict
+	kw_namespace
 	// TODO: add the rest of the binary operations that we will support
 	eq
 	assign
 	semicolon
+	colon
 	plus
 	lparen
 	rparen
+	lcurly
+	rcurly
 }
 
 struct Token {
@@ -97,9 +112,28 @@ pub fn (mut l Lexer) read_identifier() Token {
 			pos:  -1
 		}
 	}
+
+	// handle keywords here...
+
+	str := l.src[start..l.index]
+	kind := match str {
+		'if' { TokenKind.kw_if }
+		'fn' { TokenKind.kw_fn }
+		'reg' { TokenKind.kw_reg }
+		'data' { TokenKind.kw_data }
+		'eff' { TokenKind.kw_eff }
+		'Int' { TokenKind.kw_int }
+		'Float' { TokenKind.kw_float }
+		'List' { TokenKind.kw_list }
+		'String' { TokenKind.kw_string }
+		'Dict' { TokenKind.kw_dict }
+		'namespace' { TokenKind.kw_namespace }
+		else { TokenKind.ident }
+	}
+
 	return Token{
-		kind: TokenKind.ident
-		str:  l.src[start..l.index]
+		kind: kind
+		str:  str
 		pos:  start
 	}
 }
@@ -151,9 +185,29 @@ pub fn (mut l Lexer) next_token() Token {
 				}
 			}
 		}
+		`:` {
+			match pp {
+				`=` {
+					l.index += 2
+					return Token{.define, ':=', l.index - 2}
+				}
+				else {
+					l.index++
+					return Token{.colon, ':', l.index - 1}
+				}
+			}
+		}
 		`+` {
 			l.index++
 			return Token{.plus, '+', l.index - 1}
+		}
+		`{` {
+			l.index++
+			return Token{.lcurly, '{', l.index - 1}
+		}
+		`}` {
+			l.index++
+			return Token{.rcurly, '}', l.index - 1}
 		}
 		`;` {
 			l.index++
@@ -204,7 +258,13 @@ fn (t TokenKind) precidence() Precidence {
 }
 
 // AST
-type Expr = BinaryExpr | Identifier | Invalid
+type Expr = BinaryExpr | Identifier | Invalid | Define
+
+enum ValueType {
+	effemeral
+	register
+	data
+}
 
 struct BinaryExpr {
 	left     Expr
@@ -214,6 +274,12 @@ struct BinaryExpr {
 
 struct Identifier {
 	name string
+}
+
+struct Define {
+	source ValueType
+	name   Identifier
+	value  Expr
 }
 
 struct Invalid {}
@@ -232,23 +298,58 @@ fn (mut p Parser) advance() {
 	p.next = p.lexer.next_token()
 }
 
-fn (mut p Parser) parse_ident() Expr {
+fn (mut p Parser) parse_ident() Identifier {
 	cur := p.current
 	if p.current.kind != .ident {
-		print('was expecting ident...')
+		panic('was expecting ident...')
 	}
 	p.advance()
-	return Expr(Identifier{
+	return Identifier{
 		name: cur.str
-	})
+	}
+}
+
+fn (mut p Parser) parse_definition() Expr {
+	source := match p.current.kind {
+		.kw_reg {
+			ValueType.register
+		}
+		.kw_data {
+			ValueType.data
+		}
+		.kw_eff {
+			ValueType.effemeral
+		}
+		else {
+			panic('illegal state')
+			ValueType.register
+		}
+	}
+	p.advance()
+	if p.current.kind != .ident {
+		panic('should be an ident.... check grammer')
+	}
+	name := p.parse_ident()
+
+	if p.current.kind == .define {
+		p.advance()
+		value := p.parse_expr(0)
+		return Expr(Define{source, name, value})
+	}
+	panic('was expecting a define??')
 }
 
 fn (mut p Parser) parse_prefix() Expr {
 	match p.current.kind {
 		.ident {
-			return p.parse_ident()
+			return Expr(p.parse_ident())
+		}
+		.kw_reg, .kw_data, .kw_eff {
+			return p.parse_definition()
 		}
 		else {
+			print('\n\nillegal state hit... ${p}\n')
+			p.advance()
 			return Expr(Invalid{})
 		}
 	}

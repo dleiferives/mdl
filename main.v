@@ -218,32 +218,35 @@ struct Identifier {
 
 struct Invalid {}
 
+fn (mut p Parser) consume(kind TokenKind) bool {
+	if p.current.kind == kind {
+		p.advance()
+		return true
+	}
+	print('was expecting ${kind} found  ${p.current.kind} instead at ${p.current}')
+	return false
+}
+
 fn (mut p Parser) advance() {
 	p.current = p.next
 	p.next = p.lexer.next_token()
 }
 
-fn (mut p Parser) left_denotation(expr Expr) Expr {
+fn (mut p Parser) parse_ident() Expr {
+	cur := p.current
+	if p.current.kind != .ident {
+		print('was expecting ident...')
+	}
+	p.advance()
+	return Expr(Identifier{
+		name: cur.str
+	})
+}
+
+fn (mut p Parser) parse_prefix() Expr {
 	match p.current.kind {
-		.plus {
-			op_prec := p.current.kind.precidence()
-			p.advance()
-			right := p.parse_expression(op_prec)
-			return Expr(BinaryExpr{
-				left:     expr
-				operator: .plus
-				right:    right
-			})
-		}
-		.assign {
-			op_prec := p.current.kind.precidence()
-			p.advance()
-			right := p.parse_expression(op_prec)
-			return Expr(BinaryExpr{
-				left:     expr
-				operator: .assign
-				right:    right
-			})
+		.ident {
+			return p.parse_ident()
 		}
 		else {
 			return Expr(Invalid{})
@@ -251,27 +254,50 @@ fn (mut p Parser) left_denotation(expr Expr) Expr {
 	}
 }
 
-fn (mut p Parser) parse_expression(precidence Precidence) Expr {
-	mut left := match p.current.kind {
-		.ident {
-			name := p.current.str
-			p.advance()
-			Expr(Identifier{
-				name: name
-			})
-		}
-		else {
-			return Expr(Invalid{})
-		}
-	}
+fn (mut p Parser) parse_expr(min_prec Precidence) Expr {
+	mut left := p.parse_prefix()
 
-	for precidence < p.current.kind.precidence() {
-		left = p.left_denotation(left)
+	mut prec := p.current.kind.precidence()
+	for prec < min_prec {
+		prec = p.current.kind.precidence()
+		op := p.current.kind
+		p.advance()
+
+		// TODO: handle other comparison operators
+		if op == .eq {
+			right := p.parse_expr(prec + 1)
+			left = Expr(BinaryExpr{left, op, right})
+			continue
+		}
+
+		right := p.parse_expr(prec + 1)
+		left = Expr(BinaryExpr{left, op, right})
 	}
 	return left
 }
 
-fn parse(str string) Expr {
+fn (mut p Parser) parse_statement() Expr {
+	left := p.parse_expr(0)
+
+	// If we have some form of operator on our statement?
+	// TODO: handle other things as I add them
+	if p.current.kind == .assign {
+		op := p.current.kind
+		p.advance()
+		right := p.parse_expr(0)
+		p.consume(.semicolon)
+		return Expr(BinaryExpr{
+			left:     left
+			operator: op
+			right:    right
+		})
+	}
+
+	p.consume(.semicolon)
+	return left
+}
+
+fn parse(str string) []Expr {
 	mut p := Parser{
 		lexer: Lexer{
 			src:   str
@@ -280,5 +306,11 @@ fn parse(str string) Expr {
 	}
 	p.current = p.lexer.next_token()
 	p.next = p.lexer.next_token()
-	return p.parse_expression(0)
+
+	mut statements := []Expr{}
+	for p.current.kind != .eof {
+		stmt := p.parse_statement()
+		statements << stmt
+	}
+	return statements
 }

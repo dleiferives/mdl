@@ -20,7 +20,7 @@ Now what do I mean by this? One of the outcomes that is-- nearly-- impossible to
 #inputs :
 # A : Some literal
 # B : Some other literal
-$data modify storage example:utils cat_output set value "$(A)($B)"
+$data modify storage example:utils cat_output set value "$(A)$(B)"
 $say "$(A)$(B)"
 #+end_src
 

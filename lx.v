@@ -82,17 +82,12 @@ mut:
 pub fn (mut l Lexer) skip_to_whitespace() {
 	for (l.index < l.src.len) {
 		cond := match l.src[l.index] {
-			` ` { true }
-			`\n` { true }
-			`\t` { true }
-			`\r` { true }
+			` `, `\n`, `\t`, `\r` { true }
 			else { false }
 		}
-
 		if cond {
 			return
 		}
-
 		l.index++
 	}
 }
@@ -100,17 +95,12 @@ pub fn (mut l Lexer) skip_to_whitespace() {
 pub fn (mut l Lexer) skip_whitespace() {
 	for (l.index < l.src.len) {
 		cond := match l.src[l.index] {
-			` ` { true }
-			`\n` { true }
-			`\t` { true }
-			`\r` { true }
+			` `, `\n`, `\t`, `\r` { true }
 			else { false }
 		}
-
 		if !cond {
 			return
 		}
-
 		l.index++
 	}
 }
@@ -269,6 +259,10 @@ pub fn (mut l Lexer) next_token() Token {
 		}
 	}
 	match p {
+		`@` {
+			l.index++
+			return Token{.at, '@', l.index - 1}
+		}
 		`=` {
 			match pp {
 				`=` {

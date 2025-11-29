@@ -1742,7 +1742,7 @@ fn (mut p Parser) parse_block() Block {
 	}
 }
 
-fn parse(str string) []Expr {
+pub fn parse(str string) []Expr {
 	mut p := Parser{
 		lexer: Lexer{
 			src:   str

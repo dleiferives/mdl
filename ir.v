@@ -2,28 +2,28 @@ module main
 
 // TODO: todoit lol
 
-// fn main() {
-// 	example()
-// 	print('\n')
-// }
+fn main() {
+	example()
+	print('\n')
+}
 
-// fn example() {
-// 	str := 'reg a := 10;
-// data something := 20;
-// reg b := a + something;
-// '
-// 	res := parse(str)
-// 	print(res)
-// 	mut fun := Function{
-// 		name: 'test'
-// 	}
-// 	fun.init()
+fn example() {
+	str := 'reg a := 10;
+data something := 20;
+reg b := a + something;
+'
+	res := parse(str)
+	print(res)
+	mut fun := Function{
+		name: 'test'
+	}
+	fun.init()
 
-// 	generate_expr(res[0], res, mut &fun)
-// 	generate_expr(res[1], res, mut &fun)
-// 	generate_expr(res[2], res, mut &fun)
-// 	print(fun)
-// }
+	generate_expr(res[0], res, mut &fun)
+	generate_expr(res[1], res, mut &fun)
+	generate_expr(res[2], res, mut &fun)
+	print(fun)
+}
 
 pub fn generate_expr(node Expr, ast []Expr, mut fun Function) Ref {
 	match node {

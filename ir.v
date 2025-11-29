@@ -2,29 +2,53 @@ module main
 
 // TODO: todoit lol
 
-fn main() {
-	example()
-	print('\n')
-}
+// fn main() {
+// 	example()
+// 	print('\n')
+// }
 
-fn example() {
-	str := 'reg a := 10;
-data something := 20;
-reg b := a + something;
-'
-	res := parse(str)
-	// print(res)
-	mut fun := Function{
-		name: 'test'
-	}
-	fun.init()
+// fn example() {
+// 	str := 'reg a := 10;
+// data something := 20;
+// reg b := a + something;
+// '
+// 	res := parse(str)
+// 	print(res)
+// 	mut fun := Function{
+// 		name: 'test'
+// 	}
+// 	fun.init()
 
-	generate_expr(res[0], res, mut &fun)
-	print(fun)
-}
+// 	generate_expr(res[0], res, mut &fun)
+// 	generate_expr(res[1], res, mut &fun)
+// 	generate_expr(res[2], res, mut &fun)
+// 	print(fun)
+// }
 
-fn generate_expr(node Expr, ast []Expr, mut fun Function) Ref {
+pub fn generate_expr(node Expr, ast []Expr, mut fun Function) Ref {
 	match node {
+		Identifier {
+			// Search Globals
+			// TODO:
+			// Search namespace
+			// TODO:
+			// Search Functions
+			// TODO:
+			// Search Args
+			// TODO:
+			// Search function scope
+			for reg in fun.regs.list {
+				if reg.name == node.name {
+					return reg.to_ref(.local)
+				}
+			}
+
+			// Search blockscope
+			// TODO:
+			return Ref{
+				kind: .illegal
+			}
+		}
 		Integer {
 			return Ref{
 				kind: .immediate
@@ -40,23 +64,50 @@ fn generate_expr(node Expr, ast []Expr, mut fun Function) Ref {
 
 			// Expr
 			ref_expr := generate_expr(node.value, ast, mut fun)
+
+			mut src_ref := generate_expr(Expr(node.name), ast, mut fun)
+			mut inst := fun.next_instruction()
 			// set
 			mut reg := fun.next_register()
-			mut inst := fun.next_instruction()
 			reg.name = node.name.name
 			// TODO: type
-			reg.source = node.source
+			reg.source = node.source.to_ir()
 			reg.inst_id = inst.id
+			src_ref = fun.add_register(reg, .local)
+
 			// TODO: basic block
 			inst.kind = Set{
-				dst: fun.add_register(reg, .local)
+				dst: src_ref
 				src: ref_expr
 			}
 			fun.add_instruction(inst)
 			return inst.kind.dst
 		}
+		BinaryExpr {
+			match node.operator {
+				.plus {
+					lhs_ref := generate_expr(node.left, ast, mut fun)
+					rhs_ref := generate_expr(node.right, ast, mut fun)
+					mut reg := fun.next_register()
+					reg.source = .real
+					mut inst := fun.next_instruction()
+					reg.inst_id = inst.id
+					inst.kind = BinaryOp{
+						kind: .add
+						dst:  fun.add_register(reg, .local)
+						lhs:  lhs_ref
+						rhs:  rhs_ref
+					}
+					fun.add_instruction(inst)
+					return inst.kind.dst
+				}
+				else {
+					panic('In BinaryExpr ${node.operator} not yet handled in ${node}')
+				}
+			}
+		}
 		else {
-			print('HI')
+			panic('no yet implemented ${node} type')
 		}
 	}
 	return Ref{
@@ -144,14 +195,34 @@ fn (mut f Function) add_instruction(inst Instruction) int {
 	return inst.id
 }
 
+enum IrSource {
+	effemeral
+	register
+	data
+	real
+}
+
+fn (v ValueType) to_ir() IrSource {
+	match v {
+		.effemeral { return IrSource.effemeral }
+		.register { return IrSource.register }
+		.data { return IrSource.data }
+	}
+	return .real
+}
+
 struct Register {
 mut:
-	id      int       // the ID of the register in the register table, should be itself
-	name    string    // The name of the register
-	type    Type      // The type of the register
-	source  ValueType // The type of the register
-	inst_id int       // The instruction the defines the register
-	bb_id   int       // the basic block its in
+	id      int      // the ID of the register in the register table, should be itself
+	name    string   // The name of the register
+	type    Type     // The type of the register
+	source  IrSource // The type of the register
+	inst_id int      // The instruction the defines the register
+	bb_id   int      // the basic block its in
+}
+
+fn (r Register) to_ref(kind RefKind) Ref {
+	return Ref{r.id, r.name, kind, r.type, r.source, 0}
 }
 
 enum RefKind {
@@ -159,17 +230,18 @@ enum RefKind {
 	local
 	immediate
 	global
+	namespace
 	paramater
 }
 
 // Reference to a register
 struct Ref {
 mut:
-	id     int       // Id of the register in the register table
-	name   string    // name of the reference
-	kind   RefKind   // the kind the reference is (local global function etc)
-	type   Type      // the type
-	source ValueType // The type of the register
+	id     int      // Id of the register in the register table
+	name   string   // name of the reference
+	kind   RefKind  // the kind the reference is (local global function etc)
+	type   Type     // the type
+	source IrSource // The type of the register
 	imm    int
 }
 
@@ -191,8 +263,8 @@ struct BinaryOp {
 mut:
 	kind BinaryOpKind
 	dst  Ref
-	r1   Ref
-	r2   Ref
+	lhs  Ref
+	rhs  Ref
 }
 
 struct Set {

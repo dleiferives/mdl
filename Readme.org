@@ -85,3 +85,38 @@ $say "<A><B>";
 
 * MISC
 This is my first time ever using the V programming language, it has been interesting to say the least. There are some qualms that I hold, however, it seems to be a very productive language.
+
+* Notes
+** Namespaces
+#+begin_src
+// a.mcf
+namespace a;
+namespace b = "b.mcf";
+data x := 10;
+
+// b.mcf
+namespace b;
+namespace a = "a.mcf";
+
+fn addx(data y: Int) : Int {
+    return y + a.x;
+}
+
+fn add2x(data y: Int) : Int{
+    return y + a.b.addx(y);
+}
+#+end_src
+
+Should ultimately result in
+
+#+begin_src
+//b.mcf
+
+fn addx(data y : Int) : Int{
+    return y + a.x;
+}
+
+fn add2x(datay: Int) : Int{
+    return y + addx(y);
+}
+#+end_src

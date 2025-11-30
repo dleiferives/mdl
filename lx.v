@@ -1,3 +1,5 @@
+// lx.v
+// this is the lexer
 module main
 
 enum TokenKind {
@@ -11,6 +13,7 @@ enum TokenKind {
 	kw_if
 	kw_else
 	kw_fn
+	kw_struct
 	kw_reg
 	kw_data
 	kw_eff
@@ -31,6 +34,7 @@ enum TokenKind {
 	lcarrot
 	rcarrot
 	ampersand
+	dollar
 	at
 	dot
 	plus
@@ -79,6 +83,18 @@ mut:
 	index int // zero by default...
 }
 
+pub fn (mut l Lexer) skip_comment() {
+	if l.index < l.src.len - 1 && l.src[l.index] == `/` && l.src[l.index + 1] == `/` {
+		l.index += 2
+		for l.index < l.src.len && l.src[l.index] != `\n` {
+			l.index++
+		}
+		if l.index < l.src.len && l.src[l.index] == `\n` {
+			l.index++
+		}
+	}
+}
+
 pub fn (mut l Lexer) skip_to_whitespace() {
 	for (l.index < l.src.len) {
 		cond := match l.src[l.index] {
@@ -93,15 +109,28 @@ pub fn (mut l Lexer) skip_to_whitespace() {
 }
 
 pub fn (mut l Lexer) skip_whitespace() {
-	for (l.index < l.src.len) {
-		cond := match l.src[l.index] {
-			` `, `\n`, `\t`, `\r` { true }
-			else { false }
+	for {
+		mut found_whitespace := false
+		for (l.index < l.src.len) {
+			cond := match l.src[l.index] {
+				` `, `\n`, `\t`, `\r` { true }
+				else { false }
+			}
+			if !cond {
+				break
+			}
+			l.index++
+			found_whitespace = true
 		}
-		if !cond {
-			return
+
+		if l.index < l.src.len - 1 && l.src[l.index] == `/` && l.src[l.index + 1] == `/` {
+			l.skip_comment()
+			continue
 		}
-		l.index++
+
+		if !found_whitespace {
+			break
+		}
 	}
 }
 
@@ -203,6 +232,7 @@ pub fn (mut l Lexer) read_identifier() Token {
 		'if' { TokenKind.kw_if }
 		'else' { TokenKind.kw_else }
 		'fn' { TokenKind.kw_fn }
+		'struct' { TokenKind.kw_struct }
 		'reg' { TokenKind.kw_reg }
 		'data' { TokenKind.kw_data }
 		'eff' { TokenKind.kw_eff }
@@ -259,10 +289,6 @@ pub fn (mut l Lexer) next_token() Token {
 		}
 	}
 	match p {
-		`@` {
-			l.index++
-			return Token{.at, '@', l.index - 1}
-		}
 		`=` {
 			match pp {
 				`=` {
@@ -289,6 +315,10 @@ pub fn (mut l Lexer) next_token() Token {
 		}
 		`/` {
 			match pp {
+				`/` {
+					l.skip_comment()
+					return l.next_token()
+				}
 				`=` {
 					l.index += 2
 					return Token{.slash_assign, '/=', l.index - 2}
@@ -430,6 +460,10 @@ pub fn (mut l Lexer) next_token() Token {
 		`&` {
 			l.index++
 			return Token{.ampersand, '&', l.index - 1}
+		}
+		`$` {
+			l.index++
+			return Token{.dollar, '$', l.index - 1}
 		}
 		`!` {
 			match pp {

@@ -449,6 +449,14 @@ pub enum ValueType {
 	data
 }
 
+pub fn (v ValueType) to_ir() StorageKind {
+	match v {
+		.data { return .data }
+		.register { return .register }
+		.effemeral { return .effemeral }
+	}
+}
+
 struct Invalid {}
 
 fn (mut p Parser) consume(kind TokenKind) bool {

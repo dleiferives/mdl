@@ -10,18 +10,20 @@ type NID = int
 @[heap]
 pub struct IRNamespace {
 pub mut:
-	name       string // The name of this namespace
-	id         NID
-	parent     ?NID
-	children   []NID
-	linked     []NID
-	nsmap      map[string]NID
-	nsumap     map[NID]string // used for local form of import or whatever
-	functions  []FID
-	structs    []SID
-	struct_map map[string]SID
-	variables  []VID
-	block      Block
+	name         string // The name of this namespace
+	id           NID
+	parent       ?NID
+	children     []NID
+	linked       []NID
+	nsmap        map[string]NID
+	nsumap       map[NID]string // used for local form of import or whatever
+	functions    []FID
+	function_map map[string]FID
+	structs      []SID
+	struct_map   map[string]SID
+	variables    []VID
+	variable_map map[string]VID
+	block        Block
 }
 
 // ID (index) into the Functions array in IRBuilder
@@ -33,7 +35,7 @@ pub mut:
 	name            string
 	id              FID
 	namespace       NID
-	args            []int // todo
+	args            []IRFunctionArg
 	return_type     IRType
 	bbs             []int // todo
 	entrybb         []int // todo
@@ -47,7 +49,6 @@ pub mut:
 	name    string
 	storage StorageKind
 	typ     IRType
-	is_ref  bool
 }
 
 // ID (index) into the Structs array in IRBuilder
@@ -94,7 +95,7 @@ pub mut:
 	typ          IRType
 	storage      StorageKind
 	location     IRLocation // where it is stored (This is our general reference thing)
-	is_macro_dep bool       // If it is used in macros
+	is_macro_dep bool       // If it is the result of a macro call
 }
 
 // IR OPERAND
@@ -209,7 +210,7 @@ pub struct IRBuilder {
 pub mut:
 	files      []string
 	namespaces []IRNamespace
-	functions  []IRNamespace
+	functions  []IRFunction
 	structs    []IRStructDef
 	variables  []IRValue
 }
@@ -285,6 +286,50 @@ pub fn (mut b IRBuilder) tranverse_namespace(nsa IRNamespace, path []string) ?NI
 		ns = b.namespaces[nid]
 	}
 	return nid
+}
+
+pub fn (mut b IRBuilder) namespace_yeild_ir_type(ns IRNamespace, typ Type) ?IRType {
+	mut ft := typ
+	mut it := IRType{}
+	mut ctr := 0
+	for mut ft is ReferenceType {
+		ft = ft.base
+		ctr++
+	}
+	match typ {
+		BuiltinType {
+			it = IRType(typ as BuiltinType)
+			for _ in 0 .. ctr {
+				it = IRType(IRRefType{
+					base: it
+				})
+			}
+			return it
+		}
+		StructType {
+			sft := (typ as StructType)
+			ns_path := sft.name.to_list()
+			nnid := b.tranverse_namespace(ns, ns_path) or {
+				println('Could to traverse from ${ns.name} along ${ns_path} for type conversion ${typ} ')
+				return none
+			}
+			// Need to check if name is a struct in that namespace
+			it = b.namespaces[nnid].struct_map[sft.name.name.name] or {
+				println('struct is not foundd in that namespace to use as a field')
+				return none
+			}
+			for _ in 0 .. ctr {
+				it = IRType(IRRefType{
+					base: it
+				})
+			}
+			return it
+		}
+		else {
+			panic('unreachable')
+		}
+	}
+	return none
 }
 
 pub fn (mut b IRBuilder) namespace_extract_structs() bool {
@@ -381,29 +426,143 @@ pub fn (mut b IRBuilder) namespace_extract_structs() bool {
 	return result
 }
 
-pub fn (mut b IRBuilder) namespace_extract_func_headers(mut ns IRNamespace) {
-	mut ast_funcs := []FunctionDefinition{}
-	// Pull out our functions
-	for stmt in ns.block.stmts {
-		match stmt {
-			FunctionDefinition {
-				ast_funcs << stmt
+pub fn (mut b IRBuilder) namespace_extract_func_headers() bool {
+	mut result := true
+	for ns in b.namespaces {
+		mut ast_funcs := []FunctionDefinition{}
+		// Pull out our functions
+		for stmt in ns.block.stmts {
+			match stmt {
+				FunctionDefinition {
+					ast_funcs << stmt
+				}
+				else {}
 			}
-			else {}
 		}
-	}
 
-	for ast_f in ast_funcs {
-		mut func := IRFunction{
-			name:  ast_f.ident.name
-			id:    b.functions.len
-			block: ast_f.block
+		for ast_f in ast_funcs {
+			mut func := IRFunction{
+				name:        ast_f.ident.name
+				id:          b.functions.len
+				return_type: b.namespace_yeild_ir_type(ns, ast_f.return_type) or {
+					println('Could not resolve function definition ${ast_f}')
+					result = false
+					continue
+				}
+				block:       ast_f.block
+			}
+
+			// Do the arguments
+			for arg in ast_f.args {
+				func.args << IRFunctionArg{
+					name:    arg.name.name
+					storage: arg.source.to_ir()
+					typ:     b.namespace_yeild_ir_type(ns, arg.arg_type) or {
+						println('Could not resolve argument type ${arg} in function ${ast_f}')
+						result = false
+						continue
+					}
+				}
+			}
+			b.namespaces[ns.id].functions << func.id
+			b.namespaces[ns.id].function_map[func.name] = func.id
+			b.functions << func
 		}
 	}
-	// TODO: have to finish structs first
+	return result
+}
+
+pub fn (mut b IRBuilder) namespace_extract_namesapce_defs() bool {
+	mut result := true
+	for ns in b.namespaces {
+		for stmt in ns.block.stmts {
+			match stmt {
+				Define {
+					println('Warning ${stmt} defining with value is not allowed at namespace scope. only allowed to use type define')
+					result = false
+					continue
+				}
+				TypedDefine {
+					var := IRValue{
+						name:     stmt.name.name
+						id:       b.variables.len
+						typ:      b.namespace_yeild_ir_type(ns, stmt.typ) or {
+							println('Could not resolve type for namespace local ${stmt}')
+							result = false
+							continue
+						}
+						storage:  stmt.source.to_ir()
+						location: match stmt.source {
+							.register {
+								IRRegLocation{
+									namespace: ns.id
+								}
+							}
+							.data {
+								IRDataLocation{
+									namespace: ns.id
+								}
+							}
+							else {
+								panic('unreachable effemeral as namespace value')
+							}
+						}
+					}
+					b.namespaces[ns.id].variables << var.id
+					b.namespaces[ns.id].variable_map[var.name] = var.id
+					b.variables << var
+				}
+				else {
+					continue
+				}
+			}
+		}
+	}
+	return result
+}
+
+pub fn (mut b IRBuilder) namespace_check_names_unique() bool {
+	mut result := true
+	for ns in b.namespaces {
+		mut names := []string{}
+		for f in ns.function_map.keys() {
+			if f in names {
+				println('Name ${f} already defined in ns ${ns}')
+				result = false
+				continue
+			}
+			names << f
+		}
+		for f in ns.nsmap.keys() {
+			if f in names {
+				println('Name ${f} already defined in ns ${ns}')
+				result = false
+				continue
+			}
+			names << f
+		}
+		for f in ns.struct_map.keys() {
+			if f in names {
+				println('Name ${f} already defined in ns ${ns}')
+				result = false
+				continue
+			}
+			names << f
+		}
+		for f in ns.variable_map.keys() {
+			if f in names {
+				println('Name ${f} already defined in ns ${ns}')
+				result = false
+				continue
+			}
+			names << f
+		}
+	}
+	return result
 }
 
 pub fn (mut b IRBuilder) lower(files []string) !bool {
+	mut result := true
 	mut abs_files := []string{}
 	for f in files {
 		abs_files << os.real_path(f)
@@ -418,9 +577,20 @@ pub fn (mut b IRBuilder) lower(files []string) !bool {
 	// Next we are going to pull out all the function definitions, struct
 	// declarations, for all the namespaces. We have to start with the structs
 	// so that our types can been resolved.
-	return b.namespace_extract_structs()
+	result = b.namespace_extract_structs() && result
+
+	// Now we are going to handle functions! That is function definitions. Since
+	// we've setup the architechture for this it should go down easy.
+	result = b.namespace_extract_func_headers() && result
+
+	// Now let us handle the definitions that exist in the namespace scope
+	result = b.namespace_extract_namesapce_defs() && result
+
+	// Now lets be sure that we don't have anything that is sharing the same name
+	result = b.namespace_check_names_unique() && result
 
 	// Next we are going to check that there is no overlap between names within any namespace
+	return result
 }
 
 pub fn (mut b IRBuilder) lower_namespace_alias(nsa NamespaceAlias) {

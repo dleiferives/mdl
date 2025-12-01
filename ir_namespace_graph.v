@@ -218,3 +218,37 @@ pub fn (mut s NSSolver) solve(path string) ! {
 	}
 	os.chdir(wd)!
 }
+
+// TODO: add imports so that things in same file can use each other.
+pub fn (mut s NSSolver) verify_node_legal(n NSNode, mut valid map[NSNodeId]bool) bool {
+	mut child_defs := []string{}
+	child_defs << n.name
+	for c in n.children {
+		if s.nodes[c].name in child_defs {
+			return false
+		}
+		child_defs << s.nodes[c].name
+		valid[c] = true
+	}
+	for l in n.linked_name {
+		if l in child_defs {
+			return false
+		}
+		child_defs << l
+	}
+	valid[n.id] = true
+	return true
+}
+
+pub fn (mut s NSSolver) verify_legal() bool {
+	// Make sure that there is no renaming within a heirarchy
+	mut valid := map[NSNodeId]bool{}
+	for n in s.nodes {
+		valid[n.id] = valid[n.id] or { false }
+		if !s.verify_node_legal(n, mut valid) {
+			return false
+		}
+	}
+	println(valid)
+	return true
+}

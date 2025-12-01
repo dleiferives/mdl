@@ -2,6 +2,8 @@
 // This is the parser
 module main
 
+import os
+
 // PARSER -> Turns into the ast
 struct Parser {
 mut:
@@ -1918,6 +1920,15 @@ fn (mut p Parser) parse_block() Block {
 		}
 		stmts: stmts
 	}
+}
+
+pub fn parse_file(path string) []Stmt {
+	if !os.is_file(path) {
+		panic('${path} is not a file...')
+	}
+	filedata := os.read_file(path) or { panic('could not read file ${path}') }
+	ast := parse(filedata)
+	return ast
 }
 
 pub fn parse(str string) []Stmt {

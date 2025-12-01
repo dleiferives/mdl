@@ -1,0 +1,4 @@
+struct Node{
+       value : Int
+       next : &Node
+};

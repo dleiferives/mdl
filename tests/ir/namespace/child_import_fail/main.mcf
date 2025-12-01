@@ -1,0 +1,4 @@
+namespace child;
+namespace child = {
+namespace utils = "utils.mcf";
+};

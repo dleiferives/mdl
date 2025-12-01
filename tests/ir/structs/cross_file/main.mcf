@@ -1,0 +1,6 @@
+namespace attrs = "attributes.mcf"
+struct Person{
+       age : Int
+       name : Int
+       community : &attrs.Community
+};

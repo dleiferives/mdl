@@ -12,6 +12,7 @@ pub mut:
 	linked      []NSNodeId
 	linked_name []string
 	valid       bool = true
+	block       Block
 }
 
 @[heap]
@@ -145,6 +146,7 @@ pub fn (mut s NSSolver) solve_child(child NamespaceDefinition, path string, id N
 	linked, names := s.add_linked_tasks(block, p, id)
 	s.nodes[id].linked << linked
 	s.nodes[id].linked_name << names
+	s.nodes[id].block = block
 	s.solved[id] = true
 	return id
 }
@@ -166,6 +168,7 @@ pub fn (mut s NSSolver) solve_file(path string) NSNodeId {
 	linked, names := s.add_linked_tasks(block, p, id)
 	s.nodes[id].linked << linked
 	s.nodes[id].linked_name << names
+	s.nodes[id].block = block
 	s.solved[id] = true
 	return id
 }
@@ -242,6 +245,49 @@ pub fn (mut s NSSolver) verify_node_legal(n NSNode, mut valid map[NSNodeId]bool)
 
 pub fn (mut s NSSolver) verify_legal() bool {
 	// Make sure that there is no renaming within a heirarchy
+	// TODO: there will be edge cases with importing things from other namespaces
+
+	// One of the edge cases that I'm thinking about is where we have multiple
+	// files that say they are the same namespace, but then we import them into
+	// another file as a different namespace. I don't really want to have to
+	// handle that? Because there is a very rigid structure that we are using to
+	// make this happen at the moment, though this could be resolved if we
+	// gaurentee that it will be the child of the other namespace. Therefore
+	// this is something that we should handle.
+	//
+	// For the moment I'm going to make it so that it becomes the child if it
+	// can. However, there should be an option for making this not happen so
+	// that mutliple things can use the same library code.
+	//
+	// That would really be something for later when dealing with interfacing of
+	// projects.
+	//
+	// I'm just going to not deal with it actually. Just like if there's
+	// colision... that's someone elses problem. Or really just my problem for
+	// later.
+	//
+	// Let's just throw a warning.
+	//
+	//
+	// TODO: add import
+	mut tlns := []string{}
+	tll: for n in s.nodes {
+		if !n.valid {
+			continue
+		}
+		for n2 in s.nodes {
+			if !n2.valid {
+				continue
+			}
+			if n.id in n2.children {
+				continue tll
+			}
+		}
+		if n.name in tlns {
+			println('Warning: found namespace duplicate ${n.name}')
+		}
+		tlns << n.name
+	}
 	mut valid := map[NSNodeId]bool{}
 	for n in s.nodes {
 		valid[n.id] = valid[n.id] or { false }
@@ -249,6 +295,6 @@ pub fn (mut s NSSolver) verify_legal() bool {
 			return false
 		}
 	}
-	println(valid)
+	// println(valid)
 	return true
 }

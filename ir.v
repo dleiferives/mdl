@@ -11,16 +11,17 @@ type NID = int
 @[heap]
 pub struct IRNamespace {
 pub mut:
-	name          string // The name of this namespace
-	id            NID
-	parent        ?NID
-	children_list []NID
-	linked_list   []NID
-	nsmap         map[string]NID
-	nsumap        map[NID]string // used for local form of import or whatever
-	functions     []FID
-	structs       []SID
-	variables     []VID
+	name      string // The name of this namespace
+	id        NID
+	parent    ?NID
+	children  []NID
+	linked    []NID
+	nsmap     map[string]NID
+	nsumap    map[NID]string // used for local form of import or whatever
+	functions []FID
+	structs   []SID
+	variables []VID
+	block     Block
 }
 
 // ID (index) into the Functions array in IRBuilder
@@ -205,24 +206,79 @@ pub mut:
 @[heap]
 pub struct IRBuilder {
 pub mut:
-	srcs       map[string][]Stmt
-	base_file  string
+	files      []string
 	namespaces []IRNamespace
 	functions  []IRNamespace
 	structs    []IRStructDef
 	variables  []IRValue
 }
 
-pub fn (mut b IRBuilder) ingest_file(path string) {
-	p := os.abs_path(path)
-	mut ast := parse_file(p)
-	println(os.split_path(p))
-	b.srcs[path] = ast
-	print(b.srcs)
+pub fn (mut b IRBuilder) solve_namespaces() {
+	mut ns_solver := NSSolver{}
+	for file in b.files {
+		ns_solver.solve(file) or { panic('Could not solve') }
+	}
+	if !ns_solver.verify_legal() {
+		panic('Could not solve the namespaces... look at that')
+	}
+	mut s2b := map[NSNodeId]NID{}
+	mut b2s := map[NID]NSNodeId{}
+
+	// Create the mapping (and fill out the builder)
+	for node in ns_solver.nodes {
+		if !node.valid {
+			continue
+		}
+		mut namespace := IRNamespace{
+			name:  node.name
+			id:    b.namespaces.len
+			block: node.block
+		}
+		b.namespaces << namespace
+		s2b[node.id] = namespace.id
+		b2s[namespace.id] = node.id
+	}
+
+	if b.namespace.len == 0 {
+		panic('There is no namespaces?')
+	}
+
+	mut visited := map[NID]bool{}
+	for nid, _ in b.namespaces {
+		visited[nid] = false
+	}
+
+	for nid, _ in b.namespaces {
+		if visited[nid] {
+			continue
+		}
+		nsid := b2s[nid]
+		ns := ns_solver.nodes[nsid]
+		for c in ns.children {
+			cnid := s2b[c]
+			b.namespaces[nid].children << cnid
+			b.namespaces[cnid].parent = nid
+			cns := ns_solver.nodes[c]
+			b.namespaces[nid].nsmap[cns.name] = cnid
+			b.namespaces[nid].nsumap[cnid] = cns.name
+		}
+
+		for lid, l in ns.linked {
+			lnid := s2b[c]
+			b.namespaces[nid].linked << lnid
+			lnsn := ns.linked_name[lid]
+			b.namespaces[nid].nsmap[lnsn] = lnid
+			b.namespaces[nid].nsumap[lnid] = lnsn
+		}
+
+		visited[nid] = true
+	}
 }
 
 pub fn (mut b IRBuilder) lower() ! {
-	// pass 1 : solve namespaces
+	// something something load files...
+	b.solve_namespaces()
+
 	// 1.1: Find all required things
 
 	// 1.2: Then solve

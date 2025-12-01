@@ -412,6 +412,14 @@ mut:
 	name           Identifier
 }
 
+pub fn (q QualifiedIdentifier) to_list() []string {
+	mut result := []string{}
+	for n in q.namespace_path {
+		result << n.name
+	}
+	return result
+}
+
 pub type Type = BuiltinType | ReferenceType | StructType
 
 pub enum BuiltinType {

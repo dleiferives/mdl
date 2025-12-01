@@ -27,3 +27,40 @@ pub fn test_nssolver_child_import_fail() {
 	println(solver)
 	assert !solver.verify_legal()
 }
+
+pub fn test_struct_single() {
+	mut irb := IRBuilder{}
+	irb.lower(['tests/ir/structs/simple/main.mcf'])!
+	p := irb.structs[0]
+	assert p.name == 'Point'
+	assert p.fields['x'] is BuiltinType
+}
+
+pub fn test_struct_self_ref() {
+	mut irb := IRBuilder{}
+	irb.lower(['tests/ir/structs/self_ref/main.mcf'])!
+	print(irb.structs)
+	assert irb.structs[0].fields['next'] == (IRType(IRRefType{
+		base: IRType(SID(0))
+	}))
+}
+
+pub fn test_struct_cross_file() {
+	mut irb := IRBuilder{}
+	irb.lower(['tests/ir/structs/cross_file/main.mcf'])!
+	person := irb.structs[0]
+	assert person.name == 'Person'
+	assert irb.namespaces[person.namespace].name == 'main'
+	x := BuiltinType.int_t
+	cm := IRType(IRRefType{
+		base: IRType(SID(1))
+	})
+	assert person.fields['age'] == IRType(x)
+	assert person.fields['community'] == cm
+	print(irb.structs)
+}
+
+pub fn test_struct_cross_file_fail() {
+	mut irb := IRBuilder{}
+	assert false == irb.lower(['tests/ir/structs/cross_file_fail/main.mcf'])!
+}

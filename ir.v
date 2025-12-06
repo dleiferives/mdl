@@ -51,6 +51,22 @@ pub mut:
 	typ     IRType
 }
 
+
+type BBID = int
+// TODO: resolve this lol
+pub struct IRBasicBlock {
+	pub mut:
+	label string // not positive about this one cowboy
+	id BBID
+	namespace NID
+	function FID
+	args []IRBasicBlockArg
+	insts []IID
+	predecessors []BBID
+	successors []BBID
+}
+
+
 // ID (index) into the Structs array in IRBuilder
 type SID = int
 
@@ -64,15 +80,6 @@ pub mut:
 }
 
 pub type IRType = BuiltinType | IRRefType | SID
-
-// pub enum IRBuiltinType {
-// 	int_t
-// 	float_t
-// 	list_t
-// 	string_t
-// 	dict_t
-// 	void_t
-// }
 
 pub struct IRRefType {
 pub mut:
@@ -150,7 +157,7 @@ pub mut:
 
 pub type IRLocation = IRRegLocation | IRDataLocation | IREffLocation
 
-pub struct IRRegLocation {
+pub struct test IRRegLocation {
 pub mut:
 	namespace NID
 	function  ?FID
@@ -561,13 +568,13 @@ pub fn (mut b IRBuilder) namespace_check_names_unique() bool {
 	return result
 }
 
-pub fn (mut b IRBuilder) lower(files []string) !bool {
+// The first stage of the IR passes. This really is just basically doing early
+// stages of type checking, as well as setting up the IRBuilder structure to
+// allow for the easier computation of the basic blocks and other more advanced
+// control flow. Namely PHI nodes when and if I get to that.
+@[inline]
+pub fn (mut b IRBuilder) stage1() bool {
 	mut result := true
-	mut abs_files := []string{}
-	for f in files {
-		abs_files << os.real_path(f)
-	}
-	b.files = abs_files
 	// We are going to do this in several passes. The primary reason for this is
 	// to just limit the scope of the problem so that it becomes easier to work
 	// with. To start we are going to break up all the namespaces and make good
@@ -588,9 +595,39 @@ pub fn (mut b IRBuilder) lower(files []string) !bool {
 
 	// Now lets be sure that we don't have anything that is sharing the same name
 	result = b.namespace_check_names_unique() && result
+	return result
+}
+
+//
+pub fn (mut b IRBuilder) stage2 bool{
+	// Here we are going to go through our functions and generate our basic blocks except for the terminal instructions within them.
+
+}
+
+pub fn (mut b IRBuilder) lower(files []string) !bool {
+	mut abs_files := []string{}
+	for f in files {
+		abs_files << os.real_path(f)
+	}
+	b.files = abs_files
+
+	// Do some setup and catch stupid errors Group the stage1 error messages
+	// together Its annoying when you get error messages about error messages.
+	// Because the type checker just does not have enough information. And it is
+	// also annoying (like in zig) where it clearly is throwing each error it
+	// runs into. I hope this will be a good middle ground. Though this is
+	// probably what zig is doing.
+	if !b.stage1() {
+		return false
+	}
+
+	if !b.stage2 (){
+		return false
+	}
+
 
 	// Next we are going to check that there is no overlap between names within any namespace
-	return result
+	return true
 }
 
 pub fn (mut b IRBuilder) lower_namespace_alias(nsa NamespaceAlias) {

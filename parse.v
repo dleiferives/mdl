@@ -150,6 +150,7 @@ mut:
 	value  Expr
 }
 
+// We are not going to let there be any macros in this definition
 pub struct TypedDefine {
 	Node
 mut:

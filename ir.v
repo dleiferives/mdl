@@ -37,8 +37,8 @@ pub mut:
 	namespace       NID
 	args            []IRFunctionArg
 	return_type     IRType
-	bbs             []int // todo
-	entrybb         []int // todo
+	bbs             []BBID
+	entrybb         BBID
 	is_inline       bool  // Later
 	inline_defaults []int // Later
 	block           Block
@@ -51,21 +51,26 @@ pub mut:
 	typ     IRType
 }
 
-
 type BBID = int
+
 // TODO: resolve this lol
 pub struct IRBasicBlock {
-	pub mut:
-	label string // not positive about this one cowboy
-	id BBID
-	namespace NID
-	function FID
-	args []IRBasicBlockArg
-	insts []IID
+pub mut:
+	label        string
+	id           BBID
+	namespace    NID
+	function     FID
+	args         []IRBasicBlockArg
+	insts        []IID
 	predecessors []BBID
-	successors []BBID
+	successors   []BBID
+	stmts        []Stmt // The list of statements from the IR that form this basic block
 }
 
+pub struct IRBasicBlockArg {
+}
+
+type IID = int
 
 // ID (index) into the Structs array in IRBuilder
 type SID = int
@@ -157,7 +162,7 @@ pub mut:
 
 pub type IRLocation = IRRegLocation | IRDataLocation | IREffLocation
 
-pub struct test IRRegLocation {
+pub struct IRRegLocation {
 pub mut:
 	namespace NID
 	function  ?FID
@@ -215,11 +220,12 @@ pub mut:
 @[heap]
 pub struct IRBuilder {
 pub mut:
-	files      []string
-	namespaces []IRNamespace
-	functions  []IRFunction
-	structs    []IRStructDef
-	variables  []IRValue
+	files        []string
+	namespaces   []IRNamespace
+	functions    []IRFunction
+	basic_blocks []IRBasicBlock
+	structs      []IRStructDef
+	variables    []IRValue
 }
 
 pub fn (mut b IRBuilder) solve_namespaces() {
@@ -598,12 +604,354 @@ pub fn (mut b IRBuilder) stage1() bool {
 	return result
 }
 
+pub fn (mut b IRBuilder) bb_link(self BBID, child BBID) {
+	// TODO: add some saftey checks lol
+	b.basic_blocks[self].successors << child
+	b.basic_blocks[child].predecessors << self
+}
+
+pub fn (mut b IRBuilder) add_bb(fid FID, label string) BBID {
+	nid := b.functions[fid].namespace
+	bb := IRBasicBlock{
+		label:     label
+		id:        b.basic_blocks.len
+		namespace: nid
+		function:  fid
+	}
+	b.basic_blocks << bb
+	b.functions[fid].bbs << bb.id
+	return bb.id
+}
+
+pub fn (mut b IRBuilder) literal_has_macro(l Literal) bool {
+	match l {
+		IntegerLiteral {
+			return false
+		}
+		StringLiteral {
+			if !l.interpolated {
+				return false
+			}
+			for p in l.parts {
+				if p.is_macro {
+					return true
+				}
+			}
+		}
+		CharLiteral {
+			return false
+		}
+		ListLiteral {
+			for e in l.elements {
+				if b.expr_has_macro(e) {
+					return true
+				}
+			}
+		}
+		DictionaryLiteral {
+			for ent in l.entries {
+				match ent.key_kind {
+					.integer_key {
+						return false
+					}
+					.macro_key {
+						return true
+					}
+					.string_key {
+						return b.literal_has_macro(ent.string_key or {
+							println('Could not resolve string key but should be able to ${ent}')
+							continue
+						})
+					}
+				}
+			}
+		}
+		RangeLiteral {
+			s := l.start or {
+				e := l.end or {
+					println('Illegal state on range ${l} cannot have both start and end as none')
+					return false
+				}
+
+				return b.expr_has_macro(e)
+			}
+
+			e := l.end or { return b.expr_has_macro(s) }
+			return b.expr_has_macro(e) || b.expr_has_macro(s)
+		}
+	}
+	return false
+}
+
+pub fn (mut b IRBuilder) expr_has_macro(e Expr) bool {
+	match e {
+		BinaryExpr {
+			return b.expr_has_macro(e.left) || b.expr_has_macro(e.right)
+		}
+		UnaryExpr {
+			return b.expr_has_macro(e.right)
+		}
+		Literal {
+			return b.literal_has_macro(e)
+		}
+		Identifier {
+			return false
+		}
+		MacroExpr {
+			return true
+		}
+		AccessExpr {
+			a := e
+			match a {
+				IndexAccessExpr {
+					e1 := b.expr_has_macro(a.target)
+					e2 := b.expr_has_macro(a.index.index_expr)
+					if a.index.is_slice {
+						ee := a.index.slice_end or { return e1 || e2 }
+
+						return b.expr_has_macro(ee) || e1 || e2
+					}
+					return e1 || e2
+				}
+				MemberAccessExpr {
+					e1 := b.expr_has_macro(a.target)
+					if e1 {
+						return true
+					}
+					for cae in a.chain {
+						match cae {
+							FieldAccessElement {
+								continue
+							}
+							MacroAccessElement {
+								return true
+							}
+							IndexAccessElement {
+								e2 := b.expr_has_macro(cae.index_expr)
+								if e2 {
+									return true
+								}
+								if cae.is_slice {
+									e3 := cae.slice_end or { continue }
+
+									if b.expr_has_macro(e3) {
+										return true
+									}
+								}
+								continue
+							}
+							DerefAccessElement {
+								continue
+							}
+						}
+					}
+				}
+				FunctionCallExpr {
+					if b.expr_has_macro(a.base_target) {
+						return true
+					}
+					for arg in a.args {
+						if b.expr_has_macro(arg) {
+							return true
+						}
+					}
+				}
+			}
+		}
+		else {
+			print('not implemented')
+		}
+	}
+	return false
+}
+
+// Start is the BBID to start parsing on
+// stmts are the statements that belong to this block or its children
+// Returns the BBID of the block that it has ended on
+pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) {
+	fid := b.basic_blocks[start].function
+	mut current := start
+	mut result := true
+	mut state := true
+	for stmt in stmts {
+		match stmt {
+			TypedDefine {
+				// Typed defines are not allowed to have any macros in them.
+				// As such we will skip them, but we should do a checking pass
+				// for them having macros somewhere in them.
+				// Just maybe not in this part of this pass.
+				b.basic_blocks[current].stmts << stmt
+			}
+			StructDefinition {
+				// Cannot have macro values, should not be included in block, as is not executable
+				result = false
+				println('Function blocks are not allowed to have struct definitions in them ${stmt}')
+			}
+			FunctionDefinition {
+				// Can have macro values inside of, but this should be handled elsewhere
+				// should be ignored here.
+				result = false
+				println('Function blocks are not allowed to have function definitions in them ${stmt}')
+			}
+			NamespaceDefinition {
+				// Can have macro values inside of, but this should not be handled here
+				result = false
+				println('Function blocks are not allowed to have namespace definitions in them ${stmt}')
+			}
+			NamespaceImport {
+				// No macro
+				result = false
+				println('Function blocks are not allowed to have namespace imports in them ${stmt}')
+			}
+			NamespaceAlias {
+				// No macro
+				result = false
+				println('Function blocks are not allowed to have namespace aliases in them ${stmt}')
+			}
+			FunctionInlineDefinition {
+				println('TODO FunctionInlineDefinition')
+				panic('Not handled')
+			}
+			Block {
+				panic('Block in block??')
+			}
+			IfStmt {
+				// Both the condition and of course the blocks... will create blocks
+				if b.expr_has_macro(stmt.condition) {
+					cond := b.add_bb(fid, 'if_cond')
+					b.bb_link(current, cond)
+					current = cond
+				}
+				b.basic_blocks[current].stmts << stmt
+				// create then else and merge block
+				mut then := b.add_bb(fid, 'if_then')
+				b.bb_link(current, then)
+				state, then = b.bb_build_bb_cfg(then, stmt.then_block.stmts)
+				result = result && state
+				mut el := b.add_bb(fid, 'if_else')
+				b.bb_link(current, el)
+				if stmt.else_block == none {
+				} else {
+					elb := stmt.else_block
+					state, el = b.bb_build_bb_cfg(el, elb.stmts)
+					result = result && state
+				}
+				merge := b.add_bb(fid, 'if_merge')
+				b.bb_link(then, merge)
+				b.bb_link(el, merge)
+				current = merge
+			}
+			Return {
+				ret := stmt.value or {
+					b.basic_blocks[current].stmts << stmt
+					continue
+				}
+
+				if b.expr_has_macro(ret) {
+					ret_bbid := b.add_bb(fid, 'ret')
+					b.bb_link(current, ret_bbid)
+					current = ret_bbid
+				}
+				b.basic_blocks[current].stmts << stmt
+			}
+			ExprStmt {
+				if b.expr_has_macro(stmt.expr) {
+					emac := b.add_bb(fid, 'macro')
+					b.bb_link(current, emac)
+					current = emac
+				}
+				b.basic_blocks[current].stmts << stmt
+			}
+			MacroLiteralCommand {
+				parts := stmt.parts
+				mut need_block := false
+				for p in parts {
+					if p is MacroLiteralMacro {
+						need_block = true
+					}
+					if p is MacroLiteralString {
+						if b.literal_has_macro(Literal(p.str_literal)) {
+							need_block = true
+						}
+					}
+				}
+				if need_block {
+					command := b.add_bb(fid, 'command')
+					b.bb_link(current, command)
+					current = command
+				}
+				b.basic_blocks[current].stmts << stmt
+			}
+			Define {
+				if b.expr_has_macro(stmt.value) {
+					macro_use := b.add_bb(fid, 'macro_use')
+					b.bb_link(current, macro_use)
+					current = macro_use
+				}
+				b.basic_blocks[current].stmts << stmt
+			}
+			Assignment {
+				if b.expr_has_macro(stmt.left) || b.expr_has_macro(stmt.right) {
+					assignment := b.add_bb(fid, 'assignment')
+					b.bb_link(current, assignment)
+					current = assignment
+				}
+				b.basic_blocks[current].stmts << stmt
+			}
+			Store {
+				if b.expr_has_macro(stmt.left) || b.expr_has_macro(stmt.right) {
+					store := b.add_bb(fid, 'store')
+					b.bb_link(current, store)
+					current = store
+				}
+				b.basic_blocks[current].stmts << stmt
+			}
+		}
+	}
+	return result, current
+}
+
+pub fn (mut b IRBuilder) fn_build_bb_cfg(fid FID) bool {
+	println('extracting bbs from function ${b.functions[fid].name}')
+	block := b.functions[fid].block
+	// Now we are going to make our entry block for this function
+	entry := b.add_bb(fid, 'entry')
+	valid, _ := b.bb_build_bb_cfg(entry, block.stmts)
+	return valid
+}
+
 //
-pub fn (mut b IRBuilder) stage2 bool{
+pub fn (mut b IRBuilder) stage2() bool {
+	mut result := true
 	// Here we are going to go through our functions and generate our basic blocks except for the terminal instructions within them.
 	// I want to make this be based of the MLIR way they do basic blocks, seems pretty cute ngl
 	// look at this for ref https://farena.in/compilers/mlir/ssa-mlir-algorithm/
 
+	// So I've determined that the way that I want to go about doing this is to
+	// have it generate the control flow graph first, and then generate the
+	// instructions. This means that we just have to pull out all the cases that
+	// will produce a control flow graph change. This should be on all if / else
+	// statements of course. And on all function calls. As there is no way for
+	// doing looping besides recursion for the mooment this should work out
+	// fine.
+	//
+	// For function calls what we will do is create basic blocks for the macro
+	// values that will feed into the function call, so that macro values are
+	// not actually function calls but rather basic blocks. This will create the
+	// seperatation between the mdl code and the mcfunction code. Where each
+	// basic block will map to a .mcfunction file.
+	//
+	// So for every instance that there will be a macro value we will be
+	// creating a basic block. We will also store the instructions that will be
+	// needed to be parsed for each basic block into each basic block so that it
+	// will be easier to handle later.
+
+	// Here we will create the basic blocks for a function
+	for fid in 0 .. b.functions.len {
+		result = result && b.fn_build_bb_cfg(fid)
+	}
+
+	return result
 }
 
 pub fn (mut b IRBuilder) lower(files []string) !bool {
@@ -622,11 +970,13 @@ pub fn (mut b IRBuilder) lower(files []string) !bool {
 	if !b.stage1() {
 		return false
 	}
-
-	if !b.stage2 (){
+	println('We have ${b.functions.len} Functions')
+	for f in b.functions {
+		println('${f.name}')
+	}
+	if !b.stage2() {
 		return false
 	}
-
 
 	// Next we are going to check that there is no overlap between names within any namespace
 	return true

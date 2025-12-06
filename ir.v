@@ -601,6 +601,8 @@ pub fn (mut b IRBuilder) stage1() bool {
 //
 pub fn (mut b IRBuilder) stage2 bool{
 	// Here we are going to go through our functions and generate our basic blocks except for the terminal instructions within them.
+	// I want to make this be based of the MLIR way they do basic blocks, seems pretty cute ngl
+	// look at this for ref https://farena.in/compilers/mlir/ssa-mlir-algorithm/
 
 }
 

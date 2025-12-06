@@ -38,6 +38,11 @@ pub mut:
 	args            []IRFunctionArg
 	return_type     IRType
 	bbs             []BBID
+	insts           []IRInstruction
+	refs            []IRRef
+	refs_map        map[RID]VID
+	vars_map        map[string]VID
+	operand         []IROperand
 	entrybb         BBID
 	is_inline       bool  // Later
 	inline_defaults []int // Later
@@ -56,21 +61,203 @@ type BBID = int
 // TODO: resolve this lol
 pub struct IRBasicBlock {
 pub mut:
-	label        string
-	id           BBID
-	namespace    NID
-	function     FID
-	args         []IRBasicBlockArg
-	insts        []IID
+	label     string
+	id        BBID
+	namespace NID
+	function  FID
+	args      []IRBasicBlockArg
+	vars_map  map[string]RID
+	insts     []IID
+
 	predecessors []BBID
 	successors   []BBID
 	stmts        []Stmt // The list of statements from the IR that form this basic block
 }
 
 pub struct IRBasicBlockArg {
+pub mut:
+	name    string
+	id      BBID
+	storage StorageKind
+	typ     IRType
 }
 
 type IID = int
+pub type IRInstruction = IRMacroLiteralCmd | IRDefine | IRTypedDefine
+
+pub struct IRDefine {
+pub mut:
+	id     IID
+	result RID
+	value  OID
+}
+
+pub struct IRTypedDefine {
+pub mut:
+	id     IID
+	result RID
+}
+
+pub enum AssignOp {
+	assign
+	add
+	sub
+	mul
+	div
+	mod
+}
+pub struct IRAssign {
+pub mut:
+	id     IID
+	result RID
+	op     AssignOp
+	value  OID
+}
+
+pub struct IRStore {
+pub mut:
+	id     IID
+	result RID
+	source RID
+}
+
+pub enum BinaryOp {
+	add
+	sub
+	mul
+	div
+	mod
+	eq
+	ne
+	lt
+	le
+	gt
+	ge
+}
+
+pub struct IRBinaryOp {
+pub mut:
+	result RID
+	id     IID
+	op     BinaryOp
+	left   OID
+	right  OID
+}
+
+pub enum UnaryOp {
+	neg
+	ref
+	deref
+}
+pub struct IRUnaryOp {
+pub mut:
+	id      IID
+	result  RID
+	op      UnaryOp
+	operand OID
+}
+
+pub struct IRCall {
+pub mut:
+	id       IID
+	result   ?RID
+	function FID
+	args     []OID
+}
+
+pub struct IRStructInit {
+pub mut:
+	id           IID
+	result       RID
+	struct_type  SID
+	field_values map[string]OID
+}
+
+pub struct IRFieldAccess {
+	id     IID
+	result RID
+	source RID
+	field  string
+}
+
+pub struct IRIndexAccess {
+pub mut:
+	id       IID
+	result   RID
+	source   RID
+	index    OID
+	is_slice bool
+	end      ?OID
+}
+
+pub struct IRDeref {
+pub mut:
+	id     IID
+	result RID
+	source RID
+}
+
+pub struct IRJump {
+pub mut:
+	id     IID
+	target BBID
+}
+
+pub struct IRBranch {
+pub mut:
+	id   IID
+	cond OID
+	then BBID
+	el   BBID
+}
+
+pub struct IRReturn {
+pub mut:
+	value ?OID
+}
+
+// dunno
+pub struct IRUnreachable {
+}
+
+// $ comand
+pub struct IRMacroLiteralCmd {
+pub mut:
+	func  FID
+	id    IID
+	parts []IRMacroCmdPart
+}
+
+pub type IRMacroCmdPart = IRMacroCmdText | IRMacroCmdMacro | IRMacroCmdString
+
+pub struct IRMacroCmdText {
+pub mut:
+	text string
+}
+
+pub struct IRMacroCmdMacro {
+pub mut:
+	value  RID
+	is_ref bool
+}
+
+pub struct IRMacroCmdString {
+pub mut:
+	parts []IRStringPart
+}
+
+pub type IRStringPart = IRStringText | IRStringMacro
+
+pub struct IRStringText {
+pub mut:
+	text string
+}
+
+pub struct IRStringMacro {
+pub mut:
+	value  RID
+	is_ref bool
+}
 
 // ID (index) into the Structs array in IRBuilder
 type SID = int
@@ -110,8 +297,18 @@ pub mut:
 	is_macro_dep bool       // If it is the result of a macro call
 }
 
+type RID = int
+type IRRefType = VID | IRBasicBlockArg | IRFunctionArg
+
+pub struct IRRef {
+pub mut:
+	id    RID
+	value IRRefType
+}
+
 // IR OPERAND
-pub type IROperand = IRValue | IRConstant
+type OID = int
+pub type IROperand = RID | IRConstant
 
 pub type IRConstant = IRIntConst
 	| IRFloatConst
@@ -136,9 +333,10 @@ pub mut:
 	parts []IRStringPart // For interpolated strings
 }
 
+// Will have to turn all of the OID's into macros for list dict and range consts
 pub struct IRListConst {
 pub mut:
-	elements []IROperand
+	elements []OID
 }
 
 pub struct IRDictConst {
@@ -148,14 +346,14 @@ pub mut:
 
 pub struct IRDictEntry {
 pub mut:
-	key   IROperand
-	value IROperand
+	key   OID
+	value OID
 }
 
 pub struct IRRangeConst {
 pub mut:
-	start ?IROperand
-	end   ?IROperand
+	start ?OID
+	end   ?OID
 }
 
 // IR LOCATION
@@ -177,43 +375,6 @@ pub mut:
 pub struct IREffLocation {
 pub mut:
 	value string // The literal macro value TODO:
-}
-
-// $ comand
-pub struct IRMacroLiteralCmd {
-pub mut:
-	parts []IRMacroCmdPart
-}
-
-pub type IRMacroCmdPart = IRMacroCmdText | IRMacroCmdMacro | IRMacroCmdString
-
-pub struct IRMacroCmdText {
-pub mut:
-	text string
-}
-
-pub struct IRMacroCmdMacro {
-pub mut:
-	value  IRValue
-	is_ref bool
-}
-
-pub struct IRMacroCmdString {
-pub mut:
-	parts []IRStringPart
-}
-
-pub type IRStringPart = IRStringText | IRStringMacro
-
-pub struct IRStringText {
-pub mut:
-	text string
-}
-
-pub struct IRStringMacro {
-pub mut:
-	value  IRValue
-	is_ref bool
 }
 
 /// IR BUILDer
@@ -683,16 +844,59 @@ pub fn (mut b IRBuilder) literal_has_macro(l Literal) bool {
 	return false
 }
 
-pub fn (mut b IRBuilder) expr_has_macro(e Expr) bool {
+pub fn (mut b IRBuilder) literal_needs_block(l Literal) bool {
+	match l {
+		IntegerLiteral {
+			return false
+		}
+		StringLiteral {
+			if !l.interpolated {
+				return false
+			}
+			for p in l.parts {
+				if p.is_macro {
+					return true
+				}
+			}
+		}
+		CharLiteral {
+			return false
+		}
+		ListLiteral {
+			return true
+		}
+		DictionaryLiteral {
+			return true
+		}
+		RangeLiteral {
+			return true
+		}
+	}
+	return false
+}
+
+pub enum Expr_case {
+	needs_block
+	has_macro
+}
+
+pub fn (mut b IRBuilder) expr_case_looker(e Expr, kind Expr_case) bool {
 	match e {
 		BinaryExpr {
-			return b.expr_has_macro(e.left) || b.expr_has_macro(e.right)
+			return b.expr_case_looker(e.left, kind) || b.expr_case_looker(e.right, kind)
 		}
 		UnaryExpr {
-			return b.expr_has_macro(e.right)
+			return b.expr_case_looker(e.right, kind)
 		}
 		Literal {
-			return b.literal_has_macro(e)
+			match kind {
+				.needs_block {
+					return b.literal_needs_block(e)
+				}
+				.has_macro {
+					return b.literal_has_macro(e)
+				}
+			}
 		}
 		Identifier {
 			return false
@@ -704,17 +908,17 @@ pub fn (mut b IRBuilder) expr_has_macro(e Expr) bool {
 			a := e
 			match a {
 				IndexAccessExpr {
-					e1 := b.expr_has_macro(a.target)
-					e2 := b.expr_has_macro(a.index.index_expr)
+					e1 := b.expr_case_looker(a.target, kind)
+					e2 := b.expr_case_looker(a.index.index_expr, kind)
 					if a.index.is_slice {
 						ee := a.index.slice_end or { return e1 || e2 }
 
-						return b.expr_has_macro(ee) || e1 || e2
+						return b.expr_case_looker(ee, kind) || e1 || e2
 					}
 					return e1 || e2
 				}
 				MemberAccessExpr {
-					e1 := b.expr_has_macro(a.target)
+					e1 := b.expr_case_looker(a.target, kind)
 					if e1 {
 						return true
 					}
@@ -727,14 +931,14 @@ pub fn (mut b IRBuilder) expr_has_macro(e Expr) bool {
 								return true
 							}
 							IndexAccessElement {
-								e2 := b.expr_has_macro(cae.index_expr)
+								e2 := b.expr_case_looker(cae.index_expr, kind)
 								if e2 {
 									return true
 								}
 								if cae.is_slice {
 									e3 := cae.slice_end or { continue }
 
-									if b.expr_has_macro(e3) {
+									if b.expr_case_looker(e3, kind) {
 										return true
 									}
 								}
@@ -747,11 +951,11 @@ pub fn (mut b IRBuilder) expr_has_macro(e Expr) bool {
 					}
 				}
 				FunctionCallExpr {
-					if b.expr_has_macro(a.base_target) {
+					if b.expr_case_looker(a.base_target, kind) {
 						return true
 					}
 					for arg in a.args {
-						if b.expr_has_macro(arg) {
+						if b.expr_case_looker(arg, kind) {
 							return true
 						}
 					}
@@ -763,6 +967,14 @@ pub fn (mut b IRBuilder) expr_has_macro(e Expr) bool {
 		}
 	}
 	return false
+}
+
+pub fn (mut b IRBuilder) expr_has_macro(e Expr) bool {
+	return b.expr_case_looker(e, .has_macro)
+}
+
+pub fn (mut b IRBuilder) expr_needs_block(e Expr) bool {
+	return b.expr_case_looker(e, .needs_block)
 }
 
 // Start is the BBID to start parsing on
@@ -817,7 +1029,7 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 			}
 			IfStmt {
 				// Both the condition and of course the blocks... will create blocks
-				if b.expr_has_macro(stmt.condition) {
+				if b.expr_needs_block(stmt.condition) {
 					cond := b.add_bb(fid, 'if_cond')
 					b.bb_link(current, cond)
 					current = cond
@@ -847,7 +1059,7 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 					continue
 				}
 
-				if b.expr_has_macro(ret) {
+				if b.expr_needs_block(ret) {
 					ret_bbid := b.add_bb(fid, 'ret')
 					b.bb_link(current, ret_bbid)
 					current = ret_bbid
@@ -855,7 +1067,7 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 				b.basic_blocks[current].stmts << stmt
 			}
 			ExprStmt {
-				if b.expr_has_macro(stmt.expr) {
+				if b.expr_needs_block(stmt.expr) {
 					emac := b.add_bb(fid, 'macro')
 					b.bb_link(current, emac)
 					current = emac
@@ -883,7 +1095,7 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 				b.basic_blocks[current].stmts << stmt
 			}
 			Define {
-				if b.expr_has_macro(stmt.value) {
+				if b.expr_needs_block(stmt.value) {
 					macro_use := b.add_bb(fid, 'macro_use')
 					b.bb_link(current, macro_use)
 					current = macro_use
@@ -891,7 +1103,7 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 				b.basic_blocks[current].stmts << stmt
 			}
 			Assignment {
-				if b.expr_has_macro(stmt.left) || b.expr_has_macro(stmt.right) {
+				if b.expr_needs_block(stmt.left) || b.expr_needs_block(stmt.right) {
 					assignment := b.add_bb(fid, 'assignment')
 					b.bb_link(current, assignment)
 					current = assignment
@@ -899,7 +1111,7 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 				b.basic_blocks[current].stmts << stmt
 			}
 			Store {
-				if b.expr_has_macro(stmt.left) || b.expr_has_macro(stmt.right) {
+				if b.expr_needs_block(stmt.left) || b.expr_needs_block(stmt.right) {
 					store := b.add_bb(fid, 'store')
 					b.bb_link(current, store)
 					current = store
@@ -920,7 +1132,6 @@ pub fn (mut b IRBuilder) fn_build_bb_cfg(fid FID) bool {
 	return valid
 }
 
-//
 pub fn (mut b IRBuilder) stage2() bool {
 	mut result := true
 	// Here we are going to go through our functions and generate our basic blocks except for the terminal instructions within them.
@@ -950,6 +1161,8 @@ pub fn (mut b IRBuilder) stage2() bool {
 	for fid in 0 .. b.functions.len {
 		result = result && b.fn_build_bb_cfg(fid)
 	}
+
+	// Then we are going to generate the instructions for our blocks
 
 	return result
 }

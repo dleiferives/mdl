@@ -34,6 +34,7 @@ enum TokenKind {
 	lcarrot
 	rcarrot
 	ampersand
+	ex_point
 	dollar
 	at
 	dot
@@ -473,7 +474,7 @@ pub fn (mut l Lexer) next_token() Token {
 				}
 				else {
 					l.index++
-					return Token{.invalid, '!', l.index - 1}
+					return Token{.ex_point, '!', l.index - 1}
 				}
 			}
 		}

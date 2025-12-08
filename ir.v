@@ -83,7 +83,7 @@ pub mut:
 }
 
 type IID = int
-pub type IRInstruction = IRMacroLiteralCmd | IRDefine | IRTypedDefine
+pub type IRInstruction = IRMacroLiteralCmd | IRDefine | IRTypedDefine | IRBinaryOp | IRUnaryOp
 
 pub struct IRDefine {
 pub mut:
@@ -135,6 +135,47 @@ pub enum BinaryOp {
 	ge
 }
 
+pub fn (t TokenKind) to_binary_op() BinaryOp {
+	return match t {
+		.plus {
+			.add
+		}
+		.minus {
+			.sub
+		}
+		.star {
+			.mul
+		}
+		.slash {
+			.div
+		}
+		.percent {
+			.mod
+		}
+		.eq {
+			.eq
+		}
+		.ne {
+			.ne
+		}
+		.lcarrot {
+			.lt
+		}
+		.rcarrot {
+			.gt
+		}
+		.lte {
+			.le
+		}
+		.gte {
+			.ge
+		}
+		else {
+			panic('Token to convert to binary operation ${t} is not supported as binary operation')
+		}
+	}
+}
+
 pub struct IRBinaryOp {
 pub mut:
 	result RID
@@ -144,11 +185,21 @@ pub mut:
 	right  OID
 }
 
+pub fn (t TokenKind) to_unary_op() UnaryOp {
+	return match t {
+		.ampersand { .ref }
+		.at { .deref }
+		.ex_point { .neg }
+		else { panic('illegal use of token ${t} as a unary operation') }
+	}
+}
+
 pub enum UnaryOp {
 	neg
 	ref
 	deref
 }
+
 pub struct IRUnaryOp {
 pub mut:
 	id      IID
@@ -298,7 +349,7 @@ pub mut:
 }
 
 type RID = int
-type IRRefSum = VID | IRBasicBlockArg | IRFunctionArg
+type IRRefSum = VID | IRBasicBlockArg | IRFunctionArg | IID
 
 pub struct IRRef {
 pub mut:
@@ -387,7 +438,6 @@ pub mut:
 	basic_blocks []IRBasicBlock
 	structs      []IRStructDef
 	variables    []IRValue
-	project      string
 }
 
 pub fn (mut b IRBuilder) solve_namespaces() {

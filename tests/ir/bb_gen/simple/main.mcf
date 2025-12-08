@@ -1,0 +1,19 @@
+namespace main;
+namespace a = {
+    fn add(data a: Int, data b: Int) : Int {
+       return a + b;
+    }
+};
+
+fn tmp() : Void {
+   return;
+}
+
+fn main() : Void {
+    data a := [10,20,30,b];
+   data a : Int;
+   if (a == 2) {
+      a.add(a,a);
+   }
+   tmp();
+}

@@ -96,14 +96,20 @@ pub fn (mut b IRBuilder) print_ir_location(location IRLocation) {
 	match location {
 		IRRegLocation {
 			ns := b.namespaces[location.namespace]
-			function := location.function or { print('${ns.name} example') }
+			function := location.function or {
+				print('${ns.name} example')
+				return
+			}
 
 			fun := b.functions[function]
 			print('${ns.name}_${fun.name} example')
 		}
 		IRDataLocation {
 			ns := b.namespaces[location.namespace]
-			function := location.function or { print('example:${ns.name}') }
+			function := location.function or {
+				print('example:${ns.name}')
+				return
+			}
 
 			fun := b.functions[function]
 			print('example:${ns.name} ${fun.name}')
@@ -114,6 +120,7 @@ pub fn (mut b IRBuilder) print_ir_location(location IRLocation) {
 	}
 }
 
+// TODO
 pub fn (mut b IRBuilder) fn_print_rid(fid FID, rid RID) {
 	func := b.functions[fid]
 	ref := func.refs[rid]
@@ -121,5 +128,6 @@ pub fn (mut b IRBuilder) fn_print_rid(fid FID, rid RID) {
 		VID {}
 		IRBasicBlockArg {}
 		IRFunctionArg {}
+		IID {}
 	}
 }

@@ -2,7 +2,9 @@ module main
 
 import datatypes
 
-pub fn (mut b IRBuilder) bb_get_reference(name string, bbid BBID, fid FID) (bool, IRRef) {
+pub fn (mut b IRBuilder) bb_get_reference(name string,
+	bbid BBID,
+	fid FID) (bool, IRRef) {
 	mut bb := b.basic_blocks[bbid]
 	mut fun := b.functions[fid]
 	mut ns := b.namespaces[fun.namespace]
@@ -31,6 +33,7 @@ pub fn (mut b IRBuilder) bb_get_reference(name string, bbid BBID, fid FID) (bool
 	}
 
 	// check if its defined in any predecesor blocks
+	// who exist in the same scope TODO
 	for !to_visit.is_empty() {
 		new_id := to_visit.pop() or { panic("we really thought we'd have something lol") }
 		if new_id in visited {
@@ -84,6 +87,15 @@ pub fn (mut b IRBuilder) bb_add_reference(bbid BBID, vid VID) RID {
 	return ref.id
 }
 
+pub fn (mut b IRBuilder) bb_add_anon_reference(bbid BBID, iid IID) RID {
+	ref := IRRef{
+		id:    b.functions[b.basic_blocks[bbid].function].refs.len
+		value: IRRefSum(iid)
+	}
+	b.functions[b.basic_blocks[bbid].function].refs << ref
+	return ref.id
+}
+
 // pub fn (mut b IRBuilder) fill_bb_insts_expr(bbid BBID, fid FID, expr Expr) {
 // 	bb := b.basic_blocks[bbid]
 // 	func := b.function[fid]
@@ -125,20 +137,72 @@ pub fn (mut b IRBuilder) bb_add_value(bbid BBID, name string, typ Type, source V
 	return val.id
 }
 
-pub fn (mut b IRBuilder) fill_bb_insts_stmt(bbid BBID, fid FID, stmt Stmt) {
-	// bb := b.basic_blocks[bbid]
+// Returns an oid that we can set to something, later on we can merge the instructions together
+pub fn (mut b IRBuilder) lower_expression(bbid BBID, fid FID, expr Expr) OID {
+	bb := b.basic_blocks[bbid]
 	func := b.functions[fid]
-	// ns := b.namespaces[func.namespace]
+	ns := b.namespaces[func.namespace]
+	match expr {
+		BinaryExpr {
+			mut inst := IRBinaryOp{
+				op:    expr.operator.to_binary_op()
+				left:  b.lower_expression(bbid, fid, expr.left)
+				right: b.lower_expression(bbid, fid, expr.right)
+			}
+			inst.id = b.functions[fid].insts.len
+			inst.result = b.bb_add_anon_reference(bbid, inst.id)
+			b.functions[fid].insts << inst
+			b.basic_blocks[bbid].insts << inst.id
+			b.functions[fid].operand << IROperand(inst.result)
+			return OID(b.functions[fid].operand.len - 1)
+		}
+		UnaryExpr {
+			mut inst := IRUnaryOp{
+				op:      expr.operator.to_unary_op()
+				operand: b.lower_expression(bbid, fid, expr.right)
+			}
+			inst.id = b.functions[fid].insts.len
+			inst.result = b.bb_add_anon_reference(bbid, inst.id)
+			b.functions[fid].insts << inst
+			b.basic_blocks[bbid].insts << inst.id
+			b.functions[fid].operand << IROperand(inst.result)
+			return OID(b.functions[fid].operand.len - 1)
+		}
+		Identifier { // Will have to be a ref, and it must exist! otherwise we're boned boys
+			ok, ref := b.bb_get_reference(expr.name, bbid, fid)
+			if ok {
+				b.functions[fid].operand << IROperand(ref.id)
+				return OID(b.functions[fid].operand.len - 1)
+			} else {
+				panic('We could not find a reference to the identifier ${expr}')
+			}
+		}
+		Literal {}
+		MacroExpr {}
+		AccessExpr {}
+		StructLiteral {}
+		QualifiedIdentifier {}
+	}
+	return OID(-1)
+}
+
+pub fn (mut b IRBuilder) fill_bb_insts_stmt(bbid BBID, fid FID, stmt Stmt) {
+	bb := b.basic_blocks[bbid]
+	func := b.functions[fid]
+	ns := b.namespaces[func.namespace]
 	match stmt {
 		TypedDefine {
 			ok, ref := b.bb_get_reference(stmt.name.name, bbid, fid)
 			if ok { // We have found a reference to this (Or made one)
-				inst := IRTypedDefine{
-					id:     func.insts.len
-					result: ref.id
-				}
-				b.functions[fid].insts << inst
-				b.basic_blocks[bbid].insts << inst.id
+				// This should not be allowed.... We are not allowed to have
+				// this sort of shadowing!
+				panic('When defining ${stmt} we found a reference to it already existing.')
+				// inst := IRTypedDefine{
+				// 	id:     func.insts.len
+				// 	result: ref.id
+				// }
+				// b.functions[fid].insts << inst
+				// b.basic_blocks[bbid].insts << inst.id
 			} else { // No reference to this exists so we should like make one
 				// need to create a value
 				inst := IRTypedDefine{
@@ -148,6 +212,16 @@ pub fn (mut b IRBuilder) fill_bb_insts_stmt(bbid BBID, fid FID, stmt Stmt) {
 				}
 				b.functions[fid].insts << inst
 				b.basic_blocks[bbid].insts << inst.id
+			}
+		}
+		Define {
+			ok, ref := b.bb_get_reference(stmt.name.name, bbid, fid)
+			if ok { // We have found a reference to this (or have made one)
+				// This is not allowed, this is a definition. We are not allowed to have shadowing.
+				panic('When defining ${stmt} it would be shadowing something already in its scope. This is not allowed')
+			} else { // We are the first creation point for this thing!
+				// We have to first figure out the type of the expression that we are coming from...
+				// And generate the instructions that compose this expression...
 			}
 		}
 		else {

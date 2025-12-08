@@ -1,5 +1,6 @@
 module main
 
+// CFG
 pub fn (mut b IRBuilder) print_cfg_dot() {
 	println('digraph G {')
 	b.print_all_ns_dot(1)
@@ -86,5 +87,39 @@ pub fn (mut b IRBuilder) fn_print_bbs_graph_dot(fid FID, depth int) {
 			}
 			println('${pred_name}_${pred_id} -> ${bb.label}_${bb.id};')
 		}
+	}
+}
+
+//  REFS
+
+pub fn (mut b IRBuilder) print_ir_location(location IRLocation) {
+	match location {
+		IRRegLocation {
+			ns := b.namespaces[location.namespace]
+			function := location.function or { print('${ns.name} example') }
+
+			fun := b.functions[function]
+			print('${ns.name}_${fun.name} example')
+		}
+		IRDataLocation {
+			ns := b.namespaces[location.namespace]
+			function := location.function or { print('example:${ns.name}') }
+
+			fun := b.functions[function]
+			print('example:${ns.name} ${fun.name}')
+		}
+		IREffLocation {
+			print('effemeral value existing as ${location.value}')
+		}
+	}
+}
+
+pub fn (mut b IRBuilder) fn_print_rid(fid FID, rid RID) {
+	func := b.functions[fid]
+	ref := func.refs[rid]
+	match ref.value {
+		VID {}
+		IRBasicBlockArg {}
+		IRFunctionArg {}
 	}
 }

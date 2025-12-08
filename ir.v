@@ -298,12 +298,12 @@ pub mut:
 }
 
 type RID = int
-type IRRefType = VID | IRBasicBlockArg | IRFunctionArg
+type IRRefSum = VID | IRBasicBlockArg | IRFunctionArg
 
 pub struct IRRef {
 pub mut:
 	id    RID
-	value IRRefType
+	value IRRefSum
 }
 
 // IR OPERAND
@@ -387,6 +387,7 @@ pub mut:
 	basic_blocks []IRBasicBlock
 	structs      []IRStructDef
 	variables    []IRValue
+	project      string
 }
 
 pub fn (mut b IRBuilder) solve_namespaces() {

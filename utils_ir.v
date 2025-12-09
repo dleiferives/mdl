@@ -124,10 +124,95 @@ pub fn (mut b IRBuilder) print_ir_location(location IRLocation) {
 pub fn (mut b IRBuilder) fn_print_rid(fid FID, rid RID) {
 	func := b.functions[fid]
 	ref := func.refs[rid]
-	match ref.value {
-		VID {}
+	print('(${ref.typ} ')
+	v := ref.value
+	match v {
+		VID {
+			b.print_ir_location(b.variables[v].location)
+			print(').${b.variables[v].name} ')
+		}
 		IRBasicBlockArg {}
 		IRFunctionArg {}
-		IID {}
+		IID {
+			print(b.namespaces[func.namespace].name)
+			print(':')
+			print(func.name)
+			print(':inst_${v}')
+		}
+	}
+}
+
+pub fn (mut b IRBuilder) fn_print_oid(fid FID, id OID) {
+	func := b.functions[fid]
+	match id {
+		CID {
+			c := b.functions[fid].consts[id]
+			match c {
+				IRFloatConst {
+					print('${c.value}')
+				}
+				IRIntConst {
+					print('${c.value}')
+				}
+				IRCharConst {
+					print('${c.value}')
+				}
+				IRStringConst {
+					for part in c.parts {
+						match part {
+							IRStringText {
+								print(part.text)
+							}
+							IRStringMacro {
+								if part.is_ref {
+									print('&')
+								}
+								b.fn_print_rid(fid, part.value)
+							}
+						}
+					}
+				}
+				else {
+					print('const ${c} not yet supported')
+				}
+			}
+		}
+		RID {
+			b.fn_print_rid(fid, id)
+		}
+	}
+}
+
+pub fn (mut b IRBuilder) fn_print_inst(fid FID, iid IID) {
+	func := b.functions[fid]
+	inst := func.insts[iid]
+	match inst {
+		IRTypedDefine {
+			print('define ')
+			b.fn_print_rid(fid, inst.result)
+		}
+		IRDefine {
+			print('define ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = ')
+			b.fn_print_oid(fid, inst.value)
+		}
+		IRAssign {
+			print('assign ')
+			b.fn_print_rid(fid, inst.result)
+			inst.op.print()
+			b.fn_print_oid(fid, inst.value)
+		}
+		IRBinaryOp {
+			print('binop ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = ')
+			b.fn_print_oid(fid, inst.left)
+			print(inst.op)
+			b.fn_print_oid(fid, inst.right)
+		}
+		else {
+			print('inst is not supported yes ${inst}')
+		}
 	}
 }

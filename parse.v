@@ -61,6 +61,7 @@ pub type Literal = IntegerLiteral
 	| ListLiteral
 	| DictionaryLiteral
 	| RangeLiteral
+	| FloatLiteral
 
 pub type AccessExpr = MemberAccessExpr | IndexAccessExpr | FunctionCallExpr
 
@@ -277,6 +278,12 @@ mut:
 	value string
 }
 
+pub struct FloatLiteral {
+	Node
+mut:
+	value f32
+}
+
 pub struct ListLiteral {
 	Node
 mut:
@@ -318,6 +325,7 @@ mut:
 	name string
 }
 
+// TODO: make macros that can belong in strings handle any expression
 pub struct MacroExpr {
 	Node
 mut:
@@ -426,8 +434,9 @@ pub type Type = BuiltinType | ReferenceType | StructType
 pub enum BuiltinType {
 	int_t
 	float_t
-	list_t
+	char_t
 	string_t
+	list_t
 	dict_t
 	void_t
 }
@@ -1793,8 +1802,9 @@ fn (mut p Parser) parse_statement() Stmt {
 
 			match p.current.kind {
 				.assign, .plus_assign, .minus_assign, .star_assign, .slash_assign, .percent_assign,
-				.eq, .ne, .lte, .gte, .lcarrot, .rcarrot, .swap, .plus, .minus, .star, .slash,
+				.swap, .eq, .ne, .lte, .gte, .lcarrot, .rcarrot, .plus, .minus, .star, .slash,
 				.percent {
+					// TODO: check if we rip this out will it still work well.... because like ermmm no?
 					op := p.current.kind
 					p.advance()
 					right := p.parse_expr(0)

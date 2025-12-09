@@ -6,6 +6,7 @@ enum TokenKind {
 	invalid
 	lit_string
 	lit_integer
+	lit_float
 	lit_char
 	eof
 	ident
@@ -152,6 +153,23 @@ pub fn (mut l Lexer) read_integer() Token {
 		str:  str
 		pos:  start
 	}
+}
+
+pub fn (mut l Lexer) read_integer_or_float() Token {
+	start := l.index
+	first := l.read_integer()
+	if (l.peek() == `.`) {
+		l.index += 1
+		second := l.read_integer()
+
+		str := l.src[start..l.index]
+		return Token{
+			kind: .lit_float
+			str:  str
+			pos:  start
+		}
+	}
+	return first
 }
 
 pub fn (mut l Lexer) read_string() Token {
@@ -491,7 +509,7 @@ pub fn (mut l Lexer) next_token() Token {
 			return l.read_identifier()
 		}
 		is_digit(p) {
-			return l.read_integer()
+			return l.read_integer_or_float()
 		}
 		else {
 			start := l.index

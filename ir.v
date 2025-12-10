@@ -42,7 +42,7 @@ pub mut:
 	refs            []IRRef
 	refs_map        map[RID]VID
 	vars_map        map[string]VID
-	operand         []IROperand
+	consts          []IRConstant
 	entrybb         BBID
 	is_inline       bool  // Later
 	inline_defaults []int // Later
@@ -74,6 +74,8 @@ pub mut:
 	stmts        []Stmt // The list of statements from the IR that form this basic block
 }
 
+pub type BBAID = int
+
 pub struct IRBasicBlockArg {
 pub mut:
 	name    string
@@ -83,7 +85,12 @@ pub mut:
 }
 
 type IID = int
-pub type IRInstruction = IRMacroLiteralCmd | IRDefine | IRTypedDefine | IRBinaryOp | IRUnaryOp
+pub type IRInstruction = IRMacroLiteralCmd
+	| IRDefine
+	| IRTypedDefine
+	| IRBinaryOp
+	| IRUnaryOp
+	| IRAssign
 
 pub struct IRDefine {
 pub mut:
@@ -98,14 +105,55 @@ pub mut:
 	result RID
 }
 
+pub fn (t TokenKind) to_assign_op() AssignOp {
+	return match t {
+		.assign { .assign }
+		.plus_assign { .add_assign }
+		.minus_assign { .sub_assign }
+		.star_assign { .mul_assign }
+		.slash_assign { .div_assign }
+		.percent_assign { .mod_assign }
+		.swap { .swap }
+		else { panic('illegal use of token ${t} as a Assign operation') }
+	}
+}
+
 pub enum AssignOp {
 	assign
-	add
-	sub
-	mul
-	div
-	mod
+	add_assign
+	sub_assign
+	mul_assign
+	div_assign
+	mod_assign
+	swap
 }
+
+pub fn (a AssignOp) print() {
+	match a {
+		.assign {
+			print('=')
+		}
+		.add_assign {
+			print('+=')
+		}
+		.sub_assign {
+			print('-=')
+		}
+		.mul_assign {
+			print('*=')
+		}
+		.div_assign {
+			print('/=')
+		}
+		.mod_assign {
+			print('%=')
+		}
+		.swap {
+			print('><')
+		}
+	}
+}
+
 pub struct IRAssign {
 pub mut:
 	id     IID
@@ -252,6 +300,7 @@ pub struct IRJump {
 pub mut:
 	id     IID
 	target BBID
+	// TODO: add value here for calling the .mcfunction with args
 }
 
 pub struct IRBranch {
@@ -260,6 +309,7 @@ pub mut:
 	cond OID
 	then BBID
 	el   BBID
+	// TODO: add values here for calling the .mcfunction with args
 }
 
 pub struct IRReturn {
@@ -304,6 +354,7 @@ pub mut:
 	text string
 }
 
+// TODO: make it so that all string macros can be any expression just inside of a macro
 pub struct IRStringMacro {
 pub mut:
 	value  RID
@@ -355,14 +406,50 @@ pub struct IRRef {
 pub mut:
 	id    RID
 	value IRRefSum
+	typ   IRType
 }
 
 // IR OPERAND
-type OID = int
-pub type IROperand = RID | IRConstant
+type OID = RID | CID
 
+@[inline]
+pub fn (id OID) to_ir_type(f IRFunction) IRType {
+	match id {
+		RID {
+			return f.refs[id].typ
+		}
+		CID {
+			match f.consts[id] {
+				IRIntConst {
+					return BuiltinType.int_t
+				}
+				IRCharConst {
+					return BuiltinType.char_t
+				}
+				IRFloatConst {
+					return BuiltinType.float_t
+				}
+				IRStringConst {
+					return BuiltinType.string_t
+				}
+				IRListConst {
+					return BuiltinType.list_t
+				}
+				IRDictConst {
+					return BuiltinType.dict_t
+				}
+				else {
+					panic('Type not implemented in oid to ir type ${f.consts[id]}')
+				}
+			}
+		}
+	}
+}
+
+type CID = int
 pub type IRConstant = IRIntConst
 	| IRFloatConst
+	| IRCharConst
 	| IRStringConst
 	| IRListConst
 	| IRDictConst
@@ -373,6 +460,11 @@ pub mut:
 	value int
 }
 
+pub struct IRCharConst {
+pub mut:
+	value string
+}
+
 pub struct IRFloatConst {
 pub mut:
 	value f64
@@ -380,7 +472,6 @@ pub mut:
 
 pub struct IRStringConst {
 pub mut:
-	value string
 	parts []IRStringPart // For interpolated strings
 }
 
@@ -850,6 +941,9 @@ pub fn (mut b IRBuilder) literal_has_macro(l Literal) bool {
 				}
 			}
 		}
+		FloatLiteral {
+			return false
+		}
 		CharLiteral {
 			return false
 		}
@@ -898,6 +992,9 @@ pub fn (mut b IRBuilder) literal_has_macro(l Literal) bool {
 pub fn (mut b IRBuilder) literal_needs_block(l Literal) bool {
 	match l {
 		IntegerLiteral {
+			return false
+		}
+		FloatLiteral {
 			return false
 		}
 		StringLiteral {

@@ -1,0 +1,6 @@
+fn a() : Void{
+   data b : Int;
+   data c := 10;
+   b = 10;
+   c = c + b;
+}

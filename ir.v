@@ -58,20 +58,29 @@ pub mut:
 
 type BBID = int
 
-// TODO: resolve this lol
+// TODO: we need to add scopes to basic blocks, so we can
+// who own whom. and who we can access.
+// Also need to determine
 pub struct IRBasicBlock {
 pub mut:
-	label     string
-	id        BBID
-	namespace NID
-	function  FID
-	args      []IRBasicBlockArg
-	vars_map  map[string]RID
-	insts     []IID
+	label      string
+	id         BBID
+	namespace  NID
+	function   FID
+	args       []IRBasicBlockArg
+	insts      []IID
+	local_defs map[string]RID // Values that are created in this block
 
-	predecessors []BBID
-	successors   []BBID
-	stmts        []Stmt // The list of statements from the IR that form this basic block
+	// Relationships
+	dominator       ?BBID
+	dominance_level int
+	predecessors    []BBID
+	successors      []BBID
+
+	// For construction
+	stmts     []Stmt // The list of statements from the IR that form this basic block
+	is_sealed bool   // Are all the predecessors known?
+	is_filled bool   // Have we generated alled the instructions?
 }
 
 pub type BBAID = int
@@ -105,19 +114,6 @@ pub mut:
 	result RID
 }
 
-pub fn (t TokenKind) to_assign_op() AssignOp {
-	return match t {
-		.assign { .assign }
-		.plus_assign { .add_assign }
-		.minus_assign { .sub_assign }
-		.star_assign { .mul_assign }
-		.slash_assign { .div_assign }
-		.percent_assign { .mod_assign }
-		.swap { .swap }
-		else { panic('illegal use of token ${t} as a Assign operation') }
-	}
-}
-
 pub enum AssignOp {
 	assign
 	add_assign
@@ -126,32 +122,6 @@ pub enum AssignOp {
 	div_assign
 	mod_assign
 	swap
-}
-
-pub fn (a AssignOp) print() {
-	match a {
-		.assign {
-			print('=')
-		}
-		.add_assign {
-			print('+=')
-		}
-		.sub_assign {
-			print('-=')
-		}
-		.mul_assign {
-			print('*=')
-		}
-		.div_assign {
-			print('/=')
-		}
-		.mod_assign {
-			print('%=')
-		}
-		.swap {
-			print('><')
-		}
-	}
 }
 
 pub struct IRAssign {
@@ -183,47 +153,6 @@ pub enum BinaryOp {
 	ge
 }
 
-pub fn (t TokenKind) to_binary_op() BinaryOp {
-	return match t {
-		.plus {
-			.add
-		}
-		.minus {
-			.sub
-		}
-		.star {
-			.mul
-		}
-		.slash {
-			.div
-		}
-		.percent {
-			.mod
-		}
-		.eq {
-			.eq
-		}
-		.ne {
-			.ne
-		}
-		.lcarrot {
-			.lt
-		}
-		.rcarrot {
-			.gt
-		}
-		.lte {
-			.le
-		}
-		.gte {
-			.ge
-		}
-		else {
-			panic('Token to convert to binary operation ${t} is not supported as binary operation')
-		}
-	}
-}
-
 pub struct IRBinaryOp {
 pub mut:
 	result RID
@@ -231,15 +160,6 @@ pub mut:
 	op     BinaryOp
 	left   OID
 	right  OID
-}
-
-pub fn (t TokenKind) to_unary_op() UnaryOp {
-	return match t {
-		.ampersand { .ref }
-		.at { .deref }
-		.ex_point { .neg }
-		else { panic('illegal use of token ${t} as a unary operation') }
-	}
 }
 
 pub enum UnaryOp {
@@ -300,20 +220,22 @@ pub struct IRJump {
 pub mut:
 	id     IID
 	target BBID
-	// TODO: add value here for calling the .mcfunction with args
+	args   []OID
 }
 
 pub struct IRBranch {
 pub mut:
-	id   IID
-	cond OID
-	then BBID
-	el   BBID
-	// TODO: add values here for calling the .mcfunction with args
+	id        IID
+	cond      OID
+	then_bb   BBID
+	then_args []OID
+	else_bb   BBID
+	else_args []OID
 }
 
 pub struct IRReturn {
 pub mut:
+	id    IID
 	value ?OID
 }
 
@@ -907,23 +829,26 @@ pub fn (mut b IRBuilder) stage1() bool {
 	return result
 }
 
-pub fn (mut b IRBuilder) bb_link(self BBID, child BBID) {
+pub fn (mut b IRBuilder) link_bb(self BBID, child BBID) {
 	// TODO: add some saftey checks lol
 	b.basic_blocks[self].successors << child
 	b.basic_blocks[child].predecessors << self
 }
 
-pub fn (mut b IRBuilder) add_bb(fid FID, label string) BBID {
-	nid := b.functions[fid].namespace
-	bb := IRBasicBlock{
-		label:     label
-		id:        b.basic_blocks.len
-		namespace: nid
-		function:  fid
-	}
-	b.basic_blocks << bb
-	b.functions[fid].bbs << bb.id
-	return bb.id
+pub fn (mut b IRBuilder) create_bb(fid FID, label string) BBID {
+    nid := b.functions[fid].namespace
+    bb := IRBasicBlock{
+        label:     label
+        id:        b.basic_blocks.len
+        namespace: nid
+        function:  fid
+        is_sealed: false
+        is_filled: false
+    }
+    bbid := bb.id
+    b.basic_blocks << bb
+    b.functions[fid].bbs << bbid
+    return bbid
 }
 
 pub fn (mut b IRBuilder) literal_has_macro(l Literal) bool {
@@ -1128,6 +1053,7 @@ pub fn (mut b IRBuilder) expr_needs_block(e Expr) bool {
 // Start is the BBID to start parsing on
 // stmts are the statements that belong to this block or its children
 // Returns the BBID of the block that it has ended on
+// TODO: rip out after I finish
 pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) {
 	fid := b.basic_blocks[start].function
 	mut current := start
@@ -1271,15 +1197,34 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 	return result, current
 }
 
-pub fn (mut b IRBuilder) fn_build_bb_cfg(fid FID) bool {
-	println('extracting bbs from function ${b.functions[fid].name}')
-	block := b.functions[fid].block
-	// Now we are going to make our entry block for this function
-	entry := b.add_bb(fid, 'entry')
-	valid, _ := b.bb_build_bb_cfg(entry, block.stmts)
-	return valid
+// TODO: implement
+pub fn (mut b IRBuilder) build_cfg_recursive(fid FID, current_bb BBID, stmts []Stmt) ?(bool, BBID) {
+	return none
 }
 
+pub fun (mut b IRBuilder) s2_phase1_build_cfg_skeleton(fid FID) bool {
+	func := b.functions[fid]
+
+	// Create our entry block
+	entry_bb := b.create_bb(fid, 'entry')
+	b.functions[fid].entrybb = entry_bb
+
+	_, end_bb := b.build_cfg_recursive(fid, entry_bb, func.block.stmts) or {
+		// TODO: change this to be a proper error
+		println("We could not build the CFG for ${func.name}")
+		return false
+	}
+
+	// Adding a return here, so that we will always have a return at the end of our functions, so we just like. know that
+	b.basic_blocks[entry_bb].is_sealed = true
+	if b.basic_blocks[end_bb].insts.len == 0 {
+		b.basic_blocks[end_bb].stmts << Stmt(Return{value : none})
+	}
+
+	return true;
+}
+
+// TODO: add the error classes so we can accumulate errors and print out helpfully.
 pub fn (mut b IRBuilder) stage2() bool {
 	mut result := true
 	// Here we are going to go through our functions and generate our basic blocks except for the terminal instructions within them.
@@ -1307,7 +1252,16 @@ pub fn (mut b IRBuilder) stage2() bool {
 
 	// Here we will create the basic blocks for a function
 	for fid in 0 .. b.functions.len {
-		result = result && b.fn_build_bb_cfg(fid)
+		// Build the base
+		if !b.s2_phase1_build_cfg_skeleton(fid){
+			return false
+		}
+
+		// TODO: Compute the dominance
+		// TODO: Solve arguments
+		// TODO: Lower instructions
+		// TODO: Add terminators
+
 	}
 
 	// Then we are going to generate the instructions for our blocks

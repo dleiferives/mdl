@@ -1197,8 +1197,42 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 	return result, current
 }
 
+
+
 // TODO: implement
 pub fn (mut b IRBuilder) build_cfg_recursive(fid FID, current_bb BBID, stmts []Stmt) ?(bool, BBID) {
+	mut bb := current_bb
+
+	for stmt in stmts {
+		match stmt{
+			TypedDefine {
+				b.basic_blocks[bb].stmts << stmt
+			}
+
+			// Need to add basic blocks for anything that can have a macro. This
+			// breaks down to each expression. So we're going to have to handle
+			// all of the those things. I think that this should be formed into
+			// one big expression run through that will generate the basic
+			// blocks per expression... or like if the expression needs a macro
+			// then it creates a basic block.
+
+			Return {
+				b.basic_blocks[bb].stmts << stmt
+				b.basic_blocks[bb].is_sealed = true
+				return true, bb
+			}
+
+			StructDefinition, FunctionDefinitino, NamespaceDefinition, NamespaceImport, NamespaceAlias, FunctionInlineDefinition, Block {
+				println("Error ${stmt} is not allowed in a basic_block_body")
+				return none
+			}
+
+			else{
+				println("Error: Unhandled statement ${stmt}")
+				return none
+			}
+		}
+	}
 	return none
 }
 

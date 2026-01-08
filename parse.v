@@ -1849,10 +1849,21 @@ fn (mut p Parser) parse_macro_literal_command() Stmt {
 	p.consume(.dollar)
 
 	mut parts := []MacroLiteralPart{}
+	mut needs_leading_space := false // Track if next text needs a leading space
 
 	for p.current.kind != .semicolon && p.current.kind != .eof {
 		match p.current.kind {
 			.lcarrot {
+				// Add trailing space to previous text part if it exists and we're starting a macro
+				if parts.len > 0 {
+					last_idx := parts.len - 1
+					if parts[last_idx] is MacroLiteralText {
+						mut last_text := parts[last_idx] as MacroLiteralText
+						last_text.text += ' '
+						parts[last_idx] = MacroLiteralPart(last_text)
+					}
+				}
+
 				// Parse macro expression
 				macro := p.parse_macro()
 				parts << MacroLiteralPart(MacroLiteralMacro{
@@ -1861,6 +1872,7 @@ fn (mut p Parser) parse_macro_literal_command() Stmt {
 					}
 					macro_expr: macro
 				})
+				needs_leading_space = true // Next text should have a leading space
 			}
 			.lit_string {
 				// Parse string literal (may contain macros)
@@ -1897,13 +1909,20 @@ fn (mut p Parser) parse_macro_literal_command() Stmt {
 					}
 					str_literal: str_literal
 				})
+				needs_leading_space = false
 			}
 			else {
 				// Raw literal text - accumulate all tokens until macro, string, or semicolon
 				text_pos := p.current.pos
 				mut text := ''
-				mut first := true
 
+				// Add leading space if we're coming after a macro
+				if needs_leading_space {
+					text = ' '
+				}
+				needs_leading_space = false
+
+				mut first := true
 				for p.current.kind !in [.lcarrot, .lit_string, .semicolon, .eof] {
 					if !first {
 						text += ' '

@@ -1,0 +1,7 @@
+// Test file with type mismatch error
+namespace test;
+
+fn main() : Void {
+    data x : Int;
+    x = "hello";  // Type mismatch: assigning String to Int
+}

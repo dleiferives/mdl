@@ -1,4 +1,4 @@
-namespace materials = "materials.mcf"
+namespace materials = "materials.mdl"
 struct Bed{
        thread_count : Int
        material : materials.Material

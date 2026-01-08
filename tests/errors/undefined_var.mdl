@@ -1,0 +1,6 @@
+// Test file with an undefined variable error
+namespace test;
+
+fn main() : Void {
+    $ say <undefined_variable>;
+}

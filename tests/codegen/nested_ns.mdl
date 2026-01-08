@@ -1,0 +1,20 @@
+// Test nested namespaces
+namespace outer;
+
+namespace inner = {
+    fn helper() : Int {
+        return 42;
+    }
+
+    namespace deep = {
+        fn very_deep() : Int {
+            return 100;
+        }
+    };
+};
+
+fn main() : Int {
+    data x := inner.helper();
+    data y := inner.deep.very_deep();
+    return x + y;
+}

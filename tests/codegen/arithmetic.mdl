@@ -1,0 +1,29 @@
+// Test basic arithmetic operations with registers
+namespace arithmetic;
+
+fn test_add() : Int {
+    reg a := 5;
+    reg b := 10;
+    reg c := a + b;
+    return c;
+}
+
+fn test_sub() : Int {
+    reg x := 100;
+    reg y := 37;
+    return x - y;
+}
+
+fn test_mul() : Int {
+    reg a := 7;
+    reg b := 8;
+    return a * b;
+}
+
+fn test_compound() : Int {
+    reg result := 10;
+    result += 5;
+    result -= 3;
+    result *= 2;
+    return result;
+}

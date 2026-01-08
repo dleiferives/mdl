@@ -15,7 +15,7 @@ Now what do I mean by this? One of the outcomes that is-- nearly-- impossible to
 *** In minecraft datapack `mcfunction` code
 /Concatenate output/
 
-=cat_and_say.mcfunction=
+=cat_and_say.mdlunction=
 #+begin_src
 #inputs :
 # A : Some literal
@@ -28,7 +28,7 @@ And then the calling code
 
 /Call Code/
 
-=main.mcfunction=
+=main.mdlunction=
 #+begin_src
 data modify storage example:main cat_and_say_args set value {A:"Hello,",B:" World!"}
 function example:cat_and_say with storage example:main cat_and_say_args
@@ -38,15 +38,15 @@ Which then will output =Hello, World!= and store it to =example:utils cat_output
 *** In mdl
 In a direct translation this could be
 #+begin_src
-// utils.mcf
+// utils.mdl
 data cat_output := "";
 
 fn cat_and_say(eff A: String, eff B: String) : Void {
     utils.cat_output = "<A><B>";
     $say "<A><B>";
 }
-// main.mcf
-namespace utils = "utils.mcf'
+// main.mdl
+namespace utils = "utils.mdl'
 utils/cat_and_say("Hello,"," World!");
 #+end_src
 
@@ -89,14 +89,14 @@ This is my first time ever using the V programming language, it has been interes
 * Notes
 ** Namespaces
 #+begin_src
-// a.mcf
+// a.mdl
 namespace a;
-namespace b = "b.mcf";
+namespace b = "b.mdl";
 data x := 10;
 
-// b.mcf
+// b.mdl
 namespace b;
-namespace a = "a.mcf";
+namespace a = "a.mdl";
 
 fn addx(data y: Int) : Int {
     return y + a.x;
@@ -110,7 +110,7 @@ fn add2x(data y: Int) : Int{
 Should ultimately result in
 
 #+begin_src
-//b.mcf
+//b.mdl
 
 fn addx(data y : Int) : Int{
     return y + a.x;

@@ -1,0 +1,9 @@
+fn append(data test: &List, data value: Int) : Void {
+    $data modify <test> append value <value>;
+}
+
+fn doomer() : Void {
+   data l : List;
+   append(&l, 10);
+   $say "<l>";
+}

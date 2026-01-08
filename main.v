@@ -1,23 +1,46 @@
 module main
 
 fn main() {
-	mut irb := IRBuilder{}
-	irb.lower(['tests/ir/bb_gen/stmts/assign.mcf'])!
-	irb.print_cfg_dot()
-	for mut bb in irb.basic_blocks {
-		irb.fill_bb_insts(bb.id)
-		print(irb.functions[bb.function].insts)
-		print('\n')
-		print(bb.insts)
-		print('\n')
-		for inst in bb.insts {
-			irb.fn_print_inst(bb.function, inst)
-			print('\n')
-		}
-		// print(irb.functions[bb.function].block)
+	// Initialize error manager
+	mut em := ErrorManager.new()
+
+	// Get input files (for now using a test file)
+	files := ['tests/codegen/arithmetic.mdl']
+
+	// Load source files into error manager for error reporting
+	for f in files {
+		em.load_source(f)
 	}
 
-	// for func in irb.functions {
-	// 	println('func ${func.name}\n ${func.block}')
-	// }
+	// Create IR builder with error manager
+	mut irb := IRBuilder{
+		errors: &em
+	}
+
+	// Run lowering
+	result := irb.lower(files) or {
+		em.print_all()
+		eprintln('Compilation failed.')
+		exit(1)
+	}
+
+	// Check for errors
+	if em.has_errors() || !result {
+		em.print_all()
+		exit(1)
+	}
+
+	// Print warnings if any
+	if em.warning_count > 0 {
+		em.print_all()
+	}
+
+	// Generate mcfunction output
+	mut cg := Codegen.new(&irb, 'output', 'example')
+	cg.generate() or {
+		em.error(.internal_compiler_error, empty_location(), 'code generation failed: ${err}')
+		em.print_all()
+		exit(1)
+	}
+	println('Generated mcfunction files in output/')
 }

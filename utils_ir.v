@@ -211,8 +211,167 @@ pub fn (mut b IRBuilder) fn_print_inst(fid FID, iid IID) {
 			print(inst.op)
 			b.fn_print_oid(fid, inst.right)
 		}
-		else {
-			print('inst is not supported yes ${inst}')
+		IRUnaryOp {
+			print('unop ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = ')
+			print(inst.op)
+			print(' ')
+			b.fn_print_oid(fid, inst.operand)
+		}
+		IRStore {
+			print('store ')
+			b.fn_print_rid(fid, inst.result)
+			print(' <- ')
+			b.fn_print_rid(fid, inst.source)
+		}
+		IRCall {
+			print('call ')
+			if result := inst.result {
+				b.fn_print_rid(fid, result)
+				print(' = ')
+			}
+			called_func := b.functions[inst.function]
+			print('${called_func.name}(')
+			for i, arg in inst.args {
+				if i > 0 {
+					print(', ')
+				}
+				b.fn_print_oid(fid, arg)
+			}
+			print(')')
+		}
+		IRStructInit {
+			print('struct_init ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = ${b.structs[inst.struct_type].name}{')
+			mut first := true
+			for field_name, field_val in inst.field_values {
+				if !first {
+					print(', ')
+				}
+				first = false
+				print('${field_name}: ')
+				b.fn_print_oid(fid, field_val)
+			}
+			print('}')
+		}
+		IRFieldAccess {
+			print('field ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = ')
+			b.fn_print_rid(fid, inst.source)
+			print('.${inst.field}')
+		}
+		IRIndexAccess {
+			print('index ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = ')
+			b.fn_print_rid(fid, inst.source)
+			print('[')
+			b.fn_print_oid(fid, inst.index)
+			if inst.is_slice {
+				print('..')
+				if end := inst.end {
+					b.fn_print_oid(fid, end)
+				}
+			}
+			print(']')
+		}
+		IRDeref {
+			print('deref ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = @')
+			b.fn_print_rid(fid, inst.source)
+		}
+		IRRefInst {
+			print('ref ')
+			b.fn_print_rid(fid, inst.result)
+			print(' = &')
+			b.fn_print_rid(fid, inst.source)
+		}
+		IRJump {
+			print('jump ')
+			target := b.basic_blocks[inst.target]
+			print('${target.label}_${target.id}')
+			if inst.args.len > 0 {
+				print('(')
+				for i, arg in inst.args {
+					if i > 0 {
+						print(', ')
+					}
+					b.fn_print_oid(fid, arg)
+				}
+				print(')')
+			}
+		}
+		IRBranch {
+			print('branch ')
+			b.fn_print_oid(fid, inst.cond)
+			then_bb := b.basic_blocks[inst.then_bb]
+			else_bb := b.basic_blocks[inst.else_bb]
+			print(' ? ${then_bb.label}_${then_bb.id}')
+			if inst.then_args.len > 0 {
+				print('(')
+				for i, arg in inst.then_args {
+					if i > 0 {
+						print(', ')
+					}
+					b.fn_print_oid(fid, arg)
+				}
+				print(')')
+			}
+			print(' : ${else_bb.label}_${else_bb.id}')
+			if inst.else_args.len > 0 {
+				print('(')
+				for i, arg in inst.else_args {
+					if i > 0 {
+						print(', ')
+					}
+					b.fn_print_oid(fid, arg)
+				}
+				print(')')
+			}
+		}
+		IRReturn {
+			print('return')
+			if value := inst.value {
+				print(' ')
+				b.fn_print_oid(fid, value)
+			}
+		}
+		IRMacroLiteralCmd {
+			print('macro_cmd $')
+			for part in inst.parts {
+				match part {
+					IRMacroCmdText {
+						print(part.text)
+					}
+					IRMacroCmdMacro {
+						if part.is_ref {
+							print('$(')
+						} else {
+							print('#(')
+						}
+						b.fn_print_rid(fid, part.value)
+						print(')')
+					}
+					IRMacroCmdString {
+						print('"')
+						for str_part in part.parts {
+							match str_part {
+								IRStringText {
+									print(str_part.text)
+								}
+								IRStringMacro {
+									print('#(rid)')
+								}
+							}
+						}
+						print('"')
+					}
+				}
+			}
 		}
 	}
 }

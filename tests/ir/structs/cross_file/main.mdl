@@ -1,4 +1,4 @@
-namespace attrs = "attributes.mcf"
+namespace attrs = "attributes.mdl"
 struct Person{
        age : Int
        name : Int

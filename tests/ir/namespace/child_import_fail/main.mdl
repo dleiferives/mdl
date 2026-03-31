@@ -1,4 +1,4 @@
 namespace child;
 namespace child = {
-namespace utils = "utils.mcf";
+namespace utils = "utils.mdl";
 };

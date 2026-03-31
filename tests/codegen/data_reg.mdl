@@ -1,0 +1,35 @@
+// Test data and register variable interactions
+namespace storage;
+
+fn data_to_reg() : Int {
+    data x := 42;
+    reg y := x;
+    return y;
+}
+
+fn reg_to_data() : Int {
+    reg a := 100;
+    data b := a;
+    return b;
+}
+
+fn mixed_arithmetic() : Int {
+    data a := 10;
+    reg b := 20;
+    reg result := a + b;
+    return result;
+}
+
+fn all_data() : Int {
+    data x := 5;
+    data y := 10;
+    data z := x + y;
+    return z;
+}
+
+fn all_reg() : Int {
+    reg a := 3;
+    reg b := 4;
+    reg c := a * b;
+    return c;
+}

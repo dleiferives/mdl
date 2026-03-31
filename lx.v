@@ -530,3 +530,43 @@ pub fn (mut l Lexer) next() ?Token {
 	}
 	return t
 }
+
+// Operator conversion methods for IR lowering
+pub fn (t TokenKind) to_binary_op() BinaryOp {
+	return match t {
+		.plus { BinaryOp.add }
+		.minus { BinaryOp.sub }
+		.star { BinaryOp.mul }
+		.slash { BinaryOp.div }
+		.percent { BinaryOp.mod }
+		.eq { BinaryOp.eq }
+		.ne { BinaryOp.ne }
+		.lcarrot { BinaryOp.lt }
+		.rcarrot { BinaryOp.gt }
+		.lte { BinaryOp.le }
+		.gte { BinaryOp.ge }
+		else { panic('Token ${t} is not a binary operator') }
+	}
+}
+
+pub fn (t TokenKind) to_unary_op() UnaryOp {
+	return match t {
+		.minus { UnaryOp.neg }
+		.ampersand { UnaryOp.ref }
+		.at { UnaryOp.deref }
+		else { panic('Token ${t} is not a unary operator') }
+	}
+}
+
+pub fn (t TokenKind) to_assign_op() AssignOp {
+	return match t {
+		.assign { AssignOp.assign }
+		.plus_assign { AssignOp.add_assign }
+		.minus_assign { AssignOp.sub_assign }
+		.star_assign { AssignOp.mul_assign }
+		.slash_assign { AssignOp.div_assign }
+		.percent_assign { AssignOp.mod_assign }
+		.swap { AssignOp.swap }
+		else { panic('Token ${t} is not an assignment operator') }
+	}
+}

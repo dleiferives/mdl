@@ -1,0 +1,28 @@
+// Test function calls
+namespace funcs;
+
+fn add(data a: Int, data b: Int) : Int {
+    return a + b;
+}
+
+fn multiply(reg x: Int, reg y: Int) : Int {
+    return x * y;
+}
+
+fn call_add() : Int {
+    data result := add(10, 20);
+    return result;
+}
+
+fn call_multiply() : Int {
+    reg a := 5;
+    reg b := 6;
+    reg result := multiply(a, b);
+    return result;
+}
+
+fn chain_calls() : Int {
+    data sum := add(1, 2);
+    data sum2 := add(sum, 3);
+    return sum2;
+}

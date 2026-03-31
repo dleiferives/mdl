@@ -10,7 +10,7 @@ fn tmp() : Void {
 }
 
 fn main() : Void {
-    data a := [10,20,30,b];
+   data a := [10,20,30,30];
    data a : Int;
    if (a == 2) {
       a.add(a,a);

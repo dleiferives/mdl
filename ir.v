@@ -58,7 +58,9 @@ pub mut:
 
 type BBID = int
 
-// TODO: resolve this lol
+// TODO: we need to add scopes to basic blocks, so we can
+// who own whom. and who we can access.
+// Also need to determine
 pub struct IRBasicBlock {
 pub mut:
 	label     string
@@ -66,12 +68,19 @@ pub mut:
 	namespace NID
 	function  FID
 	args      []IRBasicBlockArg
-	vars_map  map[string]RID
 	insts     []IID
+	vars_map  map[string]RID // Variable name -> RID mapping for this block
 
-	predecessors []BBID
-	successors   []BBID
-	stmts        []Stmt // The list of statements from the IR that form this basic block
+	// Relationships
+	dominator       ?BBID
+	dominance_level int
+	predecessors    []BBID
+	successors      []BBID
+
+	// For construction
+	stmts     []Stmt // The list of statements from the IR that form this basic block
+	is_sealed bool   // Are all the predecessors known?
+	is_filled bool   // Have we generated alled the instructions?
 }
 
 pub type BBAID = int
@@ -91,31 +100,30 @@ pub type IRInstruction = IRMacroLiteralCmd
 	| IRBinaryOp
 	| IRUnaryOp
 	| IRAssign
+	| IRStore
+	| IRCall
+	| IRStructInit
+	| IRFieldAccess
+	| IRIndexAccess
+	| IRDeref
+	| IRRefInst
+	| IRJump
+	| IRBranch
+	| IRReturn
 
 pub struct IRDefine {
 pub mut:
 	id     IID
 	result RID
 	value  OID
+	pos    int // Source position for error reporting
 }
 
 pub struct IRTypedDefine {
 pub mut:
 	id     IID
 	result RID
-}
-
-pub fn (t TokenKind) to_assign_op() AssignOp {
-	return match t {
-		.assign { .assign }
-		.plus_assign { .add_assign }
-		.minus_assign { .sub_assign }
-		.star_assign { .mul_assign }
-		.slash_assign { .div_assign }
-		.percent_assign { .mod_assign }
-		.swap { .swap }
-		else { panic('illegal use of token ${t} as a Assign operation') }
-	}
+	pos    int // Source position for error reporting
 }
 
 pub enum AssignOp {
@@ -128,29 +136,15 @@ pub enum AssignOp {
 	swap
 }
 
-pub fn (a AssignOp) print() {
-	match a {
-		.assign {
-			print('=')
-		}
-		.add_assign {
-			print('+=')
-		}
-		.sub_assign {
-			print('-=')
-		}
-		.mul_assign {
-			print('*=')
-		}
-		.div_assign {
-			print('/=')
-		}
-		.mod_assign {
-			print('%=')
-		}
-		.swap {
-			print('><')
-		}
+pub fn (op AssignOp) print() {
+	match op {
+		.assign { print(' = ') }
+		.add_assign { print(' += ') }
+		.sub_assign { print(' -= ') }
+		.mul_assign { print(' *= ') }
+		.div_assign { print(' /= ') }
+		.mod_assign { print(' %= ') }
+		.swap { print(' >< ') }
 	}
 }
 
@@ -160,6 +154,7 @@ pub mut:
 	result RID
 	op     AssignOp
 	value  OID
+	pos    int // Source position for error reporting
 }
 
 pub struct IRStore {
@@ -167,6 +162,7 @@ pub mut:
 	id     IID
 	result RID
 	source RID
+	pos    int // Source position for error reporting
 }
 
 pub enum BinaryOp {
@@ -183,47 +179,6 @@ pub enum BinaryOp {
 	ge
 }
 
-pub fn (t TokenKind) to_binary_op() BinaryOp {
-	return match t {
-		.plus {
-			.add
-		}
-		.minus {
-			.sub
-		}
-		.star {
-			.mul
-		}
-		.slash {
-			.div
-		}
-		.percent {
-			.mod
-		}
-		.eq {
-			.eq
-		}
-		.ne {
-			.ne
-		}
-		.lcarrot {
-			.lt
-		}
-		.rcarrot {
-			.gt
-		}
-		.lte {
-			.le
-		}
-		.gte {
-			.ge
-		}
-		else {
-			panic('Token to convert to binary operation ${t} is not supported as binary operation')
-		}
-	}
-}
-
 pub struct IRBinaryOp {
 pub mut:
 	result RID
@@ -231,15 +186,7 @@ pub mut:
 	op     BinaryOp
 	left   OID
 	right  OID
-}
-
-pub fn (t TokenKind) to_unary_op() UnaryOp {
-	return match t {
-		.ampersand { .ref }
-		.at { .deref }
-		.ex_point { .neg }
-		else { panic('illegal use of token ${t} as a unary operation') }
-	}
+	pos    int // Source position for error reporting
 }
 
 pub enum UnaryOp {
@@ -254,6 +201,7 @@ pub mut:
 	result  RID
 	op      UnaryOp
 	operand OID
+	pos     int // Source position for error reporting
 }
 
 pub struct IRCall {
@@ -262,6 +210,7 @@ pub mut:
 	result   ?RID
 	function FID
 	args     []OID
+	pos      int // Source position for error reporting
 }
 
 pub struct IRStructInit {
@@ -270,13 +219,16 @@ pub mut:
 	result       RID
 	struct_type  SID
 	field_values map[string]OID
+	pos          int // Source position for error reporting
 }
 
 pub struct IRFieldAccess {
+pub mut:
 	id     IID
 	result RID
 	source RID
 	field  string
+	pos    int // Source position for error reporting
 }
 
 pub struct IRIndexAccess {
@@ -287,6 +239,7 @@ pub mut:
 	index    OID
 	is_slice bool
 	end      ?OID
+	pos      int // Source position for error reporting
 }
 
 pub struct IRDeref {
@@ -294,27 +247,42 @@ pub mut:
 	id     IID
 	result RID
 	source RID
+	pos    int // Source position for error reporting
+}
+
+// Takes the address/reference of a value
+pub struct IRRefInst {
+pub mut:
+	id     IID
+	result RID
+	source RID
+	pos    int // Source position for error reporting
 }
 
 pub struct IRJump {
 pub mut:
 	id     IID
 	target BBID
-	// TODO: add value here for calling the .mcfunction with args
+	args   []OID
+	pos    int // Source position for error reporting
 }
 
 pub struct IRBranch {
 pub mut:
-	id   IID
-	cond OID
-	then BBID
-	el   BBID
-	// TODO: add values here for calling the .mcfunction with args
+	id        IID
+	cond      OID
+	then_bb   BBID
+	then_args []OID
+	else_bb   BBID
+	else_args []OID
+	pos       int // Source position for error reporting
 }
 
 pub struct IRReturn {
 pub mut:
+	id    IID
 	value ?OID
+	pos   int // Source position for error reporting
 }
 
 // dunno
@@ -327,6 +295,7 @@ pub mut:
 	func  FID
 	id    IID
 	parts []IRMacroCmdPart
+	pos   int // Source position for error reporting
 }
 
 pub type IRMacroCmdPart = IRMacroCmdText | IRMacroCmdMacro | IRMacroCmdString
@@ -397,6 +366,7 @@ pub mut:
 	storage      StorageKind
 	location     IRLocation // where it is stored (This is our general reference thing)
 	is_macro_dep bool       // If it is the result of a macro call
+	pos          int        // Source position for error reporting
 }
 
 type RID = int
@@ -407,6 +377,7 @@ pub mut:
 	id    RID
 	value IRRefSum
 	typ   IRType
+	pos   int // Source position for error reporting
 }
 
 // IR OPERAND
@@ -438,8 +409,8 @@ pub fn (id OID) to_ir_type(f IRFunction) IRType {
 				IRDictConst {
 					return BuiltinType.dict_t
 				}
-				else {
-					panic('Type not implemented in oid to ir type ${f.consts[id]}')
+				IRRangeConst {
+					return BuiltinType.list_t // Ranges are list-like
 				}
 			}
 		}
@@ -529,15 +500,27 @@ pub mut:
 	basic_blocks []IRBasicBlock
 	structs      []IRStructDef
 	variables    []IRValue
+	errors       &ErrorManager = unsafe { nil } // Error manager for reporting
 }
 
-pub fn (mut b IRBuilder) solve_namespaces() {
+pub fn (mut b IRBuilder) solve_namespaces() bool {
 	mut ns_solver := NSSolver{}
 	for file in b.files {
-		ns_solver.solve(file) or { panic('Could not solve') }
+		ns_solver.solve(file) or {
+			if b.errors != unsafe { nil } {
+				b.errors.error(.namespace_not_found, SourceLocation{
+					file: file
+					pos:  0
+				}, 'could not resolve namespace from file: ${file}')
+			}
+			return false
+		}
 	}
 	if !ns_solver.verify_legal() {
-		panic('Could not solve the namespaces... look at that')
+		if b.errors != unsafe { nil } {
+			b.errors.error(.namespace_collision, empty_location(), 'could not solve namespaces: circular dependency or naming conflict detected')
+		}
+		return false
 	}
 	mut s2b := map[NSNodeId]NID{}
 	mut b2s := map[NID]NSNodeId{}
@@ -558,7 +541,10 @@ pub fn (mut b IRBuilder) solve_namespaces() {
 	}
 
 	if b.namespaces.len == 0 {
-		panic('There is no namespaces?')
+		if b.errors != unsafe { nil } {
+			b.errors.error(.namespace_not_found, empty_location(), 'no namespaces found in source files')
+		}
+		return false
 	}
 
 	mut visited := map[NID]bool{}
@@ -591,6 +577,7 @@ pub fn (mut b IRBuilder) solve_namespaces() {
 
 		visited[nid] = true
 	}
+	return true
 }
 
 pub fn (mut b IRBuilder) tranverse_namespace(nsa IRNamespace, path []string) ?NID {
@@ -605,47 +592,31 @@ pub fn (mut b IRBuilder) tranverse_namespace(nsa IRNamespace, path []string) ?NI
 }
 
 pub fn (mut b IRBuilder) namespace_yeild_ir_type(ns IRNamespace, typ Type) ?IRType {
-	mut ft := typ
-	mut it := IRType{}
-	mut ctr := 0
-	for mut ft is ReferenceType {
-		ft = ft.base
-		ctr++
-	}
 	match typ {
 		BuiltinType {
-			it = IRType(typ as BuiltinType)
-			for _ in 0 .. ctr {
-				it = IRType(IRRefType{
-					base: it
-				})
-			}
-			return it
+			return IRType(typ)
+		}
+		ReferenceType {
+			// Recursively resolve the base type and wrap in IRRefType
+			base_ir := b.namespace_yeild_ir_type(ns, typ.base) or { return none }
+			return IRType(IRRefType{
+				base: base_ir
+			})
 		}
 		StructType {
-			sft := (typ as StructType)
-			ns_path := sft.name.to_list()
+			ns_path := typ.name.to_list()
 			nnid := b.tranverse_namespace(ns, ns_path) or {
-				println('Could to traverse from ${ns.name} along ${ns_path} for type conversion ${typ} ')
+				println('Could not traverse from ${ns.name} along ${ns_path} for type conversion ${typ}')
 				return none
 			}
 			// Need to check if name is a struct in that namespace
-			it = b.namespaces[nnid].struct_map[sft.name.name.name] or {
-				println('struct is not foundd in that namespace to use as a field')
+			sid := b.namespaces[nnid].struct_map[typ.name.name.name] or {
+				println('struct is not found in that namespace to use as a field')
 				return none
 			}
-			for _ in 0 .. ctr {
-				it = IRType(IRRefType{
-					base: it
-				})
-			}
-			return it
-		}
-		else {
-			panic('unreachable')
+			return IRType(sid)
 		}
 	}
-	return none
 }
 
 pub fn (mut b IRBuilder) namespace_extract_structs() bool {
@@ -690,7 +661,13 @@ pub fn (mut b IRBuilder) namespace_extract_structs() bool {
 
 		for ast_s in ast_structs {
 			astpos := ast_s.Node.pos
-			mut s := &b.structs[smap[astpos]] or { panic('FUCK (IR STRUCT THING)') }
+			mut s := &b.structs[smap[astpos]] or {
+				if b.errors != unsafe { nil } {
+					b.errors.error(.internal_compiler_error, empty_location(), 'internal error: struct not found in mapping during field resolution')
+				}
+				result = false
+				continue
+			}
 
 			for f in ast_s.fields {
 				mut ft := f.field_type
@@ -733,7 +710,14 @@ pub fn (mut b IRBuilder) namespace_extract_structs() bool {
 						s.fields[f.name.name] = it
 					}
 					else {
-						panic('unreachable type ${ft}')
+						if b.errors != unsafe { nil } {
+							b.errors.error(.cannot_resolve_type, SourceLocation{
+								file: ''
+								pos:  ast_s.Node.pos
+							}, 'unsupported type in struct field: ${ft}')
+						}
+						result = false
+						continue
 					}
 				}
 			}
@@ -820,7 +804,13 @@ pub fn (mut b IRBuilder) namespace_extract_namesapce_defs() bool {
 								}
 							}
 							else {
-								panic('unreachable effemeral as namespace value')
+								if b.errors != unsafe { nil } {
+									b.errors.error(.invalid_operation, SourceLocation{
+										pos: stmt.Node.pos
+									}, 'ephemeral storage is not allowed at namespace scope')
+								}
+								result = false
+								continue
 							}
 						}
 					}
@@ -888,7 +878,9 @@ pub fn (mut b IRBuilder) stage1() bool {
 	// to just limit the scope of the problem so that it becomes easier to work
 	// with. To start we are going to break up all the namespaces and make good
 	// references for all them to each other.
-	b.solve_namespaces()
+	if !b.solve_namespaces() {
+		return false
+	}
 
 	// Next we are going to pull out all the function definitions, struct
 	// declarations, for all the namespaces. We have to start with the structs
@@ -907,23 +899,26 @@ pub fn (mut b IRBuilder) stage1() bool {
 	return result
 }
 
-pub fn (mut b IRBuilder) bb_link(self BBID, child BBID) {
+pub fn (mut b IRBuilder) link_bb(self BBID, child BBID) {
 	// TODO: add some saftey checks lol
 	b.basic_blocks[self].successors << child
 	b.basic_blocks[child].predecessors << self
 }
 
-pub fn (mut b IRBuilder) add_bb(fid FID, label string) BBID {
+pub fn (mut b IRBuilder) create_bb(fid FID, label string) BBID {
 	nid := b.functions[fid].namespace
 	bb := IRBasicBlock{
 		label:     label
 		id:        b.basic_blocks.len
 		namespace: nid
 		function:  fid
+		is_sealed: false
+		is_filled: false
 	}
+	bbid := bb.id
 	b.basic_blocks << bb
-	b.functions[fid].bbs << bb.id
-	return bb.id
+	b.functions[fid].bbs << bbid
+	return bbid
 }
 
 pub fn (mut b IRBuilder) literal_has_macro(l Literal) bool {
@@ -1128,6 +1123,7 @@ pub fn (mut b IRBuilder) expr_needs_block(e Expr) bool {
 // Start is the BBID to start parsing on
 // stmts are the statements that belong to this block or its children
 // Returns the BBID of the block that it has ended on
+// TODO: rip out after I finish
 pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) {
 	fid := b.basic_blocks[start].function
 	mut current := start
@@ -1169,36 +1165,45 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 				println('Function blocks are not allowed to have namespace aliases in them ${stmt}')
 			}
 			FunctionInlineDefinition {
-				println('TODO FunctionInlineDefinition')
-				panic('Not handled')
+				if b.errors != unsafe { nil } {
+					b.errors.error(.not_implemented, SourceLocation{
+						pos: stmt.Node.pos
+					}, 'inline function definitions are not yet implemented')
+				}
+				result = false
 			}
 			Block {
-				panic('Block in block??')
+				if b.errors != unsafe { nil } {
+					b.errors.error(.unsupported_statement_location, SourceLocation{
+						pos: stmt.Node.pos
+					}, 'bare block statements are not allowed inside function bodies')
+				}
+				result = false
 			}
 			IfStmt {
 				// Both the condition and of course the blocks... will create blocks
 				if b.expr_needs_block(stmt.condition) {
-					cond := b.add_bb(fid, 'if_cond')
-					b.bb_link(current, cond)
+					cond := b.create_bb(fid, 'if_cond')
+					b.link_bb(current, cond)
 					current = cond
 				}
 				b.basic_blocks[current].stmts << stmt
 				// create then else and merge block
-				mut then := b.add_bb(fid, 'if_then')
-				b.bb_link(current, then)
+				mut then := b.create_bb(fid, 'if_then')
+				b.link_bb(current, then)
 				state, then = b.bb_build_bb_cfg(then, stmt.then_block.stmts)
 				result = result && state
-				mut el := b.add_bb(fid, 'if_else')
-				b.bb_link(current, el)
+				mut el := b.create_bb(fid, 'if_else')
+				b.link_bb(current, el)
 				if stmt.else_block == none {
 				} else {
 					elb := stmt.else_block
 					state, el = b.bb_build_bb_cfg(el, elb.stmts)
 					result = result && state
 				}
-				merge := b.add_bb(fid, 'if_merge')
-				b.bb_link(then, merge)
-				b.bb_link(el, merge)
+				merge := b.create_bb(fid, 'if_merge')
+				b.link_bb(then, merge)
+				b.link_bb(el, merge)
 				current = merge
 			}
 			Return {
@@ -1208,16 +1213,16 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 				}
 
 				if b.expr_needs_block(ret) {
-					ret_bbid := b.add_bb(fid, 'ret')
-					b.bb_link(current, ret_bbid)
+					ret_bbid := b.create_bb(fid, 'ret')
+					b.link_bb(current, ret_bbid)
 					current = ret_bbid
 				}
 				b.basic_blocks[current].stmts << stmt
 			}
 			ExprStmt {
 				if b.expr_needs_block(stmt.expr) {
-					emac := b.add_bb(fid, 'macro')
-					b.bb_link(current, emac)
+					emac := b.create_bb(fid, 'macro')
+					b.link_bb(current, emac)
 					current = emac
 				}
 				b.basic_blocks[current].stmts << stmt
@@ -1236,32 +1241,32 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 					}
 				}
 				if need_block {
-					command := b.add_bb(fid, 'command')
-					b.bb_link(current, command)
+					command := b.create_bb(fid, 'command')
+					b.link_bb(current, command)
 					current = command
 				}
 				b.basic_blocks[current].stmts << stmt
 			}
 			Define {
 				if b.expr_needs_block(stmt.value) {
-					macro_use := b.add_bb(fid, 'macro_use')
-					b.bb_link(current, macro_use)
+					macro_use := b.create_bb(fid, 'macro_use')
+					b.link_bb(current, macro_use)
 					current = macro_use
 				}
 				b.basic_blocks[current].stmts << stmt
 			}
 			Assignment {
 				if b.expr_needs_block(stmt.left) || b.expr_needs_block(stmt.right) {
-					assignment := b.add_bb(fid, 'assignment')
-					b.bb_link(current, assignment)
+					assignment := b.create_bb(fid, 'assignment')
+					b.link_bb(current, assignment)
 					current = assignment
 				}
 				b.basic_blocks[current].stmts << stmt
 			}
 			Store {
 				if b.expr_needs_block(stmt.left) || b.expr_needs_block(stmt.right) {
-					store := b.add_bb(fid, 'store')
-					b.bb_link(current, store)
+					store := b.create_bb(fid, 'store')
+					b.link_bb(current, store)
 					current = store
 				}
 				b.basic_blocks[current].stmts << stmt
@@ -1271,15 +1276,174 @@ pub fn (mut b IRBuilder) bb_build_bb_cfg(start BBID, stmts []Stmt) (bool, BBID) 
 	return result, current
 }
 
-pub fn (mut b IRBuilder) fn_build_bb_cfg(fid FID) bool {
-	println('extracting bbs from function ${b.functions[fid].name}')
-	block := b.functions[fid].block
-	// Now we are going to make our entry block for this function
-	entry := b.add_bb(fid, 'entry')
-	valid, _ := b.bb_build_bb_cfg(entry, block.stmts)
-	return valid
+// Build CFG recursively, creating new basic blocks when macro values are used.
+// Each basic block maps to a .mcfunction file - when macros are used, we need
+// a new function file to pass the macro arguments.
+pub fn (mut b IRBuilder) build_cfg_recursive(fid FID, current_bb BBID, stmts []Stmt) ?(bool, BBID) {
+	mut bb := current_bb
+
+	for stmt in stmts {
+		match stmt {
+			// TypedDefine: No value expression, no macro possible - just attach
+			TypedDefine {
+				b.basic_blocks[bb].stmts << stmt
+			}
+			// Define: Check if RHS has/is a macro
+			Define {
+				if b.expr_has_macro(stmt.value) {
+					def_bb := b.create_bb(fid, 'define_macro')
+					b.link_bb(bb, def_bb)
+					b.basic_blocks[bb].is_sealed = true
+					bb = def_bb
+				}
+				b.basic_blocks[bb].stmts << stmt
+			}
+			// Assignment: Check both sides for macros
+			Assignment {
+				if b.expr_has_macro(stmt.left) || b.expr_has_macro(stmt.right) {
+					assign_bb := b.create_bb(fid, 'assign_macro')
+					b.link_bb(bb, assign_bb)
+					b.basic_blocks[bb].is_sealed = true
+					bb = assign_bb
+				}
+				b.basic_blocks[bb].stmts << stmt
+			}
+			// Store: Same as assignment
+			Store {
+				if b.expr_has_macro(stmt.left) || b.expr_has_macro(stmt.right) {
+					store_bb := b.create_bb(fid, 'store_macro')
+					b.link_bb(bb, store_bb)
+					b.basic_blocks[bb].is_sealed = true
+					bb = store_bb
+				}
+				b.basic_blocks[bb].stmts << stmt
+			}
+			// ExprStmt: Expression that may contain macros
+			ExprStmt {
+				if b.expr_has_macro(stmt.expr) {
+					expr_bb := b.create_bb(fid, 'expr_macro')
+					b.link_bb(bb, expr_bb)
+					b.basic_blocks[bb].is_sealed = true
+					bb = expr_bb
+				}
+				b.basic_blocks[bb].stmts << stmt
+			}
+			// IfStmt: Creates branches in CFG
+			IfStmt {
+				// Check if condition has macro
+				if b.expr_has_macro(stmt.condition) {
+					cond_bb := b.create_bb(fid, 'if_cond')
+					b.link_bb(bb, cond_bb)
+					b.basic_blocks[bb].is_sealed = true
+					bb = cond_bb
+				}
+
+				// Store the if statement (condition evaluation) in current block
+				b.basic_blocks[bb].stmts << stmt
+				b.basic_blocks[bb].is_sealed = true
+
+				// Create then branch
+				then_bb := b.create_bb(fid, 'if_then')
+				b.link_bb(bb, then_bb)
+				_, then_end := b.build_cfg_recursive(fid, then_bb, stmt.then_block.stmts)?
+
+				// Create else branch
+				else_bb := b.create_bb(fid, 'if_else')
+				b.link_bb(bb, else_bb)
+
+				mut else_end := else_bb
+				if else_block := stmt.else_block {
+					_, else_end = b.build_cfg_recursive(fid, else_bb, else_block.stmts)?
+				} else {
+					b.basic_blocks[else_bb].is_sealed = true
+				}
+
+				// Create merge point
+				merge_bb := b.create_bb(fid, 'if_merge')
+				b.link_bb(then_end, merge_bb)
+				b.link_bb(else_end, merge_bb)
+
+				bb = merge_bb
+			}
+			// Return: Terminal instruction
+			Return {
+				// Check if return value has macro
+				if val := stmt.value {
+					if b.expr_has_macro(val) {
+						ret_bb := b.create_bb(fid, 'return_eval')
+						b.link_bb(bb, ret_bb)
+						b.basic_blocks[bb].is_sealed = true
+						bb = ret_bb
+					}
+				}
+				b.basic_blocks[bb].stmts << stmt
+				b.basic_blocks[bb].is_sealed = true
+				return true, bb
+			}
+			// MacroLiteralCommand: $ commands with potential macros
+			MacroLiteralCommand {
+				mut has_macro := false
+
+				for part in stmt.parts {
+					if part is MacroLiteralMacro {
+						has_macro = true
+						break
+					}
+					if part is MacroLiteralString {
+						// String could have interpolation with macros
+						if b.literal_has_macro(Literal(part.str_literal)) {
+							has_macro = true
+							break
+						}
+					}
+				}
+
+				if has_macro {
+					cmd_bb := b.create_bb(fid, 'command')
+					b.link_bb(bb, cmd_bb)
+					b.basic_blocks[bb].is_sealed = true
+					bb = cmd_bb
+				}
+				b.basic_blocks[bb].stmts << stmt
+			}
+			// Invalid statements in function bodies
+			StructDefinition, FunctionDefinition, NamespaceDefinition, NamespaceImport,
+			NamespaceAlias, FunctionInlineDefinition, Block {
+				println('Error: ${stmt} not allowed in function body')
+				return none
+			}
+		}
+	}
+
+	b.basic_blocks[bb].is_sealed = true
+	return true, bb
 }
 
+pub fn (mut b IRBuilder) s2_phase1_build_cfg_skeleton(fid FID) bool {
+	func := b.functions[fid]
+
+	// Create our entry block
+	entry_bb := b.create_bb(fid, 'entry')
+	b.functions[fid].entrybb = entry_bb
+
+	_, end_bb := b.build_cfg_recursive(fid, entry_bb, func.block.stmts) or {
+		// TODO: change this to be a proper error
+		println('We could not build the CFG for ${func.name}')
+		return false
+	}
+
+	// Adding a return here, so that we will always have a return at the end of our functions, so we just like. know that
+	b.basic_blocks[entry_bb].is_sealed = true
+	if b.basic_blocks[end_bb].insts.len == 0 {
+		b.basic_blocks[end_bb].stmts << Stmt(Return{
+			value: none
+		})
+	}
+
+	return true
+}
+
+// TODO: add the error classes so we can accumulate errors and print out helpfully.
 pub fn (mut b IRBuilder) stage2() bool {
 	mut result := true
 	// Here we are going to go through our functions and generate our basic blocks except for the terminal instructions within them.
@@ -1305,12 +1469,22 @@ pub fn (mut b IRBuilder) stage2() bool {
 	// needed to be parsed for each basic block into each basic block so that it
 	// will be easier to handle later.
 
-	// Here we will create the basic blocks for a function
+	// Phase 1: Build CFG skeletons for all functions
 	for fid in 0 .. b.functions.len {
-		result = result && b.fn_build_bb_cfg(fid)
+		if !b.s2_phase1_build_cfg_skeleton(fid) {
+			return false
+		}
 	}
 
-	// Then we are going to generate the instructions for our blocks
+	// Phase 2: Solve basic block arguments (for macro value passing)
+	for fid in 0 .. b.functions.len {
+		b.solve_bb_arguments(fid)
+	}
+
+	// Phase 3: Lower instructions and add terminators
+	for fid in 0 .. b.functions.len {
+		b.fill_function_insts(fid)
+	}
 
 	return result
 }
@@ -1339,20 +1513,30 @@ pub fn (mut b IRBuilder) lower(files []string) !bool {
 		return false
 	}
 
-	// Next we are going to check that there is no overlap between names within any namespace
+	// Run semantic analysis after IR is built
+	mut checker := SemanticChecker.new(&b)
+	if !checker.check() {
+		// Errors are collected in the shared ErrorManager, main will print them
+		return false
+	}
+
 	return true
 }
 
 pub fn (mut b IRBuilder) lower_namespace_alias(nsa NamespaceAlias) {
 }
 
-pub fn (mut b IRBuilder) lower_stmt(stmt Stmt) {
+pub fn (mut b IRBuilder) lower_stmt(stmt Stmt) bool {
 	match stmt {
 		NamespaceAlias {
 			b.lower_namespace_alias(stmt)
+			return true
 		}
 		else {
-			panic('Statement is not implemented ${stmt}')
+			if b.errors != unsafe { nil } {
+				b.errors.error(.not_implemented, empty_location(), 'statement lowering not implemented for: ${stmt}')
+			}
+			return false
 		}
 	}
 }

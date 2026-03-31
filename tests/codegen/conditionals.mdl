@@ -1,0 +1,38 @@
+// Test conditional statements
+namespace cond;
+
+fn simple_if() : Int {
+    reg x := 10;
+    reg result := 0;
+    if (x > 5) {
+        result = 1;
+    }
+    return result;
+}
+
+fn if_else() : Int {
+    reg a := 3;
+    reg b := 7;
+    reg max := 0;
+    if (a > b) {
+        max = a;
+    } else {
+        max = b;
+    }
+    return max;
+}
+
+fn nested_if() : Int {
+    reg x := 50;
+    reg category := 0;
+    if (x > 100) {
+        category = 3;
+    } else {
+        if (x > 50) {
+            category = 2;
+        } else {
+            category = 1;
+        }
+    }
+    return category;
+}

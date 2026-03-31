@@ -1,0 +1,19 @@
+// Test file with intentional errors for semantic checking
+
+// Test 1: Wrong argument count
+fn greet(data name: String) : Void {
+    $say "Hello";
+}
+
+fn test_wrong_args() : Void {
+    greet("Alice", "Bob");  // Error: too many arguments
+}
+
+// Test 2: Type mismatch in function call
+fn add(data a: Int, data b: Int) : Int {
+    return a;
+}
+
+fn test_type_mismatch() : Void {
+    add("hello", 5);  // Error: String passed where Int expected
+}

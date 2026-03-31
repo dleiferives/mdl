@@ -1,0 +1,6 @@
+// Test file with undefined function error
+namespace test;
+
+fn main() : Void {
+    nonexistent_function();
+}

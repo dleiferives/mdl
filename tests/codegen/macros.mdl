@@ -1,0 +1,18 @@
+// Test macro commands
+namespace macros;
+
+fn simple() : Void {
+    data name := "test";
+    $say <name>;
+}
+
+fn with_reg() : Void {
+    reg count := 64;
+    $say <count>;
+}
+
+fn multiple_vars() : Void {
+    reg x := 10;
+    data y := "hello";
+    $tp @p <x> 64 <x>;
+}

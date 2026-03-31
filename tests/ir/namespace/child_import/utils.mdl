@@ -1,0 +1,2 @@
+namespace boingo;
+namespace main = "main.mdl";

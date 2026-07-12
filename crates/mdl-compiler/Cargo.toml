@@ -9,5 +9,9 @@ publish = false
 [lib]
 name = "mdl_compiler"
 
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [lints]
 workspace = true

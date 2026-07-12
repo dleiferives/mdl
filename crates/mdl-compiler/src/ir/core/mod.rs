@@ -25,7 +25,9 @@ pub use builder::{BuildError, FunctionBuilder};
 pub use edit::{EditError, FunctionEditor};
 pub use pass::{FailureBundle, FunctionPass, PassError, PassRunner};
 pub use print::{CanonicalPrinter, DebugDumper, PrintError};
-pub use verify::{Diagnostic, Diagnostics, verify_function, verify_program};
+pub use verify::{verify_function, verify_program};
+
+pub use crate::diagnostic::{Diagnostic, Diagnostics};
 
 entity_id!(
     /// Identity of a function within one Core program.

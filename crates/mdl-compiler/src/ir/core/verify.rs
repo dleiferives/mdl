@@ -1,99 +1,13 @@
 //! Layered, panic-free Core verification.
 
-use std::error::Error;
-use std::fmt;
-
 use super::analysis::definition_block;
 use super::{
     BlockId, CoreProgram, CoreType, Dominance, DominatorTree, FunctionBody, FunctionId,
     PlacementIndex, TerminatorKind, UseIndex, UseSite, ValueDef, ValueId,
 };
+use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityId;
 use crate::source::{OriginId, SourceContext};
-
-/// One independently actionable verifier finding.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Diagnostic {
-    code: &'static str,
-    message: String,
-    origin: OriginId,
-}
-
-impl Diagnostic {
-    /// Returns the stable diagnostic code.
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        self.code
-    }
-
-    /// Returns the human-readable diagnostic message.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-
-    /// Returns the best available provenance for the finding.
-    #[must_use]
-    pub const fn origin(&self) -> OriginId {
-        self.origin
-    }
-}
-
-impl fmt::Display for Diagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{}: {} ({:?})",
-            self.code, self.message, self.origin
-        )
-    }
-}
-
-/// Accumulated verifier diagnostics.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Diagnostics {
-    findings: Vec<Diagnostic>,
-}
-
-impl Diagnostics {
-    /// Returns all findings in deterministic verifier order.
-    #[must_use]
-    pub fn findings(&self) -> &[Diagnostic] {
-        &self.findings
-    }
-
-    /// Returns the number of findings.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.findings.len()
-    }
-
-    /// Returns whether no findings are present.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.findings.is_empty()
-    }
-
-    /// Returns whether at least one finding has the given stable code.
-    #[must_use]
-    pub fn contains_code(&self, code: &str) -> bool {
-        self.findings.iter().any(|finding| finding.code == code)
-    }
-}
-
-impl fmt::Display for Diagnostics {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, finding) in self.findings.iter().enumerate() {
-            if index != 0 {
-                formatter.write_str("\n")?;
-            }
-            write!(formatter, "{finding}")?;
-        }
-        Ok(())
-    }
-}
-
-impl Error for Diagnostics {}
 
 #[derive(Default)]
 struct Verifier {
@@ -102,20 +16,13 @@ struct Verifier {
 
 impl Verifier {
     fn report(&mut self, code: &'static str, message: impl Into<String>, origin: OriginId) {
-        self.findings.push(Diagnostic {
-            code,
-            message: message.into(),
-            origin,
-        });
+        self.findings.push(Diagnostic::new(code, message, origin));
     }
 
     fn finish(self) -> Result<(), Diagnostics> {
-        if self.findings.is_empty() {
-            Ok(())
-        } else {
-            Err(Diagnostics {
-                findings: self.findings,
-            })
+        match Diagnostics::from_findings(self.findings) {
+            Some(diagnostics) => Err(diagnostics),
+            None => Ok(()),
         }
     }
 }
@@ -175,31 +82,30 @@ pub fn verify_program(program: &CoreProgram, sources: &SourceContext) -> Result<
     let mut findings = vec![];
     for (function, declaration) in program.functions() {
         if sources.origin(declaration.origin).is_none() {
-            findings.push(Diagnostic {
-                code: "core.invalid-origin",
-                message: format!(
+            findings.push(Diagnostic::new(
+                "core.invalid-origin",
+                format!(
                     "function {function:?} has invalid origin {:?}",
                     declaration.origin
                 ),
-                origin: OriginId::UNKNOWN,
-            });
+                OriginId::UNKNOWN,
+            ));
         }
         let Some(body) = declaration.body() else {
-            findings.push(Diagnostic {
-                code: "core.undefined-function",
-                message: format!("internal function {function:?} has no definition"),
-                origin: declaration.origin,
-            });
+            findings.push(Diagnostic::new(
+                "core.undefined-function",
+                format!("internal function {function:?} has no definition"),
+                declaration.origin,
+            ));
             continue;
         };
         if let Err(diagnostics) = verify_function(program, sources, function, body) {
-            findings.extend(diagnostics.findings);
+            findings.extend(diagnostics.into_findings());
         }
     }
-    if findings.is_empty() {
-        Ok(())
-    } else {
-        Err(Diagnostics { findings })
+    match Diagnostics::from_findings(findings) {
+        Some(diagnostics) => Err(diagnostics),
+        None => Ok(()),
     }
 }
 

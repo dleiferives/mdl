@@ -54,6 +54,20 @@ MDL_JAVA=/path/to/java \
 cargo test -p mdl-test --test vanilla_smoke -- --ignored --nocapture
 ```
 
+The Stage 3 direct-Minecraft-IR conformance pack uses the same pinned server and
+Java 25 boundary:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test minecraft_ir -- --ignored --nocapture
+```
+
+It installs generic path/byte entries before startup, rejects unsafe paths before
+writing, checks attributable pack-loading/function-parsing logs from a checkpoint,
+and preserves the generated pack, world, logs, and compiler trace on failure. No
+client connection is required.
+
 The ordinary server harness is the initial path because compiler tests need direct
 function and command invocation. Mojang's dedicated GameTest entry point remains a
 useful later layer for tick-sensitive block and entity tests with JUnit-like XML

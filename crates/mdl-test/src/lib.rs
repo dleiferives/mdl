@@ -4,6 +4,7 @@
 //! command behavior. Fast compiler tests should not use this crate; it is for
 //! pack-load and command-execution integration tests.
 
+use std::collections::HashSet;
 use std::env;
 use std::error::Error as StdError;
 use std::fmt;
@@ -26,6 +27,7 @@ const SMOKE_MARKER: &str = "MDL_SMOKE_RESULT_42";
 const MAX_ERROR_LOG_LINES: usize = 80;
 
 static NEXT_SANDBOX_ID: AtomicU64 = AtomicU64::new(0);
+static NEXT_LOG_HISTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Result type used by the server harness.
 pub type Result<T> = std::result::Result<T, HarnessError>;
@@ -150,6 +152,42 @@ impl ServerSandbox {
         Ok(path)
     }
 
+    /// Installs a complete generic datapack before server startup.
+    ///
+    /// Every path is validated before any file is written. The entries are plain
+    /// relative paths and bytes so this harness does not depend on compiler types.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe pack name, unsafe or duplicate relative
+    /// path, non-UTF-8 path component, or filesystem failure.
+    pub fn install_datapack<I, P, B>(&self, pack_name: &str, files: I) -> Result<Vec<PathBuf>>
+    where
+        I: IntoIterator<Item = (P, B)>,
+        P: AsRef<Path>,
+        B: AsRef<[u8]>,
+    {
+        validate_component(pack_name, "datapack name")?;
+        let files = files.into_iter().collect::<Vec<_>>();
+        let mut seen = HashSet::with_capacity(files.len());
+        for (relative_path, _) in &files {
+            validate_datapack_path(relative_path.as_ref())?;
+            if !seen.insert(relative_path.as_ref().to_path_buf()) {
+                return Err(HarnessError::InvalidConfig(format!(
+                    "duplicate datapack path: {}",
+                    relative_path.as_ref().display()
+                )));
+            }
+        }
+
+        files
+            .into_iter()
+            .map(|(relative_path, contents)| {
+                self.write_datapack_file(pack_name, relative_path, contents)
+            })
+            .collect()
+    }
+
     /// Starts the server and waits for its normal ready message.
     ///
     /// # Errors
@@ -206,9 +244,17 @@ impl ServerSandbox {
             sandbox: self,
             shutdown_timeout: config.shutdown_timeout,
             command_timeout: config.command_timeout,
+            log_history_id: NEXT_LOG_HISTORY_ID.fetch_add(1, Ordering::Relaxed),
         };
 
         if let Err(error) = server.wait_for_log(READY_TEXT, config.startup_timeout) {
+            return Err(server.preserve_failure(error));
+        }
+        let startup_checkpoint = LogCheckpoint {
+            history_id: server.log_history_id,
+            line_index: 0,
+        };
+        if let Err(error) = server.check_datapack_logs_since(startup_checkpoint) {
             return Err(server.preserve_failure(error));
         }
         Ok(server)
@@ -246,6 +292,13 @@ impl ServerSandbox {
     }
 }
 
+/// A stable position in the harness's attributed server-output sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LogCheckpoint {
+    history_id: u64,
+    line_index: usize,
+}
+
 impl Drop for ServerSandbox {
     fn drop(&mut self) {
         if !self.preserve {
@@ -265,6 +318,7 @@ pub struct TestServer {
     sandbox: ServerSandbox,
     shutdown_timeout: Duration,
     command_timeout: Duration,
+    log_history_id: u64,
 }
 
 impl TestServer {
@@ -356,6 +410,46 @@ impl TestServer {
         self.wait_for_log(expected, self.command_timeout)
     }
 
+    /// Drains currently available output and records the next attributable line.
+    #[must_use]
+    pub fn log_checkpoint(&mut self) -> LogCheckpoint {
+        self.drain_available_log();
+        LogCheckpoint {
+            history_id: self.log_history_id,
+            line_index: self.log_lines.len(),
+        }
+    }
+
+    /// Fails if new output since a checkpoint reports a datapack loading or
+    /// function parsing problem.
+    ///
+    /// # Errors
+    ///
+    /// Returns the attributable lines together with recent server output.
+    pub fn check_datapack_logs_since(&mut self, checkpoint: LogCheckpoint) -> Result<()> {
+        self.drain_available_log();
+        if checkpoint.history_id != self.log_history_id
+            || checkpoint.line_index > self.log_lines.len()
+        {
+            return Err(HarnessError::InvalidConfig(
+                "log checkpoint does not belong to this server history".to_owned(),
+            ));
+        }
+        let lines = self.log_lines[checkpoint.line_index..]
+            .iter()
+            .filter(|line| is_datapack_problem(&line.text))
+            .map(|line| format!("[{}] {}", line.stream, line.text))
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            Ok(())
+        } else {
+            Err(HarnessError::DatapackLog {
+                lines,
+                log: self.recent_log(),
+            })
+        }
+    }
+
     /// Returns recent output collected by waits performed so far.
     #[must_use]
     pub fn recent_log(&self) -> String {
@@ -386,6 +480,12 @@ impl TestServer {
             .ok_or(HarnessError::NotRunning)?
             .try_wait()
             .map_err(|error| HarnessError::io("poll Minecraft server", error))
+    }
+
+    fn drain_available_log(&mut self) {
+        while let Ok(line) = self.line_rx.try_recv() {
+            self.log_lines.push(line);
+        }
     }
 
     fn preserve_failure(&mut self, error: HarnessError) -> HarnessError {
@@ -576,6 +676,54 @@ fn validate_relative_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_datapack_path(path: &Path) -> Result<()> {
+    validate_relative_path(path)?;
+    for component in path.components() {
+        let Component::Normal(component) = component else {
+            return Err(HarnessError::InvalidConfig(format!(
+                "datapack path contains a non-normal component: {}",
+                path.display()
+            )));
+        };
+        let component = component.to_str().ok_or_else(|| {
+            HarnessError::InvalidConfig(format!(
+                "datapack path is not valid UTF-8: {}",
+                path.display()
+            ))
+        })?;
+        validate_component(component, "datapack path component")?;
+    }
+    Ok(())
+}
+
+fn is_datapack_problem(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    let subject = [
+        "datapack",
+        "data pack",
+        "pack.mcmeta",
+        ".mcfunction",
+        "function",
+        "tag ",
+    ]
+    .iter()
+    .any(|subject| line.contains(subject));
+    let failure = [
+        "/error]",
+        "/warn]",
+        "failed",
+        "couldn't",
+        "could not",
+        "unable",
+        "invalid command",
+        "parse error",
+        "unknown function",
+    ]
+    .iter()
+    .any(|failure| line.contains(failure));
+    subject && failure
+}
+
 fn write_file(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         HarnessError::InvalidConfig(format!("file has no parent: {}", path.display()))
@@ -604,6 +752,8 @@ pub enum HarnessError {
     ProcessExited { status: ExitStatus, log: String },
     /// The server output streams closed unexpectedly.
     LogClosed { log: String },
+    /// New server output attributed a loading or parsing problem to a datapack.
+    DatapackLog { lines: Vec<String>, log: String },
     /// An operation was attempted after process shutdown.
     NotRunning,
     /// A failed server sandbox was retained for inspection.
@@ -633,6 +783,10 @@ impl HarnessError {
             Self::LogClosed { log } => Self::LogClosed {
                 log: merge_log(log, fallback_log),
             },
+            Self::DatapackLog { lines, log } => Self::DatapackLog {
+                lines,
+                log: merge_log(log, fallback_log),
+            },
             other => other,
         }
     }
@@ -660,6 +814,12 @@ impl fmt::Display for HarnessError {
             Self::LogClosed { log } => write!(
                 formatter,
                 "Minecraft server closed its output streams{}",
+                display_log(log)
+            ),
+            Self::DatapackLog { lines, log } => write!(
+                formatter,
+                "Minecraft reported attributable datapack errors:\n{}{}",
+                lines.join("\n"),
                 display_log(log)
             ),
             Self::NotRunning => write!(formatter, "Minecraft server is not running"),
@@ -737,6 +897,53 @@ mod tests {
             .write_datapack_file("mdl_smoke", "../outside", b"bad")
             .expect_err("parent traversal must fail");
         assert!(error.to_string().contains("relative path"));
+    }
+
+    #[test]
+    fn complete_install_validates_all_entries_before_writing() {
+        let sandbox = ServerSandbox::create(false).expect("create sandbox");
+        let error = sandbox
+            .install_datapack(
+                "mdl_complete",
+                [("pack.mcmeta", b"ok".as_slice()), ("../escape", b"bad")],
+            )
+            .expect_err("all paths must validate first");
+        assert!(error.to_string().contains("relative path"));
+        assert!(
+            !sandbox
+                .root()
+                .join("world/datapacks/mdl_complete/pack.mcmeta")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn complete_install_rejects_duplicates_and_backslash_components() {
+        let sandbox = ServerSandbox::create(false).expect("create sandbox");
+        let duplicate = sandbox
+            .install_datapack("mdl", [("same", b"a"), ("same", b"b")])
+            .expect_err("duplicate path must fail");
+        assert!(duplicate.to_string().contains("duplicate datapack path"));
+        let backslash = sandbox
+            .install_datapack("mdl", [("data\\escape", b"bad")])
+            .expect_err("backslash must fail on every host");
+        assert!(backslash.to_string().contains("path component"));
+    }
+
+    #[test]
+    fn attributable_log_filter_is_narrow_and_case_insensitive() {
+        assert!(is_datapack_problem(
+            "[ServerMain/ERROR]: Failed to load function mdl:bad"
+        ));
+        assert!(is_datapack_problem(
+            "[ServerMain/WARN]: Couldn't load tag mdl:test"
+        ));
+        assert!(!is_datapack_problem(
+            "[Server thread/WARN]: Can't keep up! Is the server overloaded?"
+        ));
+        assert!(!is_datapack_problem(
+            "[ServerMain/INFO]: Loaded 7 recipes and 12 advancements"
+        ));
     }
 
     #[test]

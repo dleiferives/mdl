@@ -124,6 +124,12 @@ Exit criteria:
 
 ## Stage 3: Structured Minecraft IR and emission
 
+Status: **Complete.** The validated target IR, layered verifier, exact renderer,
+deterministic artifact/trace emitter, generic harness boundary, official Java 26.2
+conformance pack, and Stage 4 handoff fixtures are complete. See
+[`stage-3-minecraft-ir-plan.md`](stage-3-minecraft-ir-plan.md) and
+[`stage-3-handoff.md`](stage-3-handoff.md).
+
 Introduce a target-aware IR that describes Minecraft behavior without prematurely
 flattening commands into strings.
 

@@ -68,6 +68,15 @@ impl<I, T> EntityVec<I, T> {
         }
     }
 
+    /// Reuses values moved from another already-constrained dense store in the
+    /// same order.
+    pub(crate) fn from_constrained_values(values: Vec<T>) -> Self {
+        Self {
+            values,
+            marker: PhantomData,
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.values.len()
     }
@@ -106,6 +115,15 @@ impl<I: EntityId, T> EntityVec<I, T> {
 
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = (I, &T)> + '_ {
         self.keys().zip(&self.values)
+    }
+
+    pub(crate) fn into_iter(self) -> impl ExactSizeIterator<Item = (I, T)> {
+        let keys = (0..self.values.len()).map(|index| {
+            let index = u32::try_from(index)
+                .expect("EntityVec length is constrained by successful allocation");
+            I::from_index(index)
+        });
+        keys.zip(self.values)
     }
 }
 

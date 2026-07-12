@@ -1,10 +1,9 @@
 #+title: Minecraft Datapack Language
 
-This is the parser for the Minecraft Datapack Language. The backend will be
-rewriten somepoint soon. There is an already existing version of this, the ebnf
-I came up with a while ago, and I have a simple python parser thing that takes a
-reduced form of it and makes it into functioning minecraft datapack code. [[https://github.com/dleiferives/computer_craft_dp/][Mainly
-made for this project.]]
+MDL is a typed compiler for Minecraft Java Edition datapacks. The current
+implementation is written in Rust and is being rebuilt in verified stages: a
+vanilla-server test harness and the typed Core SSA representation are complete.
+The target-aware Minecraft IR and datapack emitter are next.
 
 ** Examples
 
@@ -82,9 +81,6 @@ $say "<A><B>";
 #+end_src
 
 
-
-* MISC
-This is my first time ever using the V programming language, it has been interesting to say the least. There are some qualms that I hold, however, it seems to be a very productive language.
 
 * Notes
 ** Namespaces

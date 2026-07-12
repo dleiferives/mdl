@@ -1,0 +1,13 @@
+[package]
+name = "mdl-compiler"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "mdl_compiler"
+
+[lints]
+workspace = true

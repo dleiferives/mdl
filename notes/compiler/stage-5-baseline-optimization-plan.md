@@ -1,13 +1,15 @@
 # Stage 5: Baseline Optimization and Cost Instrumentation
 
-Status: **Reviewed revision 12 — Stages 5A–5G implemented and gated; Stage 5H next**
+Status: **Complete — reviewed revision 13; Stages 5A–5H implemented and gated**
 
 Execution checklist: [`stage-5-todo.md`](stage-5-todo.md)
 
 Core pass plans: [`stage-5-passes/README.md`](stage-5-passes/README.md)
 
+Stage 6 boundary: [`stage-5-handoff.md`](stage-5-handoff.md)
+
 Stage 4 established a correct and deterministic path from verified Core SSA to a
-vanilla-executed datapack. Stage 5 should reduce runtime work and generated structure
+vanilla-executed datapack. Stage 5 reduces runtime work and generated structure
 without weakening that path's proof boundaries.
 
 The reviewed pipeline is:
@@ -127,7 +129,7 @@ TargetExecutionCostReport
 ArtifactFootprintReport
     exact emitted files, bytes, physical lines, and trace size
 
-MeasurementReport
+MeasurementRecord
     explicitly nondeterministic target/JVM/fixture samples and protocol
 ```
 
@@ -141,7 +143,7 @@ Detailed optimization feedback is a separate, explicitly requested diagnostic
 stream. LLVM independently enables applied, missed, and analysis remarks and permits
 pass filters and hotness thresholds; GHC similarly separates compact simplifier
 statistics from its very verbose trace/all-considered-inlining dumps. Stage 5 follows
-that shape:
+that shape for Core rewrites:
 
 ```text
 CoreRemarkPolicy {
@@ -150,39 +152,28 @@ CoreRemarkPolicy {
   deterministic per-compilation record_limit
 }
 
-LoweringRemarkPolicy {
-  rejected_candidates: None | SelectedSites | AllSites
-  optional function/control-site/reason filters
-  deterministic per-compilation record_limit
-}
-
-RemarkStream<T> {
+CoreRemarkStream {
   ordered records up to record_limit
   exact-or-saturated StatisticCount by closed kind and reason
   exact-or-saturated omitted count and deterministic truncation marker
 }
 ```
 
-Normal compilation disables both streams; tests can request exact filtered remarks;
-developer tooling can request all kinds with an explicit limit. Keep the policies
-domain-specific instead of giving lowering meaningless “pass” filters or Core
-meaningless “control-site” filters. An expected pattern non-match is not a
-missed-optimization event. `Missed` means that a concrete candidate was formed and
-rejected for a stable reason, or that a budget prevented known remaining work. This
-avoids turning every instruction that fails every canonicalization pattern into
-diagnostics.
+Normal Core compilation disables this stream; tests can request exact filtered
+remarks and developer tooling can request matching kinds with an explicit limit. An
+expected pattern non-match is not a missed-optimization event. `Missed` means that a
+concrete candidate was formed and rejected for a stable reason, or that a budget
+prevented known remaining work. This avoids turning every instruction that fails
+every canonicalization pattern into diagnostics.
 
-The same rule applies to lowering: the complete selected mapping and one selected
-decision per control site remain in `LoweringDecisionReport`, while rejected
-alternatives use the bounded optional remark stream. Reports therefore remain linear
-in semantic/target entities even when candidate search grows. Timing remains separate
-ephemeral instrumentation.
-
-Concretely, `CoreOptimizationReport` and `LoweringDecisionReport` each own their
-domain-specific aggregate records plus an `Option<RemarkStream<...>>` populated only
-when requested. They do not share one erased remark enum. This preserves the existing
-single-return-value ownership shape without making verbose diagnostics mandatory or
-mixing Core identities with target-plan identities.
+Lowering is deliberately simpler in Stage 5: the closed selector considers one
+terminal-call alternative per reachable branch arm, and `LoweringDecisionReport`
+records exactly one selected-or-retained decision with a stable reason for each arm.
+That report is already linear, so a hypothetical `LoweringRemarkPolicy` would add an
+unused abstraction rather than bound real growth. Add an opt-in lowering remark
+stream only if a later stage introduces multi-candidate search whose rejected detail
+would otherwise outgrow semantic control sites. Timing remains separate ephemeral
+instrumentation.
 
 Until Stage 6 owns a top-level compilation façade, reports follow their producer:
 
@@ -193,7 +184,7 @@ Until Stage 6 owns a top-level compilation façade, reports follow their produce
 - explicit target-execution analysis borrows a verified target and returns its owned
   `TargetExecutionCostReport` without mutating or taking ownership of that target;
 - `EmissionOutput` owns `ArtifactFootprintReport` beside the exact pack and trace; and
-- the server/benchmark harness owns `MeasurementReport`.
+- the server/benchmark harness owns `MeasurementRecord`.
 
 The consumed optimizer API makes the existing pass-runner failure rule unambiguous:
 on internal failure the possibly invalid Core unit is dropped inside
@@ -1515,10 +1506,32 @@ caller.
 
 ### Empirical measurements
 
-`MeasurementRecord` owns target version, server hash, Java version, fixture, warm-up,
-sample order, sample count, and raw observations. Wall time, tick time, reload time,
-and macro-cache behavior never become universal weights without a separate reviewed
-decision.
+`MeasurementRecord` owns build and Minecraft target identity, fixture, warm-up/sample
+schedule, sample count, and raw observations. It can additionally own a server hash,
+Java version, and configured heap when—and only when—the recorded subject actually
+launches that JVM. Wall time, tick time, reload time, and macro-cache behavior never
+become universal weights without a separate reviewed decision.
+
+The harness schema is versioned JSONL and records the git revision/dirty state, exact
+build-time `rustc -vV`, Cargo profile, build target triple, host OS/architecture, and
+selected Minecraft target. Samples remain in execution order and store integer
+nanoseconds; the harness does not average them. Its checked constructor rejects an
+ordinal, count, subject, configuration, or order that disagrees with the recorded
+protocol. The release suite measures several counterbalanced rounds and interleaves
+all four Core `None|Baseline` × Minecraft `None|Baseline` configurations for each
+subject after explicit warm-ups on tiny, normal, and scale fixtures. It measures Core
+optimization (excluding fixture cloning), complete Minecraft lowering, target-cost
+analysis, emission, and the complete optimize-to-lower-to-emit path. Compact exact
+target-cost census/root summaries and artifact-footprint totals are printed separately
+from these environment-specific timings; complete compiler dumps remain available on
+their owning typed reports but are intentionally not repeated for every scale sample.
+
+Compiler-private hooks observe every Core pipeline step and every lowering phase,
+including explicit skipped events. The production path instantiates zero-sized no-op
+observers; hooks do not enter public options or deterministic reports. This mirrors
+MLIR's separation of pass statistics from timing instrumentation, rustc's separate
+self-profile/performance tooling, Cranelift's internal timing scopes, and GHC/OCaml's
+separate timing or profiling facilities.
 
 ### Candidate comparison
 
@@ -1735,12 +1748,15 @@ the target semantic authority.
 
 ### 5H — Completion and roadmap reconciliation
 
-- measure call/copy overhead without yet adding an inliner;
-- run fast, corruption, property, scale, benchmark, determinism, and official-server
-  gates;
-- confirm the revised Stage 5 and Stage 11 scope in `implementation-stages.md`;
-- execute and reconcile [`stage-5-todo.md`](stage-5-todo.md), recording any deferred
-  target-recipe experiments without turning them into completion requirements.
+- [x] expose typed, owned lowering/report and harness-measurement boundaries;
+- [x] measure every Core step and lowering phase plus complete compilation without
+  adding wall-time thresholds or an inliner;
+- [x] run generated reproduction, corruption, scale, benchmark, determinism, and
+  one-startup optimized-Core official-server gates;
+- [x] confirm the revised Stage 6, Stage 9, and Stage 11 ownership in
+  [`stage-5-handoff.md`](stage-5-handoff.md); and
+- [x] retain stable dual-guard/snapshot recipes, wider condition-stability analysis,
+  and global optimization as explicit deferrals rather than completion requirements.
 
 ## Decisions now considered settled
 
@@ -1764,8 +1780,8 @@ the target semantic authority.
     with its report. Later lowering, execution-cost, footprint, and measurement
     reports remain separately owned; Stage 6 may aggregate them without collapsing
     their determinism or failure boundaries.
-12. Aggregate statistics are always bounded; per-rewrite and rejected-candidate
-    remarks are filtered, capped, and opt-in.
+12. Aggregate statistics are always bounded; Core per-rewrite remarks are filtered,
+    capped, and opt-in, while lowering records one stable decision per branch arm.
 13. Exact command-step weights and finite local-path ranges are retained independently
     from per-root bounds, so cyclic code remains optimizable and explainable.
 14. Every supported external entry receives its own root summary; private helpers
@@ -1918,6 +1934,11 @@ upstream project.
 - The actual post-lowering emission boundary and owners of artifact bytes/trace:
   [`datapack/emit.rs`](../../crates/mdl-compiler/src/datapack/emit.rs) and
   [`datapack/mod.rs`](../../crates/mdl-compiler/src/datapack/mod.rs)
+- Harness-owned measurement schema, interleaved release suite, and optimized-Core
+  vanilla differential:
+  [`measurement.rs`](../../crates/mdl-test/src/measurement.rs),
+  [`stage5_measurements.rs`](../../crates/mdl-test/tests/stage5_measurements.rs), and
+  [`core_lowering.rs`](../../crates/mdl-test/tests/core_lowering.rs)
 - Selected 26.2 defaults:
   [`target/java_26_2.rs`](../../crates/mdl-compiler/src/target/java_26_2.rs)
 - Project decisions and measured vanilla limit behavior:
@@ -1941,6 +1962,9 @@ upstream project.
 - Rust MIR dataflow framework and block-entry result model: <https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir_dataflow/index.html>
 - Rust MIR dataflow design guide: <https://rustc-dev-guide.rust-lang.org/mir/dataflow.html>
 - Rust compiler testing layers and package-test guidance: <https://rustc-dev-guide.rust-lang.org/tests/intro.html>
+- Rust compiler profiling and self-profile tooling: <https://rustc-dev-guide.rust-lang.org/profiling.html>
+- rustc-perf collector protocol: <https://github.com/rust-lang/rustc-perf/blob/main/collector/README.md>
+- Zig reproducible release-build and compiler-performance evidence: <https://ziglang.org/download/0.11.0/release-notes.html>
 - Zig AIR: <https://codeberg.org/ziglang/zig/src/branch/master/src/Air.zig>
 - Zig AIR liveness: <https://codeberg.org/ziglang/zig/src/branch/master/src/Air/Liveness.zig>
 - Zig AIR liveness verifier: <https://github.com/ziglang/zig/blob/738d2be9d6b6ef3ff3559130c05159ef53336224/src/Air/Liveness/Verify.zig>
@@ -1960,6 +1984,8 @@ upstream project.
 - OCaml Flambda call-site inlining decisions and typed rejection outcomes: <https://github.com/ocaml/ocaml/blob/trunk/middle_end/flambda/inlining_decision.ml>
 - OCaml native-code liveness: <https://github.com/ocaml/ocaml/blob/trunk/asmcomp/liveness.ml>
 - OCaml native-code interference construction: <https://github.com/ocaml/ocaml/blob/trunk/asmcomp/interf.ml>
+- OCaml compiler profiling scopes: <https://github.com/ocaml/ocaml/blob/trunk/utils/profile.ml>
+- OCaml Flambda inlining statistics: <https://github.com/ocaml/ocaml/blob/trunk/middle_end/flambda/inlining_stats.ml>
 - MLIR pass infrastructure: <https://mlir.llvm.org/docs/PassManagement/>
 - MLIR pattern rewriting, legality-before-mutation, and driver-owned cost policy: <https://mlir.llvm.org/docs/PatternRewriter/>
 - MLIR side effects and speculation: <https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/>
@@ -2005,6 +2031,8 @@ upstream project.
 - Cranelift block-parameter SSA reference: <https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md>
 - Cranelift ISLE typed lowering, overlap, specificity, and explicit priority: <https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/isle/docs/language-reference.md>
 - Cranelift iterative dominator-tree construction: <https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/codegen/src/dominator_tree.rs>
+- Cranelift internal timing scopes: <https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/codegen/src/timing.rs>
+- Wasmtime generated and differential fuzzing/reproduction protocol: <https://github.com/bytecodealliance/wasmtime/blob/main/fuzz/README.md>
 - Weighted pushdown systems for interprocedural path problems: <https://minds.wisconsin.edu/handle/1793/60338>
 - GCC pass-manager internals: <https://gcc.gnu.org/onlinedocs/gccint/Pass-manager.html>
 - GCC SSA-CCP implementation: <https://gcc.gnu.org/git/?p=gcc.git;a=blob;f=gcc/tree-ssa-ccp.cc;hb=HEAD>

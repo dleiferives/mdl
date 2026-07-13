@@ -691,31 +691,72 @@ fn declaration_lifecycle_rejects_missing_and_duplicate_definitions() {
 
 #[test]
 fn generated_edit_sequences_preserve_invariants_or_reject_without_mutation() {
+    const GENERATOR_VERSION: u32 = 1;
+
     for seed in 0_u8..16 {
+        let operation = match seed % 4 {
+            0 => "replace-first-with-second",
+            1 => "replace-first-with-sum",
+            2 => "erase-used-first",
+            _ => "erase-unused-second",
+        };
+        let first_literal = i32::from(seed);
+        let second_literal = first_literal + 1;
+        let context = format!(
+            "generator_version={GENERATOR_VERSION} seed={seed} shape=linear-i32-edit inputs=first:{first_literal},second:{second_literal},sum:first+first,operation:{operation}"
+        );
         let sources = SourceContext::new();
         let mut program = CoreProgram::new();
         let function = program
             .declare_function(Some("generated"), vec![], vec![CoreType::I32], UNKNOWN)
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
-        let first = builder.i32_constant(i32::from(seed), UNKNOWN).unwrap();
-        let second = builder.i32_constant(i32::from(seed) + 1, UNKNOWN).unwrap();
-        let sum = builder.i32_add_wrapping(first, first, UNKNOWN).unwrap();
-        let first_inst = match builder.body().value(first).unwrap().definition() {
+            .unwrap_or_else(|error| panic!("{context}: declaration failed: {error:?}"));
+        let mut builder =
+            FunctionBuilder::new(&program, &sources, function).unwrap_or_else(|diagnostics| {
+                panic!("{context}: builder creation failed: {diagnostics:?}")
+            });
+        let first = builder
+            .i32_constant(first_literal, UNKNOWN)
+            .unwrap_or_else(|error| panic!("{context}: first constant failed: {error:?}"));
+        let second = builder
+            .i32_constant(second_literal, UNKNOWN)
+            .unwrap_or_else(|error| panic!("{context}: second constant failed: {error:?}"));
+        let sum = builder
+            .i32_add_wrapping(first, first, UNKNOWN)
+            .unwrap_or_else(|error| panic!("{context}: sum creation failed: {error:?}"));
+        let first_inst = match builder
+            .body()
+            .value(first)
+            .unwrap_or_else(|| panic!("{context}: first value is missing"))
+            .definition()
+        {
             ValueDef::InstResult { instruction, .. } => instruction,
-            ValueDef::BlockParam { .. } => unreachable!(),
+            ValueDef::BlockParam { .. } => {
+                unreachable!("{context}: first constant became a block parameter")
+            }
         };
-        let second_inst = match builder.body().value(second).unwrap().definition() {
+        let second_inst = match builder
+            .body()
+            .value(second)
+            .unwrap_or_else(|| panic!("{context}: second value is missing"))
+            .definition()
+        {
             ValueDef::InstResult { instruction, .. } => instruction,
-            ValueDef::BlockParam { .. } => unreachable!(),
+            ValueDef::BlockParam { .. } => {
+                unreachable!("{context}: second constant became a block parameter")
+            }
         };
         builder
             .terminate(Terminator::new(TerminatorKind::Return(vec![sum]), UNKNOWN))
-            .unwrap();
-        let mut body = builder.finish().unwrap();
+            .unwrap_or_else(|error| panic!("{context}: return creation failed: {error:?}"));
+        let mut body = builder.finish().unwrap_or_else(|diagnostics| {
+            panic!("{context}: generated body is invalid: {diagnostics:?}")
+        });
         let before = format!("{body:#?}");
         let result = {
-            let mut editor = FunctionEditor::new(&program, &sources, function, &mut body).unwrap();
+            let mut editor = FunctionEditor::new(&program, &sources, function, &mut body)
+                .unwrap_or_else(|diagnostics| {
+                    panic!("{context}: editor creation failed: {diagnostics:?}")
+                });
             match seed % 4 {
                 0 => editor.replace_value(first, second),
                 1 => editor.replace_value(first, sum),
@@ -724,8 +765,18 @@ fn generated_edit_sequences_preserve_invariants_or_reject_without_mutation() {
             }
         };
         match result {
-            Ok(()) => verify_function(&program, &sources, function, &body).unwrap(),
-            Err(_) => assert_eq!(format!("{body:#?}"), before),
+            Ok(()) => {
+                verify_function(&program, &sources, function, &body).unwrap_or_else(
+                    |diagnostics| {
+                        panic!("{context}: accepted edit produced invalid IR: {diagnostics:?}")
+                    },
+                );
+            }
+            Err(error) => assert_eq!(
+                format!("{body:#?}"),
+                before,
+                "{context}: rejected edit {error:?} mutated the body"
+            ),
         }
     }
 }

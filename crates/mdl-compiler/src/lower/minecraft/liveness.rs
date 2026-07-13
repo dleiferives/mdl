@@ -5,6 +5,7 @@
 //! the distinct-home fallback. Incomplete facts never cross this module boundary.
 
 use std::collections::VecDeque;
+use std::fmt;
 
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
 use crate::ir::core::{BlockId, CoreProgram, FunctionBody, FunctionId, TerminatorKind, ValueId};
@@ -142,6 +143,23 @@ pub(crate) enum LivenessFallbackReason {
     PropagationEvents,
     RetainedSegments,
     DerivedBoundOverflow,
+}
+
+impl LivenessFallbackReason {
+    /// Stable machine-readable spelling used by deterministic reports.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::PropagationEvents => "propagation-events",
+            Self::RetainedSegments => "retained-segments",
+            Self::DerivedBoundOverflow => "derived-bound-overflow",
+        }
+    }
+}
+
+impl fmt::Display for LivenessFallbackReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.code())
+    }
 }
 
 /// Complete-or-fallback result for one function.
@@ -1303,6 +1321,27 @@ mod tests {
     use crate::lower::minecraft::assignment::{AssignmentError, HomeAssignment};
     use crate::lower::minecraft::demand::{RuntimeDemand, RuntimeDemandLimits};
     use crate::source::{OriginId, SourceContext};
+
+    #[test]
+    fn fallback_reason_codes_are_stable_kebab_case() {
+        for (reason, expected) in [
+            (
+                LivenessFallbackReason::PropagationEvents,
+                "propagation-events",
+            ),
+            (
+                LivenessFallbackReason::RetainedSegments,
+                "retained-segments",
+            ),
+            (
+                LivenessFallbackReason::DerivedBoundOverflow,
+                "derived-bound-overflow",
+            ),
+        ] {
+            assert_eq!(reason.code(), expected);
+            assert_eq!(reason.to_string(), expected);
+        }
+    }
 
     #[test]
     fn straight_line_points_are_half_open_and_keep_use_before_def_order() {

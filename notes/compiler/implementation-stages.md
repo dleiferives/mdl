@@ -217,16 +217,17 @@ partitioning work across ticks remains Stage 9.
 
 ## Stage 5: Baseline optimization and cost instrumentation
 
-Status: **Reviewed revision 12; Stages 5A–5G are implemented and gated; Stage 5H is
-next.** See
+Status: **Complete — reviewed revision 13; Stages 5A–5H are implemented and gated.** See
 [`stage-5-baseline-optimization-plan.md`](stage-5-baseline-optimization-plan.md) and
-[`stage-5-todo.md`](stage-5-todo.md).
+[`stage-5-todo.md`](stage-5-todo.md), with the public boundary recorded in
+[`stage-5-handoff.md`](stage-5-handoff.md).
 
 Add conventional, auditable optimizations before advanced search techniques. The
 closed baseline Core pipeline implements items 1–5, Stage 5F implements physical
 storage item 6, Stage 5G implements items 7–8, and Stage 5A implements the
-deterministic accounting part of item 10. Item 9 remains deliberately deferred with
-the optional stability-dependent recipes; Stage 5H owns empirical completion:
+deterministic accounting part of item 10, and Stage 5H completes report ownership,
+measurements, hardening, and conformance. Item 9 remains deliberately deferred with
+the optional stability-dependent recipes:
 
 1. cheap closed Core canonicalization;
 2. sparse conditional constant propagation and branch folding;
@@ -288,8 +289,9 @@ mandatory lowering phase. A cost-analysis failure cannot discard an otherwise va
 `LoweringOutput`; the Stage 6 façade will invoke and aggregate it once.
 
 Ordinary reports contain bounded aggregate statistics and the complete chosen
-lowering. Per-rewrite and rejected-candidate remarks are filtered, capped, and
-opt-in, so diagnostics cannot dwarf a large input.
+lowering. Core per-rewrite remarks are filtered, capped, and opt-in. Lowering records
+one stable selected-or-retained reason per reachable branch arm, so its complete
+decision report remains linear without a second remark framework.
 
 Stage 5 accepts typed assumed `max_command_sequence_length` and `max_command_forks`
 values for compatibility assessment, defaulting to the selected target. It reports
@@ -492,18 +494,16 @@ installation.
 
 ## Immediate implementation tranche
 
-Stages 1 through 4 have completed the first vertical slice. Stage 5A accounting, the
-Stage 5B–5D Core pipeline, the Stage 5E immutable physical planner, Stage 5F sparse
-liveness/coalescing, and Stage 5G target recipes are also complete. The remaining
-engineering tranche is:
+Stages 1 through 5 have completed and gated the first optimized vertical slice. The
+next engineering tranche is Stage 6's minimal typed frontend:
 
 ```text
-report API + measurements + completion gates
+source text -> parse -> type check -> Core -> existing optimized datapack pipeline
 ```
 
-The Stage 4 lowering remains the byte-stable differential oracle throughout this
-tranche. Stage 6 should not expand the surface language until the optimized path is
-auditable, bounded in compiler resource use, and covered by real-server regressions.
+The Stage 4/Core-None/Minecraft-None path remains the byte-stable differential oracle
+throughout Stage 6. The frontend may aggregate existing outputs in a compilation
+façade but must preserve their typed ownership and failure boundaries.
 
 ## Cross-cutting rules
 
@@ -517,5 +517,7 @@ These apply throughout the roadmap:
 - new runtime support is demand-driven and removable;
 - compiler output must remain inspectable;
 - measured vanilla behavior outranks assumptions about command performance;
-- optimization passes must be individually testable and disableable;
+- optimization passes must be individually testable; production exposes deliberate
+  stable optimization levels rather than a pass registry, and every optimized layer
+  remains wholly disableable through its `None` reference mode;
 - deferred decisions should stay deferred until a milestone actually needs them.

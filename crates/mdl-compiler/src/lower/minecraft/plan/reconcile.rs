@@ -378,3 +378,387 @@ fn recipe_mismatch(message: impl Into<String>) -> Diagnostics {
         crate::source::OriginId::UNKNOWN,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{reconcile_selected_cost, tail_target, verify_constructed_control_recipes};
+    use crate::entity::EntityId;
+    use crate::ir::core::{
+        BlockId, BlockTarget, CoreProgram, CoreType, FunctionBuilder, FunctionId, Terminator,
+        TerminatorKind,
+    };
+    use crate::ir::minecraft::{
+        CommandKind, CommandNode, ExecuteCommand, ExecuteModifier, ExecuteModifiers, FunctionCall,
+        InternalCallableRef, McFunctionId, MinecraftProgram, MinecraftProgramBuilder,
+        ObjectiveName, PackNamespace, ReturnCommand,
+    };
+    use crate::lower::minecraft::analysis::SemanticInventory;
+    use crate::lower::minecraft::assignment::HomeAssignment;
+    use crate::lower::minecraft::demand::{RuntimeDemand, RuntimeDemandLimits};
+    use crate::lower::minecraft::edge_transfer::EdgeTransferPlan;
+    use crate::lower::minecraft::placement::{
+        BranchArmRecipe, ControlRecipePlan, InlineZeroAbiTerminalCall,
+    };
+    use crate::lower::minecraft::plan::{BranchArm, LoweringPlan};
+    use crate::lower::minecraft::resources::ResourceInventory;
+    use crate::lower::minecraft::{
+        LoweringOptions, MinecraftOptimizationLevel, emit::construct_program,
+    };
+    use crate::source::{Origin, OriginId, SourceContext};
+    use crate::target::JavaEditionTarget;
+
+    struct Fixture {
+        core: CoreProgram,
+        plan: LoweringPlan,
+        target: MinecraftProgram,
+        dispatcher: FunctionId,
+        source: BlockId,
+        wrong_origin: OriginId,
+    }
+
+    #[test]
+    fn rejects_a_constructed_recipe_with_a_changed_target() {
+        let fixture = selected_terminal_call_fixture();
+        let source_target = source_target(&fixture);
+        let commands = source_commands(&fixture);
+        let wrong_target = tail_target(commands[1]).expect("fallback must be a tail call");
+        let corrupted = rebuild_with_replaced_command(
+            &fixture.target,
+            source_target,
+            0,
+            retarget_conditional(commands[0], wrong_target),
+        );
+
+        assert_reconciliation_error(
+            verify_constructed_control_recipes(&fixture.core, &fixture.plan, &corrupted),
+            "differs from planned",
+        );
+    }
+
+    #[test]
+    fn rejects_a_constructed_recipe_with_a_changed_guard_origin() {
+        let fixture = selected_terminal_call_fixture();
+        let source_target = source_target(&fixture);
+        let commands = source_commands(&fixture);
+        let CommandKind::Execute(execute) = commands[0].kind() else {
+            panic!("fixture guard must be an execute command")
+        };
+        let [modifier] = execute.modifiers().as_slice() else {
+            panic!("fixture guard must have one modifier")
+        };
+        let changed_guard = CommandNode::new(
+            CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(
+                    ExecuteModifier::new(modifier.kind().clone(), fixture.wrong_origin),
+                    vec![],
+                ),
+                execute.run().clone(),
+            )),
+            commands[0].origin(),
+        )
+        .unwrap();
+        let corrupted =
+            rebuild_with_replaced_command(&fixture.target, source_target, 0, changed_guard);
+
+        assert_reconciliation_error(
+            verify_constructed_control_recipes(&fixture.core, &fixture.plan, &corrupted),
+            "branch guard lost its recorded semantic origin",
+        );
+    }
+
+    #[test]
+    fn rejects_a_constructed_recipe_with_a_changed_command_shape() {
+        let fixture = selected_terminal_call_fixture();
+        let source_target = source_target(&fixture);
+        let commands = source_commands(&fixture);
+        let fallback_target = tail_target(commands[1]).expect("fallback must be a tail call");
+        let bare_call = function_call(fallback_target, commands[1].origin());
+        let corrupted = rebuild_with_replaced_command(&fixture.target, source_target, 1, bare_call);
+
+        assert_reconciliation_error(
+            verify_constructed_control_recipes(&fixture.core, &fixture.plan, &corrupted),
+            "recipe target is not `return run`",
+        );
+    }
+
+    #[test]
+    fn rejects_a_constructed_recipe_with_an_extra_zero_cost_node() {
+        let fixture = selected_terminal_call_fixture();
+        let commands = source_commands(&fixture);
+        let recipe = selected_recipe(&fixture);
+        let nested_return = CommandNode::new(
+            CommandKind::Return(ReturnCommand::run(commands[1].clone())),
+            commands[1].origin(),
+        )
+        .unwrap();
+
+        assert_reconciliation_error(
+            reconcile_selected_cost(commands[0], &nested_return, recipe),
+            "recipe structure differs from its frozen prediction",
+        );
+    }
+
+    #[test]
+    fn rejects_actual_command_steps_that_disagree_with_the_selected_recipe() {
+        let fixture = selected_terminal_call_fixture();
+        let commands = source_commands(&fixture);
+        let recipe = selected_recipe(&fixture);
+        let CommandKind::Execute(execute) = commands[0].kind() else {
+            panic!("fixture guard must be an execute command")
+        };
+        let [modifier] = execute.modifiers().as_slice() else {
+            panic!("fixture guard must have one modifier")
+        };
+        let extra_guard = CommandNode::new(
+            CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(modifier.clone(), vec![]),
+                commands[1].clone(),
+            )),
+            commands[1].origin(),
+        )
+        .unwrap();
+
+        assert_reconciliation_error(
+            reconcile_selected_cost(commands[0], &extra_guard, recipe),
+            "command-step recount differs from its frozen prediction",
+        );
+    }
+
+    fn selected_terminal_call_fixture() -> Fixture {
+        let (core, dispatcher, source, wrong_origin) = terminal_call_core();
+        let plan = selected_baseline_plan(&core);
+        let target = construct_program(&core, &plan).unwrap();
+        verify_constructed_control_recipes(&core, &plan, &target).unwrap();
+
+        Fixture {
+            core,
+            plan,
+            target,
+            dispatcher,
+            source,
+            wrong_origin,
+        }
+    }
+
+    fn terminal_call_core() -> (CoreProgram, FunctionId, BlockId, OriginId) {
+        let mut sources = SourceContext::new();
+        let branch_origin = sources.add_origin(Origin::Unknown).unwrap();
+        let call_origin = sources.add_origin(Origin::Unknown).unwrap();
+        let terminal_return_origin = sources.add_origin(Origin::Unknown).unwrap();
+        let wrong_origin = sources.add_origin(Origin::Unknown).unwrap();
+        let mut core = CoreProgram::new();
+        let leaf = core
+            .declare_function(Some("leaf"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let dispatcher = core
+            .declare_function(
+                Some("dispatcher"),
+                vec![CoreType::Bool],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+
+        let mut leaf_builder = FunctionBuilder::new(&core, &sources, leaf).unwrap();
+        leaf_builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                terminal_return_origin,
+            ))
+            .unwrap();
+        core.define_function(leaf, leaf_builder.finish().unwrap())
+            .unwrap();
+
+        let mut builder = FunctionBuilder::new(&core, &sources, dispatcher).unwrap();
+        let source = builder.entry_block();
+        let condition = builder.body().block(source).unwrap().parameters()[0].value();
+        let selected = builder.create_block(OriginId::UNKNOWN).unwrap();
+        let fallback = builder.create_block(OriginId::UNKNOWN).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Branch {
+                    condition,
+                    then_target: BlockTarget::new(selected, vec![]),
+                    else_target: BlockTarget::new(fallback, vec![]),
+                },
+                branch_origin,
+            ))
+            .unwrap();
+        builder.switch_to_block(selected).unwrap();
+        builder.call(leaf, vec![], call_origin).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                terminal_return_origin,
+            ))
+            .unwrap();
+        builder.switch_to_block(fallback).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        core.define_function(dispatcher, builder.finish().unwrap())
+            .unwrap();
+
+        (core, dispatcher, source, wrong_origin)
+    }
+
+    fn selected_baseline_plan(core: &CoreProgram) -> LoweringPlan {
+        let options = LoweringOptions::new(
+            JavaEditionTarget::V26_2,
+            PackNamespace::new("mdl").unwrap(),
+            ObjectiveName::new("mdl.reg").unwrap(),
+        )
+        .unwrap()
+        .with_optimization_level(MinecraftOptimizationLevel::Baseline);
+        let inventory = SemanticInventory::new(core).unwrap();
+        let demand = RuntimeDemand::for_level(
+            core,
+            &inventory,
+            MinecraftOptimizationLevel::Baseline,
+            RuntimeDemandLimits::derived(),
+        )
+        .unwrap();
+        let assignment =
+            HomeAssignment::for_baseline_derived_liveness(core, &inventory, &demand).unwrap();
+        let transfers = EdgeTransferPlan::for_baseline(core, &inventory, &assignment).unwrap();
+        let control = ControlRecipePlan::new(
+            core,
+            &inventory,
+            &assignment,
+            &transfers,
+            MinecraftOptimizationLevel::Baseline,
+        )
+        .unwrap();
+        let resources =
+            ResourceInventory::for_control_plan(core, &inventory, &transfers, &control, &options)
+                .unwrap();
+        LoweringPlan::from_selected_parts(core, &options, assignment, transfers, control, resources)
+            .unwrap()
+    }
+
+    fn source_target(fixture: &Fixture) -> McFunctionId {
+        let planned = fixture
+            .plan
+            .block_function(fixture.dispatcher, fixture.source)
+            .expect("fixture source must be materialized");
+        McFunctionId::from_index(planned.index())
+    }
+
+    fn source_commands(fixture: &Fixture) -> Vec<&CommandNode> {
+        fixture
+            .target
+            .function(source_target(fixture))
+            .unwrap()
+            .body()
+            .commands()
+            .map(|(_, command)| command)
+            .collect()
+    }
+
+    fn selected_recipe(fixture: &Fixture) -> InlineZeroAbiTerminalCall {
+        let Some(BranchArmRecipe::InlineZeroAbiTerminalCall(recipe)) = fixture
+            .plan
+            .branch_arm_recipe(fixture.dispatcher, fixture.source, BranchArm::Then)
+        else {
+            panic!("fixture then arm must select the terminal-call recipe")
+        };
+        recipe
+    }
+
+    fn function_call(target: McFunctionId, origin: OriginId) -> CommandNode {
+        CommandNode::new(
+            CommandKind::Function(FunctionCall::new(
+                InternalCallableRef::Function(target).into(),
+            )),
+            origin,
+        )
+        .unwrap()
+    }
+
+    fn tail_call(target: McFunctionId, origin: OriginId) -> CommandNode {
+        CommandNode::new(
+            CommandKind::Return(ReturnCommand::run(function_call(target, origin))),
+            origin,
+        )
+        .unwrap()
+    }
+
+    fn retarget_conditional(command: &CommandNode, target: McFunctionId) -> CommandNode {
+        let CommandKind::Execute(execute) = command.kind() else {
+            panic!("fixture guard must be an execute command")
+        };
+        CommandNode::new(
+            CommandKind::Execute(ExecuteCommand::new(
+                execute.modifiers().clone(),
+                tail_call(target, execute.run().origin()),
+            )),
+            command.origin(),
+        )
+        .unwrap()
+    }
+
+    fn rebuild_with_replaced_command(
+        program: &MinecraftProgram,
+        owner: McFunctionId,
+        command_index: usize,
+        replacement: CommandNode,
+    ) -> MinecraftProgram {
+        let mut builder = MinecraftProgramBuilder::new(program.target());
+        for (function, declaration) in program.functions() {
+            let rebuilt = builder
+                .declare_function(declaration.resource().clone(), declaration.origin())
+                .unwrap();
+            assert_eq!(rebuilt, function);
+        }
+        for (tag, declaration) in program.function_tags() {
+            let rebuilt = builder
+                .declare_function_tag(
+                    declaration.resource().clone(),
+                    declaration.origin(),
+                    declaration.merge(),
+                )
+                .unwrap();
+            assert_eq!(rebuilt, tag);
+        }
+
+        let mut replacement = Some(replacement);
+        for (function, declaration) in program.functions() {
+            let mut body = builder.begin_function(function).unwrap();
+            for (index, (_, command)) in declaration.body().commands().enumerate() {
+                let command = if function == owner && index == command_index {
+                    replacement.take().expect("replacement site must be unique")
+                } else {
+                    command.clone()
+                };
+                body.push(command).unwrap();
+            }
+            body.finish();
+        }
+        assert!(replacement.is_none(), "replacement site must exist");
+        for (tag, declaration) in program.function_tags() {
+            let mut rebuilt = builder.begin_function_tag(tag).unwrap();
+            for entry in declaration.entries() {
+                rebuilt.push(entry.clone());
+            }
+            rebuilt.finish();
+        }
+        builder.finish().unwrap()
+    }
+
+    fn assert_reconciliation_error(
+        result: Result<(), crate::diagnostic::Diagnostics>,
+        expected_message: &str,
+    ) {
+        let diagnostics = result.expect_err("corrupted recipe output must be rejected");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics}");
+        assert!(
+            diagnostics.findings()[0]
+                .message()
+                .contains(expected_message),
+            "expected {expected_message:?}, got {diagnostics}"
+        );
+    }
+}

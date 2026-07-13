@@ -349,9 +349,10 @@ pub(super) fn solve(
     caps: AnalysisArithmeticCaps,
     update_limit: usize,
 ) -> Option<SolvedCosts> {
-    if locals.len() != graph.outgoing.len() || program.functions().len() != locals.len() {
+    if program.functions().len() != locals.len() {
         return None;
     }
+    preflight_execution_graph(graph, locals.len())?;
     let region_edges = region_edges(graph)?;
     let order = region_finish_order(&region_edges)?;
     let mut function_flows = vec![None; locals.len()];
@@ -460,6 +461,55 @@ pub(super) fn solve(
         updates,
         command_transfer_visits.get(),
     )
+}
+
+/// Proves every dense cross-table relationship used by the solver before any
+/// graph-derived ID is used as a vector index.
+fn preflight_execution_graph(graph: &ExecutionGraph, function_count: usize) -> Option<()> {
+    if graph.outgoing.len() != function_count || graph.function_regions.len() != function_count {
+        return None;
+    }
+
+    for callees in &graph.outgoing {
+        for callee in callees {
+            let callee = usize::try_from(callee.index()).ok()?;
+            if callee >= function_count {
+                return None;
+            }
+        }
+    }
+
+    let mut memberships = vec![None; function_count];
+    for (region_index, component) in graph.components.iter().enumerate() {
+        if usize::try_from(component.id.index()).ok()? != region_index {
+            return None;
+        }
+        for function in &component.functions {
+            let function_index = usize::try_from(function.index()).ok()?;
+            let membership = memberships.get_mut(function_index)?;
+            if membership.replace(region_index).is_some() {
+                return None;
+            }
+        }
+    }
+
+    for (function_index, region) in graph.function_regions.iter().enumerate() {
+        let region_index = usize::try_from(region.index()).ok()?;
+        if region_index >= graph.components.len()
+            || memberships[function_index] != Some(region_index)
+        {
+            return None;
+        }
+    }
+
+    if graph
+        .components
+        .iter()
+        .any(|component| component.functions.is_empty())
+    {
+        return None;
+    }
+    Some(())
 }
 
 fn feasible_weighted_updates(components: &[FeasibleComponent]) -> Option<usize> {
@@ -2276,13 +2326,14 @@ fn region_edges(graph: &ExecutionGraph) -> Option<Vec<Vec<usize>>> {
     let mut output = vec![vec![]; graph.components.len()];
     for (caller, callees) in graph.outgoing.iter().enumerate() {
         let caller_region = usize::try_from(graph.function_regions.get(caller)?.index()).ok()?;
+        let destinations = output.get_mut(caller_region)?;
         let mut seen = HashSet::new();
         for callee in callees {
             let callee_index = usize::try_from(callee.index()).ok()?;
             let destination_region =
                 usize::try_from(graph.function_regions.get(callee_index)?.index()).ok()?;
             if caller_region != destination_region && seen.insert(destination_region) {
-                output[caller_region].push(destination_region);
+                destinations.push(destination_region);
             }
         }
     }
@@ -2317,7 +2368,65 @@ fn region_finish_order(edges: &[Vec<usize>]) -> Option<Vec<usize>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::entity::EntityId;
+    use crate::ir::minecraft::{
+        FunctionResourceId, McFunctionId, MinecraftProgram, MinecraftProgramBuilder,
+    };
+    use crate::source::OriginId;
+    use crate::target::JavaEditionTarget;
+
     use super::*;
+
+    fn graph_fixture() -> (
+        MinecraftProgram,
+        Vec<FunctionLocalSummary>,
+        ExecutionGraph,
+        [McFunctionId; 3],
+    ) {
+        let mut builder = MinecraftProgramBuilder::new(JavaEditionTarget::V26_2);
+        let first = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:first").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let second = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:second").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let third = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:third").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        for function in [first, second, third] {
+            builder.begin_function(function).unwrap().finish();
+        }
+        let program = builder.finish().unwrap();
+        let locals = crate::analysis::minecraft::local::summarize_functions(&program).unwrap();
+        let graph = ExecutionGraph::build(&program, &locals, usize::MAX).unwrap();
+        (program, locals, graph, [first, second, third])
+    }
+
+    fn rejects_graph(
+        program: &MinecraftProgram,
+        locals: &[FunctionLocalSummary],
+        graph: &ExecutionGraph,
+    ) -> bool {
+        let assumptions =
+            super::super::CommandLimitAssumptions::for_target(JavaEditionTarget::V26_2);
+        solve(
+            program,
+            graph,
+            locals,
+            AnalysisArithmeticCaps::minimum_for(assumptions),
+            usize::MAX,
+        )
+        .is_none()
+    }
 
     #[test]
     fn maximum_arithmetic_cap_still_saturates_without_construction_failure() {
@@ -2329,5 +2438,71 @@ mod tests {
             multiply_bound(CountBound::exact(u64::MAX), CountBound::exact(2), u64::MAX).unwrap();
         assert_eq!(product.lower(), u64::MAX);
         assert_eq!(product.upper().kind(), CountUpperKind::AboveAnalysisCap);
+    }
+
+    #[test]
+    fn graph_preflight_rejects_outgoing_function_region_length_mismatch() {
+        let (program, locals, mut graph, _) = graph_fixture();
+        graph.function_regions.pop();
+
+        assert!(rejects_graph(&program, &locals, &graph));
+    }
+
+    #[test]
+    fn graph_preflight_rejects_dangling_outgoing_function() {
+        let (program, locals, mut graph, _) = graph_fixture();
+        graph.outgoing[0].push(McFunctionId::from_index(u32::MAX));
+
+        assert!(rejects_graph(&program, &locals, &graph));
+    }
+
+    #[test]
+    fn graph_preflight_rejects_component_id_out_of_position() {
+        let (program, locals, mut graph, _) = graph_fixture();
+        graph.components[0].id = graph.components[1].id;
+
+        assert!(rejects_graph(&program, &locals, &graph));
+    }
+
+    #[test]
+    fn graph_preflight_rejects_duplicate_function_membership() {
+        let (program, locals, mut graph, functions) = graph_fixture();
+        let function_index = usize::try_from(functions[0].index()).unwrap();
+        let region_index = usize::try_from(graph.function_regions[function_index].index()).unwrap();
+        graph.components[region_index].functions.push(functions[0]);
+
+        assert!(rejects_graph(&program, &locals, &graph));
+    }
+
+    #[test]
+    fn graph_preflight_rejects_missing_function_membership() {
+        let (program, locals, mut graph, functions) = graph_fixture();
+        let function_index = usize::try_from(functions[0].index()).unwrap();
+        let region_index = usize::try_from(graph.function_regions[function_index].index()).unwrap();
+        graph.components[region_index].functions.clear();
+
+        assert!(rejects_graph(&program, &locals, &graph));
+    }
+
+    #[test]
+    fn graph_preflight_rejects_function_region_disagreement() {
+        let (program, locals, mut graph, functions) = graph_fixture();
+        let function_index = usize::try_from(functions[0].index()).unwrap();
+        let original_region =
+            usize::try_from(graph.function_regions[function_index].index()).unwrap();
+        let different_region = (original_region + 1) % graph.components.len();
+        graph.function_regions[function_index] = graph.components[different_region].id;
+
+        assert!(rejects_graph(&program, &locals, &graph));
+    }
+
+    #[test]
+    fn graph_preflight_rejects_out_of_bounds_function_region() {
+        let (program, locals, mut graph, functions) = graph_fixture();
+        let function_index = usize::try_from(functions[0].index()).unwrap();
+        graph.function_regions[function_index] =
+            super::super::CostRegionId::from_index(u32::try_from(graph.components.len()).unwrap());
+
+        assert!(rejects_graph(&program, &locals, &graph));
     }
 }

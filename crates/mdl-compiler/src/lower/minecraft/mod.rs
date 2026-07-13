@@ -36,6 +36,7 @@ pub use api::{
     LoweringMap, LoweringOutput, LoweringPhase, RegisterSlot, lower_to_minecraft,
 };
 pub(crate) use names::GeneratedNames;
+pub use plan::{LoweringDecisionReport, LoweringDecisionStatistics};
 
 /// Optimization policy for Core-to-Minecraft physical planning.
 ///

@@ -1177,6 +1177,8 @@ pub(crate) enum MinimumDemandError {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
+
     use super::{MinimumDemandError, MinimumSemanticDemand};
     use crate::entity::EntityId;
     use crate::ir::core::{
@@ -1187,6 +1189,20 @@ mod tests {
     use crate::lower::minecraft::analysis::SemanticInventory;
     use crate::lower::minecraft::demand::{RuntimeDemand, RuntimeDemandLimits};
     use crate::source::{OriginId, SourceContext};
+
+    trait GeneratedFixtureResult<T> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T;
+    }
+
+    impl<T, E: Debug> GeneratedFixtureResult<T> for Result<T, E> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T {
+            self.unwrap_or_else(|error| {
+                panic!("{context}: generated fixture construction failed: {error:?}")
+            })
+        }
+    }
 
     #[test]
     fn unused_pure_chain_and_results_are_outside_the_minimum() {
@@ -1439,16 +1455,31 @@ mod tests {
 
     #[test]
     fn independent_result_is_deterministic_and_matches_completed_runtime_demand() {
+        const GENERATOR_VERSION: u32 = 1;
+
         for seed in 0..32 {
-            let core = generated_program(seed);
-            let first = MinimumSemanticDemand::new(&core).unwrap();
-            let second = MinimumSemanticDemand::new(&core).unwrap();
-            assert_eq!(format!("{first:#?}"), format!("{second:#?}"));
-            assert_matches_runtime_demand(&core, &first);
+            let wrapping_or_overflow_chain_length = seed % 7;
+            let unused_boolean_chain_length = seed % 4;
+            let context = format!(
+                "generator_version={GENERATOR_VERSION} seed={seed} shape=straight-line-demand inputs=arithmetic_chain:{wrapping_or_overflow_chain_length},unused_boolean_chain:{unused_boolean_chain_length}"
+            );
+            let core = generated_program(GENERATOR_VERSION, seed, &context);
+            let first = MinimumSemanticDemand::new(&core).unwrap_or_else(|error| {
+                panic!("{context}: first minimum-demand solution failed: {error:?}")
+            });
+            let second = MinimumSemanticDemand::new(&core).unwrap_or_else(|error| {
+                panic!("{context}: second minimum-demand solution failed: {error:?}")
+            });
+            assert_eq!(
+                format!("{first:#?}"),
+                format!("{second:#?}"),
+                "{context}: repeated solutions differ"
+            );
+            assert_matches_runtime_demand(&core, &first, &context);
         }
         let (cycles, ..) = cycle_programs();
         let independent = MinimumSemanticDemand::new(&cycles).unwrap();
-        assert_matches_runtime_demand(&cycles, &independent);
+        assert_matches_runtime_demand(&cycles, &independent, "shape=fixed-cycle-programs");
     }
 
     #[test]
@@ -1554,77 +1585,127 @@ mod tests {
         )
     }
 
-    fn generated_program(seed: u32) -> CoreProgram {
+    fn generated_program(generator_version: u32, seed: u32, context: &str) -> CoreProgram {
+        assert_eq!(
+            generator_version, 1,
+            "{context}: generator_version={generator_version} seed={seed} is unsupported"
+        );
         let sources = SourceContext::new();
         let mut core = CoreProgram::new();
-        let function = declare(&mut core, "generated", vec![], vec![CoreType::I32]);
-        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
+        let function = core
+            .declare_function(
+                Some("generated"),
+                vec![],
+                vec![CoreType::I32],
+                OriginId::UNKNOWN,
+            )
+            .expect_generated(context);
+        let mut builder = FunctionBuilder::new(&core, &sources, function).expect_generated(context);
         let mut value = builder
-            .i32_constant(i32::try_from(seed).unwrap(), OriginId::UNKNOWN)
-            .unwrap();
+            .i32_constant(
+                i32::try_from(seed).expect_generated(context),
+                OriginId::UNKNOWN,
+            )
+            .expect_generated(context);
         for index in 0..(seed % 7) {
             let other = builder
-                .i32_constant(i32::try_from(index).unwrap() + 1, OriginId::UNKNOWN)
-                .unwrap();
+                .i32_constant(
+                    i32::try_from(index).expect_generated(context) + 1,
+                    OriginId::UNKNOWN,
+                )
+                .expect_generated(context);
             value = if (seed + index) % 2 == 0 {
                 builder
                     .i32_add_wrapping(value, other, OriginId::UNKNOWN)
-                    .unwrap()
+                    .expect_generated(context)
             } else {
                 builder
                     .i32_add_overflowing(value, other, OriginId::UNKNOWN)
-                    .unwrap()
+                    .expect_generated(context)
                     .0
             };
         }
         for index in 0..(seed % 4) {
             let unused = builder
                 .bool_constant(index % 2 == 0, OriginId::UNKNOWN)
-                .unwrap();
-            builder.bool_not(unused, OriginId::UNKNOWN).unwrap();
+                .expect_generated(context);
+            builder
+                .bool_not(unused, OriginId::UNKNOWN)
+                .expect_generated(context);
         }
-        builder.terminate(returning(vec![value])).unwrap();
-        core.define_function(function, builder.finish().unwrap())
-            .unwrap();
+        builder
+            .terminate(returning(vec![value]))
+            .expect_generated(context);
+        let body = builder.finish().expect_generated(context);
+        core.define_function(function, body)
+            .expect_generated(context);
         core
     }
 
-    fn assert_matches_runtime_demand(core: &CoreProgram, independent: &MinimumSemanticDemand) {
-        let inventory = SemanticInventory::new(core).unwrap();
+    fn assert_matches_runtime_demand(
+        core: &CoreProgram,
+        independent: &MinimumSemanticDemand,
+        context: &str,
+    ) {
+        let inventory = SemanticInventory::new(core)
+            .unwrap_or_else(|error| panic!("{context}: semantic inventory failed: {error:?}"));
         let runtime = RuntimeDemand::for_level(
             core,
             &inventory,
             MinecraftOptimizationLevel::Baseline,
             RuntimeDemandLimits::derived(),
         )
-        .unwrap();
-        assert_eq!(independent.len(), core.len());
+        .unwrap_or_else(|error| panic!("{context}: runtime-demand solution failed: {error:?}"));
+        assert_eq!(
+            independent.len(),
+            core.len(),
+            "{context}: function counts differ"
+        );
         for (function, declaration) in core.functions() {
-            let body = declaration.body().unwrap();
-            let minimum = independent.function(function).unwrap();
-            assert_eq!(minimum.value_slots(), body.value_counts().allocated);
+            let body = declaration.body().unwrap_or_else(|| {
+                panic!("{context}: generated function {function:?} has no definition")
+            });
+            let minimum = independent.function(function).unwrap_or_else(|| {
+                panic!("{context}: minimum demand omitted function {function:?}")
+            });
+            assert_eq!(
+                minimum.value_slots(),
+                body.value_counts().allocated,
+                "{context}: value-slot count differs for {function:?}"
+            );
             assert_eq!(
                 minimum.instruction_slots(),
-                body.instruction_counts().allocated
+                body.instruction_counts().allocated,
+                "{context}: instruction-slot count differs for {function:?}"
             );
             for index in 0..body.value_counts().allocated {
                 let value = ValueId::from_index(u32::try_from(index).unwrap());
+                let runtime_value = runtime
+                    .requires_value(function, value, &inventory)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{context}: runtime value query failed for {function:?} at {value:?}: {error:?}"
+                        )
+                    });
                 assert_eq!(
                     minimum.requires_value(value),
-                    Some(runtime.requires_value(function, value, &inventory).unwrap()),
-                    "value mismatch in {function:?} at {value:?}"
+                    Some(runtime_value),
+                    "{context}: value mismatch in {function:?} at {value:?}"
                 );
             }
             for index in 0..body.instruction_counts().allocated {
                 let instruction = InstId::from_index(u32::try_from(index).unwrap());
+                let runtime_instruction = runtime
+                    .requires_instruction(function, instruction, &inventory)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{context}: runtime instruction query failed for {function:?} at {instruction:?}: {error:?}"
+                        )
+                    });
                 assert_eq!(
                     minimum.requires_instruction(instruction),
-                    Some(
-                        runtime
-                            .requires_instruction(function, instruction, &inventory)
-                            .unwrap()
-                    ),
-                    "instruction mismatch in {function:?} at {instruction:?}"
+                    Some(runtime_instruction),
+                    "{context}: instruction mismatch in {function:?} at {instruction:?}"
                 );
             }
         }

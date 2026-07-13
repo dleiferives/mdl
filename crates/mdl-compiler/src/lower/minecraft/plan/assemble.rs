@@ -1249,7 +1249,7 @@ mod tests {
         let second = build();
         assert_eq!(first, second);
         assert!(first.contains(
-            "coalescing tracked-values=1 liveness-events=0 segments=0 candidates=0 merges=0 work=0 fallback=Some(Liveness(PropagationEvents))"
+            "coalescing tracked-values=1 liveness-events=0 segments=0 candidates=0 merges=0 work=0 fallback=liveness-propagation-events"
         ));
     }
 

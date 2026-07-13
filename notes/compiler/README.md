@@ -12,6 +12,7 @@
 - [Stage 5 baseline optimization and cost plan](stage-5-baseline-optimization-plan.md)
 - [Stage 5 implementation checklist](stage-5-todo.md)
 - [Stage 5 Core pass design plans](stage-5-passes/README.md)
+- [Stage 5 to Stage 6 handoff](stage-5-handoff.md)
 - [Compiler semantic ambiguities and unknowns](semantic-ambiguities.md)
 - [Rough implementation stages](implementation-stages.md)
 - [mcfunction backend research](../mcfunction/README.md)
@@ -34,5 +35,7 @@ independent home-content verification, emitted-command differentials, and the up
 official-server regressions pass. Stage 5G's closed target-recipe accounting,
 explicit block placement, placement-aware resources, independent verifier,
 constructed-command reconciliation, exact decision reporting, and official-server
-`None`/`Baseline` differential are complete and gated. Stage 5H's report API,
-measurements, final generated/corruption audit, and handoff are next.
+`None`/`Baseline` differential are complete and gated. Stage 5H completes public
+report ownership, the raw measurement protocol and private timing hooks, generated
+reproduction context, the final corruption audit, the optimized-Core one-startup
+vanilla proof, and the Stage 6 handoff. Stage 5 is complete; Stage 6 is next.

@@ -616,9 +616,10 @@ mod tests {
 
     use super::{
         CoreOptimizationLevel, CoreOptimizationOptions, CoreOptimizationPhase,
-        CoreOptimizationSnapshot, CorePassLimitReason, CorePipelineStep, OmittedByteCount,
-        StatisticCount, optimize_core, optimize_core_with_configuration,
+        CoreOptimizationSnapshot, CorePassLimitReason, CorePipelineStep, CoreStepSkipReason,
+        OmittedByteCount, StatisticCount, optimize_core, optimize_core_with_configuration,
     };
+    use crate::entity::EntityId;
     use crate::ir::core::{
         BlockTarget, CanonicalPrinter, CoreProgram, CoreType, FunctionBuilder, FunctionId,
         I32Predicate, Terminator, TerminatorKind, reset_verifier_counters, verifier_counters,
@@ -1111,6 +1112,78 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    enum TimedStepOutcome {
+        Completed { elapsed_nanoseconds: u128 },
+        Skipped { reason: CoreStepSkipReason },
+    }
+
+    #[derive(Debug)]
+    struct TimedStepSample {
+        function: FunctionId,
+        step: CorePipelineStep,
+        outcome: TimedStepOutcome,
+    }
+
+    #[derive(Default)]
+    struct TimedStepRecorder {
+        active: Option<(FunctionId, CorePipelineStep, std::time::Instant)>,
+        samples: Vec<TimedStepSample>,
+    }
+
+    impl super::pipeline::PipelineInstrumentation for TimedStepRecorder {
+        fn before_step(
+            &mut self,
+            _program: &CoreProgram,
+            function: FunctionId,
+            _body: &crate::ir::core::FunctionBody,
+            step: CorePipelineStep,
+        ) {
+            assert!(
+                self.active
+                    .replace((function, step, std::time::Instant::now()))
+                    .is_none(),
+                "Core pass instrumentation must not overlap"
+            );
+        }
+
+        fn after_step(
+            &mut self,
+            _program: &CoreProgram,
+            function: FunctionId,
+            _body: &crate::ir::core::FunctionBody,
+            step: CorePipelineStep,
+            _changed: bool,
+        ) {
+            let (active_function, active_step, started) = self
+                .active
+                .take()
+                .expect("every completed Core pass has a matching start event");
+            assert_eq!((active_function, active_step), (function, step));
+            self.samples.push(TimedStepSample {
+                function,
+                step,
+                outcome: TimedStepOutcome::Completed {
+                    elapsed_nanoseconds: started.elapsed().as_nanos(),
+                },
+            });
+        }
+
+        fn skipped(
+            &mut self,
+            function: FunctionId,
+            step: CorePipelineStep,
+            reason: CoreStepSkipReason,
+        ) {
+            assert!(self.active.is_none());
+            self.samples.push(TimedStepSample {
+                function,
+                step,
+                outcome: TimedStepOutcome::Skipped { reason },
+            });
+        }
+    }
+
     struct CanonicalPrefixRecorder<'a> {
         sources: &'a SourceContext,
         snapshots: Vec<(CorePipelineStep, String)>,
@@ -1254,6 +1327,73 @@ mod tests {
             .define_function(function, builder.finish().unwrap())
             .unwrap();
         program
+    }
+
+    #[test]
+    #[ignore = "environment-specific per-pass measurements; inspect a --release run"]
+    fn reports_every_core_step_as_a_raw_completed_or_skipped_sample() {
+        let sources = SourceContext::new();
+        let program = baseline_snapshot_program(&sources);
+        let options = CoreOptimizationOptions::new(CoreOptimizationLevel::Baseline);
+        let expected = optimize_core(program.clone(), &sources, &options).unwrap();
+        let expected_program = CanonicalPrinter::new(expected.program(), &sources)
+            .unwrap()
+            .render();
+
+        for policy in [
+            super::pipeline::VerificationPolicy::PipelineBoundaries,
+            super::pipeline::VerificationPolicy::AfterEachPass,
+        ] {
+            let mut configuration = super::pipeline::PipelineConfiguration::for_build();
+            configuration.verification = policy;
+            let mut recorder = TimedStepRecorder::default();
+            let started = std::time::Instant::now();
+            let output = optimize_core_with_configuration(
+                program.clone(),
+                &sources,
+                &options,
+                &configuration,
+                &mut recorder,
+                |_, _| panic!("a successful measurement must not capture a failure dump"),
+            )
+            .unwrap();
+            eprintln!(
+                "core-pipeline policy={policy:?} elapsed_nanoseconds={}",
+                started.elapsed().as_nanos()
+            );
+            for sample in &recorder.samples {
+                match sample.outcome {
+                    TimedStepOutcome::Completed {
+                        elapsed_nanoseconds,
+                    } => eprintln!(
+                        "core-step policy={policy:?} function={} step={} status=completed elapsed_nanoseconds={elapsed_nanoseconds}",
+                        sample.function.index(),
+                        sample.step,
+                    ),
+                    TimedStepOutcome::Skipped { reason } => eprintln!(
+                        "core-step policy={policy:?} function={} step={} status=skipped reason={reason}",
+                        sample.function.index(),
+                        sample.step,
+                    ),
+                }
+            }
+
+            assert_eq!(recorder.samples.len(), super::BASELINE_PIPELINE_STEP_COUNT);
+            assert!(
+                recorder
+                    .samples
+                    .iter()
+                    .all(|sample| matches!(sample.outcome, TimedStepOutcome::Completed { .. }))
+            );
+            assert_eq!(output.report(), expected.report());
+            assert_eq!(
+                CanonicalPrinter::new(output.program(), &sources)
+                    .unwrap()
+                    .render(),
+                expected_program
+            );
+            assert!(!output.report().dump().contains("elapsed"));
+        }
     }
 
     #[test]

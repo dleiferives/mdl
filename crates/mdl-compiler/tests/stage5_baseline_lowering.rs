@@ -308,6 +308,7 @@ fn baseline_lowering_and_datapack_emission_are_repeatedly_deterministic() {
 
     let first = lower_to_minecraft(&core, &sources, &baseline_options()).unwrap();
     let second = lower_to_minecraft(&core, &sources, &baseline_options()).unwrap();
+    assert_eq!(first.report(), second.report());
     assert_eq!(first.dump_lowering(), second.dump_lowering());
     assert_eq!(first.map(), second.map());
     assert_eq!(
@@ -321,9 +322,26 @@ fn baseline_lowering_and_datapack_emission_are_repeatedly_deterministic() {
     assert_eq!(first_emission.pack(), second_emission.pack());
     assert_eq!(first_emission.footprint(), second_emission.footprint());
     assert_eq!(
+        first_emission.footprint().dump(),
+        second_emission.footprint().dump()
+    );
+    assert_eq!(
         first_emission.trace().records().collect::<Vec<_>>(),
         second_emission.trace().records().collect::<Vec<_>>()
     );
+    let limits = target_analysis_limits(&first);
+    let first_cost = first.analyze_target_execution(limits).unwrap();
+    let second_cost = second.analyze_target_execution(limits).unwrap();
+    assert_eq!(first_cost, second_cost);
+    for deterministic_dump in [
+        first.report().dump(),
+        first_cost.dump(),
+        first_emission.footprint().dump(),
+    ] {
+        assert!(!deterministic_dump.contains("elapsed"));
+        assert!(!deterministic_dump.contains("wall-time"));
+        assert!(!deterministic_dump.contains("duration"));
+    }
 }
 
 #[test]
@@ -421,6 +439,12 @@ fn baseline_handles_twenty_thousand_values_across_many_functions_without_dense_o
     let output = lower_to_minecraft(&core, &sources, &baseline_options()).unwrap();
     assert_eq!(output.map().len(), EMPTY_FUNCTIONS + 1);
     assert_eq!(output.program().functions().len(), EMPTY_FUNCTIONS + 3);
+    let statistics = output.report().statistics();
+    assert_eq!(statistics.core_functions(), EMPTY_FUNCTIONS + 1);
+    assert_eq!(statistics.target_functions(), EMPTY_FUNCTIONS + 3);
+    assert_eq!(statistics.branch_arms(), 0);
+    assert_eq!(statistics.selected_recipes(), 0);
+    assert_eq!(statistics.consumed_blocks(), 0);
     let emission = emit_datapack(
         output.program(),
         &sources,
@@ -473,7 +497,7 @@ fn baseline_reports_and_preserves_a_terminal_call_block_with_two_incoming_occurr
     assert!(report.contains("control branch-arms=2 selected=0 consumed=0"));
     assert_eq!(
         report
-            .matches("reason=IncomingEdgeOccurrenceCount { actual: 2 }")
+            .matches("reason=incoming-edge-occurrence-count(actual=2)")
             .count(),
         2
     );
@@ -561,6 +585,12 @@ fn assert_terminal_call_contraction(arms: TerminalCallArms) {
 
     let report = baseline.dump_lowering();
     assert_eq!(report, repeated.dump_lowering());
+    assert_eq!(baseline.report(), repeated.report());
+    let statistics = baseline.report().statistics();
+    let selected = u64::try_from(fixture.consumed_blocks.len()).unwrap();
+    assert_eq!(statistics.branch_arms(), 2);
+    assert_eq!(statistics.selected_recipes(), selected);
+    assert_eq!(statistics.consumed_blocks(), selected);
     assert!(report.contains(&format!(
         "control branch-arms=2 selected={} consumed={}",
         fixture.consumed_blocks.len(),
@@ -570,6 +600,10 @@ fn assert_terminal_call_contraction(arms: TerminalCallArms) {
         report
             .matches("recipe=InlineZeroAbiTerminalCall consumed=")
             .count(),
+        fixture.consumed_blocks.len()
+    );
+    assert_eq!(
+        report.matches("advantage=runtime-dominance").count(),
         fixture.consumed_blocks.len()
     );
     assert_eq!(

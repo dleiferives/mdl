@@ -286,8 +286,9 @@ fusion and CSE. Generated target cases and the pinned vanilla comparison remain 
   fact build, one replacement scan, one reserve per head, and one batch/layout retain.
 - Stable output and representative choices independent of hash iteration.
 - Generated small typed CFGs checked against a simple semantic/reference executor.
-- Broader generated `None`-versus-baseline Minecraft lowering and pinned-server
-  execution for representative parameterized chains and loops remains Stage 5H.
+- Stage 5H's generated semantic/lowering differentials and consolidated pinned-server
+  Core conformance cover representative parameterized chains and loops through both
+  `None` and Baseline pipelines.
 
 ## Cross-compiler conclusions
 

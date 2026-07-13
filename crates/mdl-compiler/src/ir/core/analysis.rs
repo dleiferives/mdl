@@ -786,8 +786,8 @@ mod tests {
     };
     use crate::source::{OriginId, SourceContext};
 
-    fn body_from_successors(successors: &[Vec<usize>]) -> FunctionBody {
-        assert!(!successors.is_empty());
+    fn body_from_successors(successors: &[Vec<usize>], context: &str) -> FunctionBody {
+        assert!(!successors.is_empty(), "{context}: CFG must not be empty");
         let sources = SourceContext::new();
         let mut program = CoreProgram::new();
         let function = program
@@ -797,23 +797,40 @@ mod tests {
                 vec![],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
+            .unwrap_or_else(|error| panic!("{context}: declaration failed: {error:?}"));
+        let mut builder =
+            FunctionBuilder::new(&program, &sources, function).unwrap_or_else(|diagnostics| {
+                panic!("{context}: builder creation failed: {diagnostics:?}")
+            });
         let entry = builder.entry_block();
-        let condition = builder.body().block(entry).unwrap().parameters[0].value;
+        let condition = builder
+            .body()
+            .block(entry)
+            .unwrap_or_else(|| panic!("{context}: generated entry block is missing"))
+            .parameters[0]
+            .value;
         let mut blocks = vec![entry];
-        blocks.extend(
-            (1..successors.len()).map(|_| builder.create_block(OriginId::UNKNOWN).unwrap()),
-        );
+        blocks.extend((1..successors.len()).map(|_| {
+            builder
+                .create_block(OriginId::UNKNOWN)
+                .unwrap_or_else(|error| panic!("{context}: block creation failed: {error:?}"))
+        }));
 
         for (source, targets) in successors.iter().enumerate() {
-            assert!(targets.len() <= 2);
+            assert!(
+                targets.len() <= 2,
+                "{context}: block {source} has {} successors",
+                targets.len()
+            );
             assert!(
                 targets
                     .iter()
-                    .all(|target| (1..blocks.len()).contains(target))
+                    .all(|target| (1..blocks.len()).contains(target)),
+                "{context}: block {source} has an invalid successor in {targets:?}"
             );
-            builder.switch_to_block(blocks[source]).unwrap();
+            builder
+                .switch_to_block(blocks[source])
+                .unwrap_or_else(|error| panic!("{context}: block switch failed: {error:?}"));
             let target = |index: usize| BlockTarget::new(blocks[index], vec![]);
             let kind = match targets.as_slice() {
                 [] => TerminatorKind::Return(vec![]),
@@ -823,16 +840,18 @@ mod tests {
                     then_target: target(*then_block),
                     else_target: target(*else_block),
                 },
-                _ => unreachable!("the successor-count assertion rejects this case"),
+                _ => unreachable!("{context}: the successor-count assertion rejects this case"),
             };
             builder
                 .terminate(Terminator::new(kind, OriginId::UNKNOWN))
-                .unwrap();
+                .unwrap_or_else(|error| panic!("{context}: terminator creation failed: {error:?}"));
         }
-        builder.finish().unwrap()
+        builder.finish().unwrap_or_else(|diagnostics| {
+            panic!("{context}: generated CFG is invalid: {diagnostics:?}")
+        })
     }
 
-    fn oracle_dominator_sets(cfg: &ControlFlowGraph<'_>) -> Vec<Option<Vec<bool>>> {
+    fn oracle_dominator_sets(cfg: &ControlFlowGraph<'_>, context: &str) -> Vec<Option<Vec<bool>>> {
         let block_count = cfg.body.blocks.len();
         let mut reachable = vec![false; block_count];
         let mut stack = vec![cfg.body.entry];
@@ -852,7 +871,8 @@ mod tests {
             .iter()
             .map(|is_reachable| is_reachable.then(|| all_reachable.clone()))
             .collect::<Vec<_>>();
-        let entry_index = dense_block_index(cfg.body.entry).unwrap();
+        let entry_index = dense_block_index(cfg.body.entry)
+            .unwrap_or_else(|| panic!("{context}: entry block is outside the dense domain"));
         let mut entry_set = vec![false; block_count];
         entry_set[entry_index] = true;
         dominators[entry_index] = Some(entry_set);
@@ -860,7 +880,9 @@ mod tests {
         loop {
             let mut changed = false;
             for block in cfg.body.blocks.keys() {
-                let index = dense_block_index(block).unwrap();
+                let index = dense_block_index(block).unwrap_or_else(|| {
+                    panic!("{context}: block {block:?} is outside the dense domain")
+                });
                 if block == cfg.body.entry || !reachable[index] {
                     continue;
                 }
@@ -893,6 +915,7 @@ mod tests {
         cfg: &ControlFlowGraph<'_>,
         dominators: &[Option<Vec<bool>>],
         block: BlockId,
+        context: &str,
     ) -> Option<BlockId> {
         let block_index = dense_block_index(block)?;
         let block_dominators = dominators.get(block_index)?.as_ref()?;
@@ -900,11 +923,15 @@ mod tests {
             return Some(block);
         }
         cfg.body.blocks.keys().find(|candidate| {
-            let candidate_index = dense_block_index(*candidate).unwrap();
+            let candidate_index = dense_block_index(*candidate).unwrap_or_else(|| {
+                panic!("{context}: candidate {candidate:?} is outside the dense domain")
+            });
             block_dominators[candidate_index]
                 && *candidate != block
                 && cfg.body.blocks.keys().all(|other| {
-                    let other_index = dense_block_index(other).unwrap();
+                    let other_index = dense_block_index(other).unwrap_or_else(|| {
+                        panic!("{context}: block {other:?} is outside the dense domain")
+                    });
                     other == block
                         || other == *candidate
                         || !block_dominators[other_index]
@@ -915,24 +942,28 @@ mod tests {
         })
     }
 
-    fn assert_matches_oracle(body: &FunctionBody) {
+    fn assert_matches_oracle(body: &FunctionBody, context: &str) {
         let cfg = ControlFlowGraph::new(body);
-        assert_cfg_matches_oracle(&cfg);
+        assert_cfg_matches_oracle(&cfg, context);
     }
 
-    fn assert_cfg_matches_oracle(cfg: &ControlFlowGraph<'_>) {
-        let oracle = oracle_dominator_sets(cfg);
+    fn assert_cfg_matches_oracle(cfg: &ControlFlowGraph<'_>, context: &str) {
+        let oracle = oracle_dominator_sets(cfg, context);
         let actual = DominatorTree::new(cfg);
         for block in cfg.body.blocks.keys() {
             assert_eq!(
                 actual.immediate_dominator(block),
-                oracle_immediate_dominator(cfg, &oracle, block),
-                "immediate dominator differs for {block:?} in {:?}",
+                oracle_immediate_dominator(cfg, &oracle, block, context),
+                "{context}: immediate dominator differs for {block:?} in {:?}",
                 cfg.body,
             );
             for use_block in cfg.body.blocks.keys() {
-                let use_index = dense_block_index(use_block).unwrap();
-                let block_index = dense_block_index(block).unwrap();
+                let use_index = dense_block_index(use_block).unwrap_or_else(|| {
+                    panic!("{context}: use block {use_block:?} is outside the dense domain")
+                });
+                let block_index = dense_block_index(block).unwrap_or_else(|| {
+                    panic!("{context}: block {block:?} is outside the dense domain")
+                });
                 let expected = match oracle[use_index].as_ref() {
                     None => Dominance::UnreachableUse,
                     Some(_) if oracle[block_index].is_none() => Dominance::DoesNotDominate,
@@ -942,7 +973,7 @@ mod tests {
                 assert_eq!(
                     actual.dominates(block, use_block),
                     expected,
-                    "dominance differs for {block:?} -> {use_block:?} in {:?}",
+                    "{context}: dominance differs for {block:?} -> {use_block:?} in {:?}",
                     cfg.body,
                 );
             }
@@ -1069,13 +1100,19 @@ mod tests {
 
     #[test]
     fn simple_lengauer_tarjan_matches_an_independent_set_oracle_on_generated_valid_cfgs() {
-        let explicit_irreducible =
-            body_from_successors(&[vec![1, 2], vec![1, 3], vec![3, 1], vec![1, 2], vec![4, 4]]);
-        assert_matches_oracle(&explicit_irreducible);
+        const GENERATOR_VERSION: u32 = 1;
+        const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
-        let mut random = 0x9e37_79b9_7f4a_7c15_u64;
+        let explicit_successors = [vec![1, 2], vec![1, 3], vec![3, 1], vec![1, 2], vec![4, 4]];
+        let explicit_context = format!(
+            "generator_version={GENERATOR_VERSION} seed={SEED:#018x} shape=explicit-irreducible inputs=successors:{explicit_successors:?}"
+        );
+        let explicit_irreducible = body_from_successors(&explicit_successors, &explicit_context);
+        assert_matches_oracle(&explicit_irreducible, &explicit_context);
+
+        let mut random = SEED;
         for block_count in 1..=9 {
-            for _ in 0..256 {
+            for case_index in 0..256 {
                 let mut successors = vec![vec![]; block_count];
                 if block_count > 1 {
                     for targets in &mut successors {
@@ -1087,15 +1124,19 @@ mod tests {
                         }));
                     }
                 }
-                let body = body_from_successors(&successors);
-                assert_matches_oracle(&body);
+                let context = format!(
+                    "generator_version={GENERATOR_VERSION} seed={SEED:#018x} shape=random-cfg block_count={block_count} case_index={case_index} inputs=successors:{successors:?}"
+                );
+                let body = body_from_successors(&successors, &context);
+                assert_matches_oracle(&body, &context);
             }
         }
     }
 
     #[test]
     fn duplicate_backedges_to_entry_preserve_root_dominance() {
-        let body = body_from_successors(&[vec![1], vec![]]);
+        let context = "shape=duplicate-backedges inputs=successors:[[1],[]]";
+        let body = body_from_successors(&[vec![1], vec![]], context);
         let entry = body.entry();
         let loop_block = body.blocks.keys().nth(1).unwrap();
         let condition = body.block(entry).unwrap().parameters[0].value;
@@ -1110,20 +1151,24 @@ mod tests {
         let cfg = ControlFlowGraph::with_terminator_overrides(&placement, &overrides);
 
         assert_eq!(cfg.predecessors(entry), &[loop_block, loop_block]);
-        assert_cfg_matches_oracle(&cfg);
+        assert_cfg_matches_oracle(&cfg, context);
     }
 
     #[test]
     fn duplicate_edges_self_loops_and_irreducible_cycles_are_deterministic() {
-        let body =
-            body_from_successors(&[vec![1, 2], vec![1, 3], vec![3, 1], vec![1, 2], vec![4, 4]]);
+        let context =
+            "shape=explicit-irreducible inputs=successors:[[1,2],[1,3],[3,1],[1,2],[4,4]]";
+        let body = body_from_successors(
+            &[vec![1, 2], vec![1, 3], vec![3, 1], vec![1, 2], vec![4, 4]],
+            context,
+        );
         let cfg = ControlFlowGraph::new(&body);
         let first = DominatorTree::new(&cfg);
         let second = DominatorTree::new(&cfg);
 
         assert_eq!(first.immediate, second.immediate);
         assert_eq!(first.intervals, second.intervals);
-        assert_matches_oracle(&body);
+        assert_matches_oracle(&body, context);
     }
 
     #[test]
@@ -1151,7 +1196,8 @@ mod tests {
             }
         }
 
-        let body = body_from_successors(&successors);
+        let context = "shape=wide-adversarial width=20000";
+        let body = body_from_successors(&successors, context);
         let entry = body.entry();
         let cfg = ControlFlowGraph::new(&body);
         let dominators = DominatorTree::new(&cfg);

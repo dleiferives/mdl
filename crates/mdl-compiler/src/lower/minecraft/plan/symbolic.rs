@@ -2140,6 +2140,8 @@ struct SymbolicStatistics {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
+
     use super::{
         Definition, EdgeAssignment, SparseState, Substitution,
         verify_symbolic_home_contents as verify_symbolic_home_contents_with_minimum,
@@ -2162,6 +2164,33 @@ mod tests {
     use crate::lower::minecraft::{GeneratedNames, LoweringOptions, MinecraftOptimizationLevel};
     use crate::source::{OriginId, SourceContext};
     use crate::target::JavaEditionTarget;
+
+    trait GeneratedFixtureResult<T> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T;
+    }
+
+    impl<T, E: Debug> GeneratedFixtureResult<T> for Result<T, E> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T {
+            self.unwrap_or_else(|error| {
+                panic!("{context}: generated fixture construction failed: {error:?}")
+            })
+        }
+    }
+
+    #[track_caller]
+    fn run_generated_case<T>(context: &str, case: impl FnOnce() -> T) -> T {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)).unwrap_or_else(|payload| {
+            if let Some(message) = payload.downcast_ref::<String>() {
+                panic!("{context}: generated symbolic case failed: {message}");
+            }
+            if let Some(message) = payload.downcast_ref::<&str>() {
+                panic!("{context}: generated symbolic case failed: {message}");
+            }
+            panic!("{context}: generated symbolic case failed with a non-string panic payload");
+        })
+    }
 
     fn verify_symbolic_home_contents(
         core: &CoreProgram,
@@ -2234,33 +2263,31 @@ mod tests {
         const GENERATOR_VERSION: u32 = 1;
 
         for seed in 0_u64..12 {
-            let (core, function, corruptible_edge) =
-                generated_dense_oracle_cfg(GENERATOR_VERSION, seed);
+            let shape = if seed & 1 == 0 { "diamond" } else { "loop" };
+            let fixture_context = format!(
+                "generator_version={GENERATOR_VERSION} seed={seed} shape={shape} inputs=symbolic:[bool,i32,i32]"
+            );
+            let (core, function, corruptible_edge) = run_generated_case(&fixture_context, || {
+                generated_dense_oracle_cfg(GENERATOR_VERSION, seed, &fixture_context)
+            });
             for level in [
                 MinecraftOptimizationLevel::None,
                 MinecraftOptimizationLevel::Baseline,
             ] {
-                let plan = freeze(&core, level);
-                assert_dense_oracle_agreement(
-                    &core,
-                    &plan,
-                    true,
-                    &format!(
-                        "generator_version={GENERATOR_VERSION} seed={seed} level={level:?} valid"
-                    ),
-                );
+                let context = format!("{fixture_context} level={level:?} case=valid");
+                run_generated_case(&context, || {
+                    let plan = freeze_generated(&core, level, &context);
+                    assert_dense_oracle_agreement(&core, &plan, true, &context);
+                });
             }
 
-            let mut corrupted = freeze(&core, MinecraftOptimizationLevel::None);
-            erase_edge_schedule(&mut corrupted, function, corruptible_edge);
-            assert_dense_oracle_agreement(
-                &core,
-                &corrupted,
-                false,
-                &format!(
-                    "generator_version={GENERATOR_VERSION} seed={seed} level=None erased-edge"
-                ),
-            );
+            let context = format!("{fixture_context} level=None case=erased-edge");
+            run_generated_case(&context, || {
+                let mut corrupted =
+                    freeze_generated(&core, MinecraftOptimizationLevel::None, &context);
+                erase_edge_schedule(&mut corrupted, function, corruptible_edge, &context);
+                assert_dense_oracle_agreement(&core, &corrupted, false, &context);
+            });
         }
     }
 
@@ -2463,6 +2490,52 @@ mod tests {
         };
         let resources = ResourceInventory::new(core, &inventory, &transfers, &options).unwrap();
         LoweringPlan::from_parts(core, &options, assignment, transfers, resources).unwrap()
+    }
+
+    fn freeze_generated(
+        core: &CoreProgram,
+        level: MinecraftOptimizationLevel,
+        context: &str,
+    ) -> LoweringPlan {
+        let options = generated_options(level, context);
+        let inventory = SemanticInventory::new(core).expect_generated(context);
+        let assignment = match level {
+            MinecraftOptimizationLevel::None => {
+                HomeAssignment::for_none(core, &inventory).expect_generated(context)
+            }
+            MinecraftOptimizationLevel::Baseline => {
+                let demand = RuntimeDemand::for_level(
+                    core,
+                    &inventory,
+                    level,
+                    RuntimeDemandLimits::derived(),
+                )
+                .expect_generated(context);
+                HomeAssignment::for_baseline_derived_liveness(core, &inventory, &demand)
+                    .expect_generated(context)
+            }
+        };
+        let transfers = match level {
+            MinecraftOptimizationLevel::None => {
+                EdgeTransferPlan::for_none(core, &inventory, &assignment).expect_generated(context)
+            }
+            MinecraftOptimizationLevel::Baseline => {
+                EdgeTransferPlan::for_baseline(core, &inventory, &assignment)
+                    .expect_generated(context)
+            }
+        };
+        let resources = ResourceInventory::new(core, &inventory, &transfers, &options)
+            .expect_generated(context);
+        LoweringPlan::from_parts(core, &options, assignment, transfers, resources)
+            .expect_generated(context)
+    }
+
+    fn generated_options(level: MinecraftOptimizationLevel, context: &str) -> LoweringOptions {
+        let namespace = PackNamespace::new("mdl").expect_generated(context);
+        let objective = ObjectiveName::new("mdl.reg").expect_generated(context);
+        LoweringOptions::new(JavaEditionTarget::V26_2, namespace, objective)
+            .expect_generated(context)
+            .with_optimization_level(level)
     }
 
     fn options(level: MinecraftOptimizationLevel) -> LoweringOptions {
@@ -2720,16 +2793,20 @@ mod tests {
     fn generated_dense_oracle_cfg(
         generator_version: u32,
         seed: u64,
+        context: &str,
     ) -> (CoreProgram, FunctionId, BlockId) {
-        assert_eq!(generator_version, 1);
+        assert_eq!(
+            generator_version, 1,
+            "{context}: unsupported generator version"
+        );
         if seed & 1 == 0 {
-            generated_dense_diamond(seed)
+            generated_dense_diamond(seed, context)
         } else {
-            generated_dense_loop(seed)
+            generated_dense_loop(seed, context)
         }
     }
 
-    fn generated_dense_diamond(seed: u64) -> (CoreProgram, FunctionId, BlockId) {
+    fn generated_dense_diamond(seed: u64, context: &str) -> (CoreProgram, FunctionId, BlockId) {
         let sources = SourceContext::new();
         let mut core = CoreProgram::new();
         let function = core
@@ -2739,28 +2816,34 @@ mod tests {
                 vec![CoreType::I32],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
+            .expect_generated(context);
+        let mut builder = FunctionBuilder::new(&core, &sources, function).expect_generated(context);
         let entry = builder.entry_block();
-        let parameters = entry_parameters(&builder);
-        let left_block = builder.create_block(OriginId::UNKNOWN).unwrap();
+        let parameters = generated_entry_parameters(&builder, context);
+        let left_block = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let left_first = builder
             .append_block_parameter(left_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let left_second = builder
             .append_block_parameter(left_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
-        let right_block = builder.create_block(OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let right_block = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let right_first = builder
             .append_block_parameter(right_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let right_second = builder
             .append_block_parameter(right_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
-        let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let join = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let joined = builder
             .append_block_parameter(join, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let ordered = [parameters[1], parameters[2]];
         let swapped = [parameters[2], parameters[1]];
         let then_arguments = if seed & 2 == 0 { ordered } else { swapped };
@@ -2774,49 +2857,57 @@ mod tests {
                 },
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(left_block).unwrap();
+        builder
+            .switch_to_block(left_block)
+            .expect_generated(context);
         let left_result = builder
             .i32_add_wrapping(left_first, left_second, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Jump(BlockTarget::new(join, vec![left_result])),
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(right_block).unwrap();
+        builder
+            .switch_to_block(right_block)
+            .expect_generated(context);
         let right_result = builder
             .i32_add_wrapping(right_first, right_second, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Jump(BlockTarget::new(join, vec![right_result])),
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(join).unwrap();
+        builder.switch_to_block(join).expect_generated(context);
         let offset = builder
-            .i32_constant(i32::try_from(seed).unwrap(), OriginId::UNKNOWN)
-            .unwrap();
+            .i32_constant(
+                i32::try_from(seed).expect_generated(context),
+                OriginId::UNKNOWN,
+            )
+            .expect_generated(context);
         let result = builder
             .i32_add_wrapping(joined, offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Return(vec![result]),
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
-        core.define_function(function, builder.finish().unwrap())
-            .unwrap();
+            .expect_generated(context);
+        let body = builder.finish().expect_generated(context);
+        core.define_function(function, body)
+            .expect_generated(context);
         (core, function, entry)
     }
 
-    fn generated_dense_loop(seed: u64) -> (CoreProgram, FunctionId, BlockId) {
+    fn generated_dense_loop(seed: u64, context: &str) -> (CoreProgram, FunctionId, BlockId) {
         let sources = SourceContext::new();
         let mut core = CoreProgram::new();
         let function = core
@@ -2826,21 +2917,25 @@ mod tests {
                 vec![CoreType::I32],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
+            .expect_generated(context);
+        let mut builder = FunctionBuilder::new(&core, &sources, function).expect_generated(context);
         let entry = builder.entry_block();
-        let parameters = entry_parameters(&builder);
-        let header = builder.create_block(OriginId::UNKNOWN).unwrap();
+        let parameters = generated_entry_parameters(&builder, context);
+        let header = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let first = builder
             .append_block_parameter(header, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let second = builder
             .append_block_parameter(header, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
-        let exit = builder.create_block(OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let exit = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let completed = builder
             .append_block_parameter(exit, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let initial = if seed & 2 == 0 {
             vec![parameters[1], parameters[2]]
         } else {
@@ -2851,12 +2946,12 @@ mod tests {
                 TerminatorKind::Jump(BlockTarget::new(header, initial)),
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(header).unwrap();
+        builder.switch_to_block(header).expect_generated(context);
         let next = builder
             .i32_add_wrapping(first, second, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let backedge = if seed & 4 == 0 {
             vec![next, second]
         } else {
@@ -2871,24 +2966,45 @@ mod tests {
                 },
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(exit).unwrap();
+        builder.switch_to_block(exit).expect_generated(context);
         let offset = builder
-            .i32_constant(i32::try_from(seed >> 1).unwrap(), OriginId::UNKNOWN)
-            .unwrap();
+            .i32_constant(
+                i32::try_from(seed >> 1).expect_generated(context),
+                OriginId::UNKNOWN,
+            )
+            .expect_generated(context);
         let result = builder
             .i32_add_wrapping(completed, offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Return(vec![result]),
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
-        core.define_function(function, builder.finish().unwrap())
-            .unwrap();
+            .expect_generated(context);
+        let body = builder.finish().expect_generated(context);
+        core.define_function(function, body)
+            .expect_generated(context);
         (core, function, entry)
+    }
+
+    fn generated_entry_parameters(builder: &FunctionBuilder<'_>, context: &str) -> Vec<ValueId> {
+        let parameters = builder
+            .body()
+            .block(builder.entry_block())
+            .unwrap_or_else(|| panic!("{context}: generated entry block is missing"))
+            .parameters()
+            .iter()
+            .map(crate::ir::core::BlockParam::value)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parameters.len(),
+            3,
+            "{context}: generated fixture must have three entry parameters"
+        );
+        parameters
     }
 
     fn entry_parameters(builder: &FunctionBuilder<'_>) -> Vec<ValueId> {
@@ -2958,7 +3074,9 @@ mod tests {
         expected_acceptance: bool,
         context: &str,
     ) {
-        let minimum = super::MinimumSemanticDemand::new(core).unwrap();
+        let minimum = super::MinimumSemanticDemand::new(core).unwrap_or_else(|error| {
+            panic!("{context}: minimum-demand construction failed: {error:?}")
+        });
         let mut sparse = super::SymbolicChecker::new(core, plan, &minimum);
         sparse.capture_entry_states = true;
         if let Err(issue) = sparse.run() {
@@ -2969,13 +3087,17 @@ mod tests {
 
         assert_eq!(sparse_accepts, expected_acceptance, "{context}: sparse");
         for (function, declaration) in core.functions() {
-            let body = declaration.body().unwrap();
+            let body = declaration.body().unwrap_or_else(|| {
+                panic!("{context}: generated function {function:?} has no definition")
+            });
             let dense = dense_symbolic_oracle(body, plan, function);
             assert_eq!(dense.accepts, expected_acceptance, "{context}: dense");
             let (_, sparse_function_entries) = sparse_entries
                 .iter()
                 .find(|(candidate, _)| *candidate == function)
-                .unwrap();
+                .unwrap_or_else(|| {
+                    panic!("{context}: sparse oracle omitted function {function:?}")
+                });
             assert_eq!(
                 sparse_function_entries.len(),
                 dense.entries.len(),
@@ -2995,9 +3117,12 @@ mod tests {
                     continue;
                 };
                 for home_index in 0..plan.homes.len() {
-                    let home = HomeId::from_index(u32::try_from(home_index).unwrap());
+                    let home =
+                        HomeId::from_index(u32::try_from(home_index).expect_generated(context));
                     for value_index in 0..body.value_counts().allocated {
-                        let value = ValueId::from_index(u32::try_from(value_index).unwrap());
+                        let value = ValueId::from_index(
+                            u32::try_from(value_index).expect_generated(context),
+                        );
                         assert_eq!(
                             sparse_entry.contains(home, value),
                             dense_entry.contains(home, value),
@@ -3009,18 +3134,35 @@ mod tests {
         }
     }
 
-    fn erase_edge_schedule(plan: &mut LoweringPlan, function: FunctionId, source: BlockId) {
-        let layout = plan.functions.get_mut(function).unwrap();
-        match layout.edge_transfers[source.index() as usize]
+    fn erase_edge_schedule(
+        plan: &mut LoweringPlan,
+        function: FunctionId,
+        source: BlockId,
+        context: &str,
+    ) {
+        let layout = plan
+            .functions
+            .get_mut(function)
+            .unwrap_or_else(|| panic!("{context}: generated plan omitted function {function:?}"));
+        let edge = layout
+            .edge_transfers
+            .get_mut(source.index() as usize)
+            .unwrap_or_else(|| panic!("{context}: generated plan omitted source {source:?}"))
             .as_mut()
-            .unwrap()
-        {
+            .unwrap_or_else(|| panic!("{context}: generated source {source:?} has no edge plan"));
+        match edge {
             EdgeTransfer::Jump { steps } => {
-                assert!(!steps.is_empty());
+                assert!(
+                    !steps.is_empty(),
+                    "{context}: generated jump edge has no schedule to erase"
+                );
                 *steps = Box::new([]);
             }
             EdgeTransfer::Branch { then_edge, .. } => {
-                assert!(!then_edge.steps.is_empty());
+                assert!(
+                    !then_edge.steps.is_empty(),
+                    "{context}: generated branch edge has no schedule to erase"
+                );
                 then_edge.steps = Box::new([]);
             }
         }

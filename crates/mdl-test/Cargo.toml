@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
+build = "build.rs"
 
 [lib]
 name = "mdl_test"
@@ -15,6 +16,11 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 mdl-compiler = { path = "../mdl-compiler" }

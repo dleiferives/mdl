@@ -481,8 +481,10 @@ fn assert_same_observation(
     step_limit: usize,
     context: &str,
 ) {
-    let reference = evaluate(reference, function, arguments, step_limit).unwrap();
-    let baseline = evaluate(baseline, function, arguments, step_limit).unwrap();
+    let reference = evaluate(reference, function, arguments, step_limit)
+        .unwrap_or_else(|error| panic!("reference evaluator failed: {context}: {error:?}"));
+    let baseline = evaluate(baseline, function, arguments, step_limit)
+        .unwrap_or_else(|error| panic!("baseline evaluator failed: {context}: {error:?}"));
     assert_eq!(
         baseline.results, reference.results,
         "result mismatch: {context}"
@@ -920,6 +922,98 @@ fn baseline_preserves_results_and_ordered_calls_across_the_complete_pipeline() {
 
 const GENERATED_CFG_VERSION: u32 = 2;
 const GENERATED_SEEDS: [u64; 8] = [0, 1, 2, 3, 5, 8, 13, 21];
+const SCALAR_BOUNDARY_INPUT_DOMAIN: &str = "i32=[i32::MIN,-1,0,1,i32::MAX]";
+const BOOLEAN_DIAMOND_INPUT_DOMAIN: &str = "i32=[i32::MIN,-1,0,1,i32::MAX];bool=[false,true]";
+const NO_ARGUMENT_INPUT_DOMAIN: &str = "arguments=[]";
+const TERMINATING_DIAMOND_SHAPE: &str = "terminating-diamond";
+const STRAIGHT_LINE_SHAPE: &str = "straight-line";
+const ASYMMETRIC_DIAMOND_SHAPE: &str = "asymmetric-diamond";
+const TERMINATING_LOOP_SHAPE: &str = "terminating-loop";
+const MULTI_RESULT_CALL_SHAPE: &str = "multi-result-call";
+
+#[derive(Clone, Copy)]
+struct GeneratedFixtureContext {
+    seed: u64,
+    shape: &'static str,
+    replay_input_domain: &'static str,
+}
+
+impl GeneratedFixtureContext {
+    const fn new(seed: u64, shape: &'static str, replay_input_domain: &'static str) -> Self {
+        Self {
+            seed,
+            shape,
+            replay_input_domain,
+        }
+    }
+
+    #[track_caller]
+    fn fail(self, detail: impl std::fmt::Display) -> ! {
+        panic!(
+            "generated Core fixture construction failed: version={GENERATED_CFG_VERSION} \
+             seed={} shape={} replay-input-domain={}: {detail}",
+            self.seed, self.shape, self.replay_input_domain
+        )
+    }
+
+    #[track_caller]
+    fn fail_case(self, detail: impl std::fmt::Display) -> ! {
+        panic!(
+            "generated Core case failed: version={GENERATED_CFG_VERSION} seed={} shape={} \
+             replay-input-domain={}: {detail}",
+            self.seed, self.shape, self.replay_input_domain
+        )
+    }
+
+    #[track_caller]
+    fn parameter(self, builder: &FunctionBuilder<'_>, block: BlockId, index: usize) -> ValueId {
+        let Some(parameter) = builder
+            .body()
+            .block(block)
+            .and_then(|data| data.parameters().get(index))
+        else {
+            self.fail(format_args!(
+                "missing parameter {index} from generated block {block:?}"
+            ));
+        };
+        parameter.value()
+    }
+
+    #[track_caller]
+    fn two_results(self, results: &[ValueId]) -> (ValueId, ValueId) {
+        match results {
+            [first, second] => (*first, *second),
+            _ => self.fail(format_args!(
+                "expected two generated call results, found {}",
+                results.len()
+            )),
+        }
+    }
+}
+
+#[track_caller]
+fn run_generated_case<T>(context: GeneratedFixtureContext, case: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)).unwrap_or_else(|payload| {
+        if let Some(message) = payload.downcast_ref::<String>() {
+            context.fail_case(message);
+        }
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            context.fail_case(message);
+        }
+        context.fail_case("non-string panic payload");
+    })
+}
+
+trait GeneratedConstructionResult<T> {
+    fn generated(self, context: GeneratedFixtureContext) -> T;
+}
+
+impl<T, E: std::fmt::Display> GeneratedConstructionResult<T> for Result<T, E> {
+    #[track_caller]
+    fn generated(self, context: GeneratedFixtureContext) -> T {
+        self.unwrap_or_else(|error| context.fail(error))
+    }
+}
 
 fn generated_i32(seed: u64, lane: u64) -> i32 {
     let mut state = seed ^ lane.wrapping_mul(0x9e37_79b9_7f4a_7c15);
@@ -938,6 +1032,11 @@ fn generated_nonzero_i32(seed: u64, lane: u64) -> i32 {
 }
 
 fn generated_terminating_diamond(seed: u64, sources: &SourceContext) -> (CoreProgram, FunctionId) {
+    let context = GeneratedFixtureContext::new(
+        seed,
+        TERMINATING_DIAMOND_SHAPE,
+        BOOLEAN_DIAMOND_INPUT_DOMAIN,
+    );
     let then_constant = generated_i32(seed, 0);
     let else_constant = generated_i32(seed, 1);
 
@@ -949,17 +1048,17 @@ fn generated_terminating_diamond(seed: u64, sources: &SourceContext) -> (CorePro
             vec![CoreType::I32],
             OriginId::UNKNOWN,
         )
-        .unwrap();
-    let mut builder = FunctionBuilder::new(&program, sources, function).unwrap();
+        .generated(context);
+    let mut builder = FunctionBuilder::new(&program, sources, function).generated(context);
     let entry = builder.entry_block();
-    let input = parameter(&builder, entry, 0);
-    let condition = parameter(&builder, entry, 1);
-    let then_block = builder.create_block(OriginId::UNKNOWN).unwrap();
-    let else_block = builder.create_block(OriginId::UNKNOWN).unwrap();
-    let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+    let input = context.parameter(&builder, entry, 0);
+    let condition = context.parameter(&builder, entry, 1);
+    let then_block = builder.create_block(OriginId::UNKNOWN).generated(context);
+    let else_block = builder.create_block(OriginId::UNKNOWN).generated(context);
+    let join = builder.create_block(OriginId::UNKNOWN).generated(context);
     let joined = builder
         .append_block_parameter(join, CoreType::I32, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Branch {
@@ -969,54 +1068,57 @@ fn generated_terminating_diamond(seed: u64, sources: &SourceContext) -> (CorePro
             },
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(then_block).unwrap();
+    builder.switch_to_block(then_block).generated(context);
     let then_value = builder
         .i32_constant(then_constant, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let then_result = builder
         .i32_add_wrapping(input, then_value, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(join, vec![then_result])),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(else_block).unwrap();
+    builder.switch_to_block(else_block).generated(context);
     let else_value = builder
         .i32_constant(else_constant, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let else_result = builder
         .i32_add_wrapping(input, else_value, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(join, vec![else_result])),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(join).unwrap();
-    let zero = builder.i32_constant(0, OriginId::UNKNOWN).unwrap();
+    builder.switch_to_block(join).generated(context);
+    let zero = builder
+        .i32_constant(0, OriginId::UNKNOWN)
+        .generated(context);
     let normalized = builder
         .i32_add_wrapping(joined, zero, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Return(vec![normalized]),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
-    program
-        .define_function(function, builder.finish().unwrap())
-        .unwrap();
+        .generated(context);
+    let body = builder.finish().generated(context);
+    program.define_function(function, body).generated(context);
     (program, function)
 }
 
 fn generated_straight_line(seed: u64, sources: &SourceContext) -> (CoreProgram, FunctionId) {
+    let context =
+        GeneratedFixtureContext::new(seed, STRAIGHT_LINE_SHAPE, SCALAR_BOUNDARY_INPUT_DOMAIN);
     let mut program = CoreProgram::new();
     let function = program
         .declare_function(
@@ -1027,38 +1129,39 @@ fn generated_straight_line(seed: u64, sources: &SourceContext) -> (CoreProgram, 
             vec![CoreType::I32],
             OriginId::UNKNOWN,
         )
-        .unwrap();
-    let mut builder = FunctionBuilder::new(&program, sources, function).unwrap();
+        .generated(context);
+    let mut builder = FunctionBuilder::new(&program, sources, function).generated(context);
     let entry = builder.entry_block();
-    let input = parameter(&builder, entry, 0);
+    let input = context.parameter(&builder, entry, 0);
     let literal = builder
         .i32_constant(generated_nonzero_i32(seed, 2), OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let representative = builder
         .i32_add_wrapping(input, literal, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let duplicate = builder
         .i32_add_wrapping(literal, input, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let _dead = builder
         .i32_add_wrapping(representative, input, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let result = builder
         .i32_add_wrapping(representative, duplicate, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Return(vec![result]),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
-    program
-        .define_function(function, builder.finish().unwrap())
-        .unwrap();
+        .generated(context);
+    let body = builder.finish().generated(context);
+    program.define_function(function, body).generated(context);
     (program, function)
 }
 
 fn generated_asymmetric_diamond(seed: u64, sources: &SourceContext) -> (CoreProgram, FunctionId) {
+    let context =
+        GeneratedFixtureContext::new(seed, ASYMMETRIC_DIAMOND_SHAPE, BOOLEAN_DIAMOND_INPUT_DOMAIN);
     let mut program = CoreProgram::new();
     let function = program
         .declare_function(
@@ -1069,27 +1172,27 @@ fn generated_asymmetric_diamond(seed: u64, sources: &SourceContext) -> (CoreProg
             vec![CoreType::I32, CoreType::Bool],
             OriginId::UNKNOWN,
         )
-        .unwrap();
-    let mut builder = FunctionBuilder::new(&program, sources, function).unwrap();
+        .generated(context);
+    let mut builder = FunctionBuilder::new(&program, sources, function).generated(context);
     let entry = builder.entry_block();
-    let input = parameter(&builder, entry, 0);
-    let condition = parameter(&builder, entry, 1);
-    let direct_arm = builder.create_block(OriginId::UNKNOWN).unwrap();
-    let extended_arm = builder.create_block(OriginId::UNKNOWN).unwrap();
-    let arm_bridge = builder.create_block(OriginId::UNKNOWN).unwrap();
+    let input = context.parameter(&builder, entry, 0);
+    let condition = context.parameter(&builder, entry, 1);
+    let direct_arm = builder.create_block(OriginId::UNKNOWN).generated(context);
+    let extended_arm = builder.create_block(OriginId::UNKNOWN).generated(context);
+    let arm_bridge = builder.create_block(OriginId::UNKNOWN).generated(context);
     let bridge_value = builder
         .append_block_parameter(arm_bridge, CoreType::I32, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let bridge_flag = builder
         .append_block_parameter(arm_bridge, CoreType::Bool, OriginId::UNKNOWN)
-        .unwrap();
-    let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+        .generated(context);
+    let join = builder.create_block(OriginId::UNKNOWN).generated(context);
     let joined_value = builder
         .append_block_parameter(join, CoreType::I32, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let joined_flag = builder
         .append_block_parameter(join, CoreType::Bool, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Branch {
@@ -1099,30 +1202,32 @@ fn generated_asymmetric_diamond(seed: u64, sources: &SourceContext) -> (CoreProg
             },
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(direct_arm).unwrap();
+    builder.switch_to_block(direct_arm).generated(context);
     let direct_literal = builder
         .i32_constant(generated_nonzero_i32(seed, 3), OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let (direct_value, direct_flag) = builder
         .i32_add_overflowing(input, direct_literal, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(join, vec![direct_value, direct_flag])),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(extended_arm).unwrap();
+    builder.switch_to_block(extended_arm).generated(context);
     let extended_literal = builder
         .i32_constant(generated_nonzero_i32(seed, 4), OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let extended_value = builder
         .i32_add_wrapping(input, extended_literal, OriginId::UNKNOWN)
-        .unwrap();
-    let extended_flag = builder.bool_constant(false, OriginId::UNKNOWN).unwrap();
+        .generated(context);
+    let extended_flag = builder
+        .bool_constant(false, OriginId::UNKNOWN)
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(
@@ -1131,30 +1236,31 @@ fn generated_asymmetric_diamond(seed: u64, sources: &SourceContext) -> (CoreProg
             )),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(arm_bridge).unwrap();
+    builder.switch_to_block(arm_bridge).generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(join, vec![bridge_value, bridge_flag])),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(join).unwrap();
+    builder.switch_to_block(join).generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Return(vec![joined_value, joined_flag]),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
-    program
-        .define_function(function, builder.finish().unwrap())
-        .unwrap();
+        .generated(context);
+    let body = builder.finish().generated(context);
+    program.define_function(function, body).generated(context);
     (program, function)
 }
 
 fn generated_terminating_loop(seed: u64, sources: &SourceContext) -> (CoreProgram, FunctionId) {
+    let context =
+        GeneratedFixtureContext::new(seed, TERMINATING_LOOP_SHAPE, NO_ARGUMENT_INPUT_DOMAIN);
     let mut program = CoreProgram::new();
     let function = program
         .declare_function(
@@ -1165,42 +1271,48 @@ fn generated_terminating_loop(seed: u64, sources: &SourceContext) -> (CoreProgra
             vec![CoreType::I32],
             OriginId::UNKNOWN,
         )
-        .unwrap();
-    let mut builder = FunctionBuilder::new(&program, sources, function).unwrap();
-    let loop_block = builder.create_block(OriginId::UNKNOWN).unwrap();
+        .generated(context);
+    let mut builder = FunctionBuilder::new(&program, sources, function).generated(context);
+    let loop_block = builder.create_block(OriginId::UNKNOWN).generated(context);
     let counter = builder
         .append_block_parameter(loop_block, CoreType::I32, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let accumulator = builder
         .append_block_parameter(loop_block, CoreType::I32, OriginId::UNKNOWN)
-        .unwrap();
-    let body_block = builder.create_block(OriginId::UNKNOWN).unwrap();
-    let exit_block = builder.create_block(OriginId::UNKNOWN).unwrap();
+        .generated(context);
+    let body_block = builder.create_block(OriginId::UNKNOWN).generated(context);
+    let exit_block = builder.create_block(OriginId::UNKNOWN).generated(context);
     let final_value = builder
         .append_block_parameter(exit_block, CoreType::I32, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
 
-    let zero = builder.i32_constant(0, OriginId::UNKNOWN).unwrap();
+    let zero = builder
+        .i32_constant(0, OriginId::UNKNOWN)
+        .generated(context);
     let start = builder
         .i32_constant(generated_i32(seed, 5), OriginId::UNKNOWN)
-        .unwrap();
-    let iterations = i32::try_from(seed % 7 + 1).unwrap();
-    let bound = builder.i32_constant(iterations, OriginId::UNKNOWN).unwrap();
-    let one = builder.i32_constant(1, OriginId::UNKNOWN).unwrap();
+        .generated(context);
+    let iterations = i32::try_from(seed % 7 + 1).generated(context);
+    let bound = builder
+        .i32_constant(iterations, OriginId::UNKNOWN)
+        .generated(context);
+    let one = builder
+        .i32_constant(1, OriginId::UNKNOWN)
+        .generated(context);
     let delta = builder
         .i32_constant(generated_nonzero_i32(seed, 6), OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(loop_block, vec![zero, start])),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(loop_block).unwrap();
+    builder.switch_to_block(loop_block).generated(context);
     let keep_running = builder
         .i32_compare(I32Predicate::SignedLt, counter, bound, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Branch {
@@ -1210,15 +1322,15 @@ fn generated_terminating_loop(seed: u64, sources: &SourceContext) -> (CoreProgra
             },
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(body_block).unwrap();
+    builder.switch_to_block(body_block).generated(context);
     let next_counter = builder
         .i32_add_wrapping(counter, one, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let next_accumulator = builder
         .i32_add_wrapping(accumulator, delta, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(
@@ -1227,22 +1339,23 @@ fn generated_terminating_loop(seed: u64, sources: &SourceContext) -> (CoreProgra
             )),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(exit_block).unwrap();
+    builder.switch_to_block(exit_block).generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Return(vec![final_value]),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
-    program
-        .define_function(function, builder.finish().unwrap())
-        .unwrap();
+        .generated(context);
+    let body = builder.finish().generated(context);
+    program.define_function(function, body).generated(context);
     (program, function)
 }
 
 fn generated_multi_result_call(seed: u64, sources: &SourceContext) -> (CoreProgram, FunctionId) {
+    let context =
+        GeneratedFixtureContext::new(seed, MULTI_RESULT_CALL_SHAPE, SCALAR_BOUNDARY_INPUT_DOMAIN);
     let mut program = CoreProgram::new();
     let helper = program
         .declare_function(
@@ -1253,7 +1366,7 @@ fn generated_multi_result_call(seed: u64, sources: &SourceContext) -> (CoreProgr
             vec![CoreType::I32, CoreType::Bool],
             OriginId::UNKNOWN,
         )
-        .unwrap();
+        .generated(context);
     let root = program
         .declare_function(
             Some(format!(
@@ -1263,45 +1376,43 @@ fn generated_multi_result_call(seed: u64, sources: &SourceContext) -> (CoreProgr
             vec![CoreType::I32, CoreType::Bool],
             OriginId::UNKNOWN,
         )
-        .unwrap();
+        .generated(context);
 
-    let mut builder = FunctionBuilder::new(&program, sources, helper).unwrap();
+    let mut builder = FunctionBuilder::new(&program, sources, helper).generated(context);
     let helper_entry = builder.entry_block();
-    let left = parameter(&builder, helper_entry, 0);
-    let right = parameter(&builder, helper_entry, 1);
+    let left = context.parameter(&builder, helper_entry, 0);
+    let right = context.parameter(&builder, helper_entry, 1);
     let (sum, overflowed) = builder
         .i32_add_overflowing(left, right, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Return(vec![sum, overflowed]),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
-    program
-        .define_function(helper, builder.finish().unwrap())
-        .unwrap();
+        .generated(context);
+    let body = builder.finish().generated(context);
+    program.define_function(helper, body).generated(context);
 
-    let mut builder = FunctionBuilder::new(&program, sources, root).unwrap();
+    let mut builder = FunctionBuilder::new(&program, sources, root).generated(context);
     let root_entry = builder.entry_block();
-    let input = parameter(&builder, root_entry, 0);
+    let input = context.parameter(&builder, root_entry, 0);
     let offset = builder
         .i32_constant(generated_nonzero_i32(seed, 7), OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let first = builder
         .call(helper, vec![input, offset], OriginId::UNKNOWN)
-        .unwrap();
-    let first_sum = first[0];
-    let first_overflowed = first[1];
-    let overflow_arm = builder.create_block(OriginId::UNKNOWN).unwrap();
-    let ordinary_arm = builder.create_block(OriginId::UNKNOWN).unwrap();
-    let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+        .generated(context);
+    let (first_sum, first_overflowed) = context.two_results(&first);
+    let overflow_arm = builder.create_block(OriginId::UNKNOWN).generated(context);
+    let ordinary_arm = builder.create_block(OriginId::UNKNOWN).generated(context);
+    let join = builder.create_block(OriginId::UNKNOWN).generated(context);
     let joined_sum = builder
         .append_block_parameter(join, CoreType::I32, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     let joined_overflow = builder
         .append_block_parameter(join, CoreType::Bool, OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Branch {
@@ -1311,40 +1422,39 @@ fn generated_multi_result_call(seed: u64, sources: &SourceContext) -> (CoreProgr
             },
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(overflow_arm).unwrap();
+    builder.switch_to_block(overflow_arm).generated(context);
     let overflow_results = builder
         .call(helper, vec![first_sum, input], OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(join, overflow_results)),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(ordinary_arm).unwrap();
+    builder.switch_to_block(ordinary_arm).generated(context);
     let ordinary_results = builder
         .call(helper, vec![first_sum, offset], OriginId::UNKNOWN)
-        .unwrap();
+        .generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Jump(BlockTarget::new(join, ordinary_results)),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
+        .generated(context);
 
-    builder.switch_to_block(join).unwrap();
+    builder.switch_to_block(join).generated(context);
     builder
         .terminate(Terminator::new(
             TerminatorKind::Return(vec![joined_sum, joined_overflow]),
             OriginId::UNKNOWN,
         ))
-        .unwrap();
-    program
-        .define_function(root, builder.finish().unwrap())
-        .unwrap();
+        .generated(context);
+    let body = builder.finish().generated(context);
+    program.define_function(root, body).generated(context);
     (program, root)
 }
 
@@ -1366,7 +1476,7 @@ fn asymmetric_diamond_arguments() -> Vec<Vec<TestValue>> {
 }
 
 struct GeneratedDifferentialCase {
-    shape: &'static str,
+    context: GeneratedFixtureContext,
     program: CoreProgram,
     function: FunctionId,
     arguments: Vec<Vec<TestValue>>,
@@ -1375,14 +1485,16 @@ struct GeneratedDifferentialCase {
 }
 
 fn generated_case(
-    shape: &'static str,
-    (program, function): (CoreProgram, FunctionId),
+    context: GeneratedFixtureContext,
+    sources: &SourceContext,
+    build: fn(u64, &SourceContext) -> (CoreProgram, FunctionId),
     arguments: Vec<Vec<TestValue>>,
     expected_call_effects: usize,
     expected_distinct_call_sites: usize,
 ) -> GeneratedDifferentialCase {
+    let (program, function) = run_generated_case(context, || build(context.seed, sources));
     GeneratedDifferentialCase {
-        shape,
+        context,
         program,
         function,
         arguments,
@@ -1391,85 +1503,101 @@ fn generated_case(
     }
 }
 
-fn assert_generated_differential(
-    seed: u64,
-    case: GeneratedDifferentialCase,
-    sources: &SourceContext,
-) {
+fn assert_generated_differential(case: GeneratedDifferentialCase, sources: &SourceContext) {
     let GeneratedDifferentialCase {
-        shape,
+        context: fixture_context,
         program,
         function,
         arguments,
         expected_call_effects,
         expected_distinct_call_sites,
     } = case;
-    verify_program(&program, sources).unwrap_or_else(|error| {
-        panic!(
-            "generated Core invalid: version={GENERATED_CFG_VERSION} shape={shape} seed={seed}: {error}"
-        )
-    });
-    let reference =
-        optimize_for_semantic_comparison(program.clone(), sources, CoreOptimizationLevel::None);
-    let baseline =
-        optimize_for_semantic_comparison(program, sources, CoreOptimizationLevel::Baseline);
-    let mut observed_call_sites = vec![];
-    for input in &arguments {
-        let context = format!(
-            "generated version={GENERATED_CFG_VERSION} shape={shape} seed={seed} input={input:?}"
-        );
-        let reference_evaluation = evaluate(&reference, function, input, 10_000).unwrap();
+    let seed = fixture_context.seed;
+    let shape = fixture_context.shape;
+    run_generated_case(fixture_context, || {
+        verify_program(&program, sources).unwrap_or_else(|error| {
+            panic!(
+                "generated Core invalid: version={GENERATED_CFG_VERSION} shape={shape} seed={seed}: {error}"
+            )
+        });
+        let reference =
+            optimize_for_semantic_comparison(program.clone(), sources, CoreOptimizationLevel::None);
+        let baseline =
+            optimize_for_semantic_comparison(program, sources, CoreOptimizationLevel::Baseline);
+        let mut observed_call_sites = vec![];
+        for input in &arguments {
+            let context = format!(
+                "generated version={GENERATED_CFG_VERSION} shape={shape} seed={seed} input={input:?}"
+            );
+            let reference_evaluation = evaluate(&reference, function, input, 10_000)
+                .unwrap_or_else(|error| panic!("{context}: reference evaluator failed: {error:?}"));
+            assert_eq!(
+                reference_evaluation.call_effects.len(),
+                expected_call_effects,
+                "fixture did not exercise its intended call surface: {context}"
+            );
+            observed_call_sites.extend(
+                reference_evaluation
+                    .call_effects
+                    .iter()
+                    .map(|effect| effect.instruction),
+            );
+            assert_same_observation(&reference, &baseline, function, input, 10_000, &context);
+        }
+        observed_call_sites.sort_unstable();
+        observed_call_sites.dedup();
         assert_eq!(
-            reference_evaluation.call_effects.len(),
-            expected_call_effects,
-            "fixture did not exercise its intended call surface: {context}"
+            observed_call_sites.len(),
+            expected_distinct_call_sites,
+            "generated call-site coverage mismatch: version={GENERATED_CFG_VERSION} shape={shape} seed={seed}"
         );
-        observed_call_sites.extend(
-            reference_evaluation
-                .call_effects
-                .iter()
-                .map(|effect| effect.instruction),
-        );
-        assert_same_observation(&reference, &baseline, function, input, 10_000, &context);
-    }
-    observed_call_sites.sort_unstable();
-    observed_call_sites.dedup();
-    assert_eq!(
-        observed_call_sites.len(),
-        expected_distinct_call_sites,
-        "generated call-site coverage mismatch: version={GENERATED_CFG_VERSION} shape={shape} seed={seed}"
-    );
+    });
 }
 
 #[test]
 fn generated_terminating_cfgs_match_none_results_and_effect_order() {
     let sources = SourceContext::new();
     for seed in 0_u64..64 {
-        let (program, function) = generated_terminating_diamond(seed, &sources);
-        verify_program(&program, &sources).unwrap_or_else(|error| {
-            panic!("generated Core invalid: version={GENERATED_CFG_VERSION} seed={seed}: {error}")
-        });
-        let reference = optimize_for_semantic_comparison(
-            program.clone(),
-            &sources,
-            CoreOptimizationLevel::None,
+        let fixture_context = GeneratedFixtureContext::new(
+            seed,
+            TERMINATING_DIAMOND_SHAPE,
+            BOOLEAN_DIAMOND_INPUT_DOMAIN,
         );
-        let baseline =
-            optimize_for_semantic_comparison(program, &sources, CoreOptimizationLevel::Baseline);
-        for condition in [false, true] {
-            for input in [i32::MIN, -1, 0, 1, i32::MAX] {
-                assert_same_observation(
-                    &reference,
-                    &baseline,
-                    function,
-                    &[TestValue::I32(input), TestValue::Bool(condition)],
-                    1_000,
-                    &format!(
-                        "generated version={GENERATED_CFG_VERSION} seed={seed} input={input} condition={condition}"
-                    ),
-                );
+        run_generated_case(fixture_context, || {
+            let (program, function) = generated_terminating_diamond(seed, &sources);
+            verify_program(&program, &sources).unwrap_or_else(|error| {
+                panic!(
+                    "generated Core invalid: version={GENERATED_CFG_VERSION} \
+                     shape={TERMINATING_DIAMOND_SHAPE} seed={seed}: {error}"
+                )
+            });
+            let reference = optimize_for_semantic_comparison(
+                program.clone(),
+                &sources,
+                CoreOptimizationLevel::None,
+            );
+            let baseline = optimize_for_semantic_comparison(
+                program,
+                &sources,
+                CoreOptimizationLevel::Baseline,
+            );
+            for condition in [false, true] {
+                for input in [i32::MIN, -1, 0, 1, i32::MAX] {
+                    assert_same_observation(
+                        &reference,
+                        &baseline,
+                        function,
+                        &[TestValue::I32(input), TestValue::Bool(condition)],
+                        1_000,
+                        &format!(
+                            "generated version={GENERATED_CFG_VERSION} \
+                             shape={TERMINATING_DIAMOND_SHAPE} seed={seed} \
+                             input={input} condition={condition}"
+                        ),
+                    );
+                }
             }
-        }
+        });
     }
 }
 
@@ -1479,36 +1607,56 @@ fn generated_distinct_cfg_families_match_none_results_and_effect_order() {
     for seed in GENERATED_SEEDS {
         let cases = [
             generated_case(
-                "straight-line",
-                generated_straight_line(seed, &sources),
+                GeneratedFixtureContext::new(
+                    seed,
+                    STRAIGHT_LINE_SHAPE,
+                    SCALAR_BOUNDARY_INPUT_DOMAIN,
+                ),
+                &sources,
+                generated_straight_line,
                 scalar_boundary_arguments(),
                 0,
                 0,
             ),
             generated_case(
-                "asymmetric-diamond",
-                generated_asymmetric_diamond(seed, &sources),
+                GeneratedFixtureContext::new(
+                    seed,
+                    ASYMMETRIC_DIAMOND_SHAPE,
+                    BOOLEAN_DIAMOND_INPUT_DOMAIN,
+                ),
+                &sources,
+                generated_asymmetric_diamond,
                 asymmetric_diamond_arguments(),
                 0,
                 0,
             ),
             generated_case(
-                "terminating-loop",
-                generated_terminating_loop(seed, &sources),
+                GeneratedFixtureContext::new(
+                    seed,
+                    TERMINATING_LOOP_SHAPE,
+                    NO_ARGUMENT_INPUT_DOMAIN,
+                ),
+                &sources,
+                generated_terminating_loop,
                 vec![vec![]],
                 0,
                 0,
             ),
             generated_case(
-                "multi-result-call",
-                generated_multi_result_call(seed, &sources),
+                GeneratedFixtureContext::new(
+                    seed,
+                    MULTI_RESULT_CALL_SHAPE,
+                    SCALAR_BOUNDARY_INPUT_DOMAIN,
+                ),
+                &sources,
+                generated_multi_result_call,
                 scalar_boundary_arguments(),
                 2,
                 3,
             ),
         ];
         for case in cases {
-            assert_generated_differential(seed, case, &sources);
+            assert_generated_differential(case, &sources);
         }
     }
 }

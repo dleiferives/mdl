@@ -323,6 +323,8 @@ struct SccpDecision {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
+
     use super::lattice::LatticeValue;
     use super::{SccpCompletion, SccpEventLimit, SccpLimitReason, SccpLimits, SccpTableLimit, run};
     use crate::entity::EntityId;
@@ -331,6 +333,33 @@ mod tests {
         FunctionEditor, FunctionId, Terminator, TerminatorKind, ValueDef, ValueId, verify_function,
     };
     use crate::source::{Origin, OriginId, SourceContext};
+
+    trait GeneratedFixtureResult<T> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T;
+    }
+
+    impl<T, E: Debug> GeneratedFixtureResult<T> for Result<T, E> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T {
+            self.unwrap_or_else(|error| {
+                panic!("{context}: generated fixture construction failed: {error:?}")
+            })
+        }
+    }
+
+    #[track_caller]
+    fn run_generated_case<T>(context: &str, case: impl FnOnce() -> T) -> T {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)).unwrap_or_else(|payload| {
+            if let Some(message) = payload.downcast_ref::<String>() {
+                panic!("{context}: generated SCCP case failed: {message}");
+            }
+            if let Some(message) = payload.downcast_ref::<&str>() {
+                panic!("{context}: generated SCCP case failed: {message}");
+            }
+            panic!("{context}: generated SCCP case failed with a non-string panic payload");
+        })
+    }
 
     struct Fixture {
         program: CoreProgram,
@@ -1360,7 +1389,15 @@ mod tests {
         }
     }
 
-    fn generated_boolean_body(seed: u32) -> FunctionBody {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one generated CFG fixture keeps its seed-qualified construction in one replayable unit"
+    )]
+    fn generated_boolean_body(generator_version: u32, seed: u32, context: &str) -> FunctionBody {
+        assert_eq!(
+            generator_version, 1,
+            "{context}: generator_version={generator_version} seed={seed} is unsupported"
+        );
         let sources = SourceContext::new();
         let mut program = CoreProgram::new();
         let has_runtime_condition = seed % 3 == 0;
@@ -1375,29 +1412,41 @@ mod tests {
                 vec![CoreType::Bool],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
+            .expect_generated(context);
+        let mut builder =
+            FunctionBuilder::new(&program, &sources, function).expect_generated(context);
         let entry = builder.entry_block();
         let condition = if has_runtime_condition {
-            builder.body().block(entry).unwrap().parameters()[0].value()
+            builder
+                .body()
+                .block(entry)
+                .unwrap_or_else(|| panic!("{context}: generated entry block is missing"))
+                .parameters()
+                .first()
+                .unwrap_or_else(|| panic!("{context}: generated runtime parameter is missing"))
+                .value()
         } else {
             builder
                 .bool_constant(seed & 1 == 0, OriginId::UNKNOWN)
-                .unwrap()
+                .expect_generated(context)
         };
 
         if seed % 2 == 0 {
-            let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+            let join = builder
+                .create_block(OriginId::UNKNOWN)
+                .expect_generated(context);
             let parameter = builder
                 .append_block_parameter(join, CoreType::Bool, OriginId::UNKNOWN)
-                .unwrap();
+                .expect_generated(context);
             let then_value = builder
                 .bool_constant(seed & 2 == 0, OriginId::UNKNOWN)
-                .unwrap();
+                .expect_generated(context);
             let else_literal = builder
                 .bool_constant(seed & 4 == 0, OriginId::UNKNOWN)
-                .unwrap();
-            let else_value = builder.bool_not(else_literal, OriginId::UNKNOWN).unwrap();
+                .expect_generated(context);
+            let else_value = builder
+                .bool_not(else_literal, OriginId::UNKNOWN)
+                .expect_generated(context);
             builder
                 .terminate(Terminator::new(
                     TerminatorKind::Branch {
@@ -1407,21 +1456,27 @@ mod tests {
                     },
                     OriginId::UNKNOWN,
                 ))
-                .unwrap();
-            builder.switch_to_block(join).unwrap();
+                .expect_generated(context);
+            builder.switch_to_block(join).expect_generated(context);
             builder
                 .terminate(Terminator::new(
                     TerminatorKind::Return(vec![parameter]),
                     OriginId::UNKNOWN,
                 ))
-                .unwrap();
+                .expect_generated(context);
         } else {
-            let then_block = builder.create_block(OriginId::UNKNOWN).unwrap();
-            let else_block = builder.create_block(OriginId::UNKNOWN).unwrap();
-            let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+            let then_block = builder
+                .create_block(OriginId::UNKNOWN)
+                .expect_generated(context);
+            let else_block = builder
+                .create_block(OriginId::UNKNOWN)
+                .expect_generated(context);
+            let join = builder
+                .create_block(OriginId::UNKNOWN)
+                .expect_generated(context);
             let parameter = builder
                 .append_block_parameter(join, CoreType::Bool, OriginId::UNKNOWN)
-                .unwrap();
+                .expect_generated(context);
             builder
                 .terminate(Terminator::new(
                     TerminatorKind::Branch {
@@ -1431,20 +1486,24 @@ mod tests {
                     },
                     OriginId::UNKNOWN,
                 ))
-                .unwrap();
+                .expect_generated(context);
             for (block, value) in [(then_block, seed & 2 == 0), (else_block, seed & 4 == 0)] {
-                builder.switch_to_block(block).unwrap();
-                let argument = builder.bool_constant(value, OriginId::UNKNOWN).unwrap();
+                builder.switch_to_block(block).expect_generated(context);
+                let argument = builder
+                    .bool_constant(value, OriginId::UNKNOWN)
+                    .expect_generated(context);
                 builder
                     .terminate(Terminator::new(
                         TerminatorKind::Jump(BlockTarget::new(join, vec![argument])),
                         OriginId::UNKNOWN,
                     ))
-                    .unwrap();
+                    .expect_generated(context);
             }
-            builder.switch_to_block(join).unwrap();
+            builder.switch_to_block(join).expect_generated(context);
             let returned = if seed & 8 == 0 {
-                builder.bool_not(parameter, OriginId::UNKNOWN).unwrap()
+                builder
+                    .bool_not(parameter, OriginId::UNKNOWN)
+                    .expect_generated(context)
             } else {
                 parameter
             };
@@ -1453,43 +1512,70 @@ mod tests {
                     TerminatorKind::Return(vec![returned]),
                     OriginId::UNKNOWN,
                 ))
-                .unwrap();
+                .expect_generated(context);
         }
-        builder.finish().unwrap()
+        builder.finish().expect_generated(context)
     }
 
     #[test]
     fn sparse_fifo_matches_independent_dense_round_robin_oracle() {
+        const GENERATOR_VERSION: u32 = 1;
+
         for seed in 0..64 {
-            let body = generated_boolean_body(seed);
-            let sparse = super::solver::solve_facts_for_test(&body).unwrap();
-            let dense = round_robin_oracle(&body);
-            assert_eq!(
-                sparse.values,
-                dense
-                    .values
-                    .iter()
-                    .copied()
-                    .map(OracleFact::lattice)
-                    .collect::<Vec<_>>(),
-                "value facts differ for seed {seed}"
+            let condition_shape = if seed % 3 == 0 { "runtime" } else { "constant" };
+            let cfg_shape = if seed % 2 == 0 {
+                "same-target-branch"
+            } else {
+                "diamond"
+            };
+            let return_shape = if seed % 2 != 0 && seed & 8 == 0 {
+                "negated"
+            } else {
+                "direct"
+            };
+            let inputs = if seed % 3 == 0 {
+                "bool:[false,true]"
+            } else {
+                "none"
+            };
+            let context = format!(
+                "generator_version={GENERATOR_VERSION} seed={seed} shape=condition:{condition_shape},cfg:{cfg_shape},return:{return_shape} inputs={inputs}"
             );
-            assert_eq!(sparse.blocks, dense.blocks, "blocks differ for seed {seed}");
-            let sparse_edges = sparse
-                .edges
-                .iter()
-                .map(|(edge, executable)| {
-                    let (source, successor_index) = edge.parts();
-                    (source, successor_index, *executable)
-                })
-                .collect::<Vec<_>>();
-            let dense_edges = dense
-                .edges
-                .iter()
-                .map(|edge| (edge.source, edge.successor_index, edge.executable))
-                .collect::<Vec<_>>();
-            assert_eq!(sparse_edges, dense_edges, "edges differ for seed {seed}");
-            assert_eq!(sparse.statistics.pessimistic_resolutions, 0);
+            run_generated_case(&context, || {
+                let body = generated_boolean_body(GENERATOR_VERSION, seed, &context);
+                let sparse = super::solver::solve_facts_for_test(&body)
+                    .unwrap_or_else(|error| panic!("{context}: sparse solver failed: {error:?}"));
+                let dense = round_robin_oracle(&body);
+                assert_eq!(
+                    sparse.values,
+                    dense
+                        .values
+                        .iter()
+                        .copied()
+                        .map(OracleFact::lattice)
+                        .collect::<Vec<_>>(),
+                    "{context}: value facts differ"
+                );
+                assert_eq!(sparse.blocks, dense.blocks, "{context}: blocks differ");
+                let sparse_edges = sparse
+                    .edges
+                    .iter()
+                    .map(|(edge, executable)| {
+                        let (source, successor_index) = edge.parts();
+                        (source, successor_index, *executable)
+                    })
+                    .collect::<Vec<_>>();
+                let dense_edges = dense
+                    .edges
+                    .iter()
+                    .map(|edge| (edge.source, edge.successor_index, edge.executable))
+                    .collect::<Vec<_>>();
+                assert_eq!(sparse_edges, dense_edges, "{context}: edges differ");
+                assert_eq!(
+                    sparse.statistics.pessimistic_resolutions, 0,
+                    "{context}: valid generated cases must not require pessimistic resolution"
+                );
+            });
         }
     }
 }

@@ -26,7 +26,7 @@ use crate::lower::minecraft::placement::{
 /// therefore retain an immutable audit record without keeping the planner alive, while
 /// diagnostics and exact-output tests render the same decisions on demand.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LoweringReport {
+pub struct LoweringDecisionReport {
     optimization_level: MinecraftOptimizationLevel,
     target: JavaEditionTarget,
     namespace: PackNamespace,
@@ -38,7 +38,7 @@ pub(crate) struct LoweringReport {
     homes: Box<[HomeReport]>,
     target_functions: Box<[TargetFunctionReport]>,
     functions: Box<[FunctionReport]>,
-    control: ControlStatisticsReport,
+    statistics: LoweringDecisionStatistics,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,7 +76,10 @@ struct FunctionReport {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ControlStatisticsReport {
+pub struct LoweringDecisionStatistics {
+    homes: usize,
+    target_functions: usize,
+    core_functions: usize,
     branch_arms: u64,
     selected_recipes: u64,
     consumed_blocks: u64,
@@ -95,7 +98,7 @@ struct InstructionReport {
     plan: InstructionPlan,
 }
 
-impl LoweringReport {
+impl LoweringDecisionReport {
     pub(crate) fn from_plan(plan: &LoweringPlan) -> Self {
         let homes = plan
             .homes
@@ -125,7 +128,10 @@ impl LoweringReport {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let statistics = plan.control_statistics;
-        let control = ControlStatisticsReport {
+        let statistics = LoweringDecisionStatistics {
+            homes: homes.len(),
+            target_functions: target_functions.len(),
+            core_functions: functions.len(),
             branch_arms: statistics.branch_arms_visited(),
             selected_recipes: statistics.candidates_selected(),
             consumed_blocks: statistics.blocks_consumed(),
@@ -142,11 +148,49 @@ impl LoweringReport {
             homes,
             target_functions,
             functions,
-            control,
+            statistics,
         }
     }
 
-    pub(crate) fn dump(&self) -> String {
+    /// Returns the Minecraft physical-planning policy that produced these decisions.
+    #[must_use]
+    pub const fn optimization_level(&self) -> MinecraftOptimizationLevel {
+        self.optimization_level
+    }
+
+    /// Returns the target version used to validate and construct the plan.
+    #[must_use]
+    pub const fn target(&self) -> JavaEditionTarget {
+        self.target
+    }
+
+    /// Returns the compiler-owned datapack namespace.
+    #[must_use]
+    pub const fn namespace(&self) -> &PackNamespace {
+        &self.namespace
+    }
+
+    /// Returns the compiler-owned scoreboard objective.
+    #[must_use]
+    pub const fn register_objective(&self) -> &ObjectiveName {
+        &self.register_objective
+    }
+
+    /// Returns the runtime restrictions attached to the frozen plan.
+    #[must_use]
+    pub const fn execution_contract(&self) -> &ExecutionContract {
+        &self.execution
+    }
+
+    /// Returns compact aggregate counts without exposing private plan identities.
+    #[must_use]
+    pub const fn statistics(&self) -> LoweringDecisionStatistics {
+        self.statistics
+    }
+
+    /// Renders the complete lowering decisions in deterministic entity order.
+    #[must_use]
+    pub fn dump(&self) -> String {
         let mut output = String::new();
         writeln!(
             output,
@@ -163,9 +207,9 @@ impl LoweringReport {
             writeln!(
                 output,
                 "control branch-arms={} selected={} consumed={}",
-                self.control.branch_arms,
-                self.control.selected_recipes,
-                self.control.consumed_blocks
+                self.statistics.branch_arms,
+                self.statistics.selected_recipes,
+                self.statistics.consumed_blocks
             )
             .unwrap();
         }
@@ -238,6 +282,44 @@ impl LoweringReport {
     }
 }
 
+impl LoweringDecisionStatistics {
+    /// Returns the number of physical score homes retained by the plan.
+    #[must_use]
+    pub const fn homes(self) -> usize {
+        self.homes
+    }
+
+    /// Returns the number of generated target functions owned by the plan.
+    #[must_use]
+    pub const fn target_functions(self) -> usize {
+        self.target_functions
+    }
+
+    /// Returns the number of Core functions represented in the plan.
+    #[must_use]
+    pub const fn core_functions(self) -> usize {
+        self.core_functions
+    }
+
+    /// Returns the number of reachable branch arms considered by the selector.
+    #[must_use]
+    pub const fn branch_arms(self) -> u64 {
+        self.branch_arms
+    }
+
+    /// Returns the number of control recipes selected over the reference form.
+    #[must_use]
+    pub const fn selected_recipes(self) -> u64 {
+        self.selected_recipes
+    }
+
+    /// Returns the number of Core blocks consumed by selected recipes.
+    #[must_use]
+    pub const fn consumed_blocks(self) -> u64 {
+        self.consumed_blocks
+    }
+}
+
 fn dump_function_report(
     output: &mut String,
     report: &FunctionReport,
@@ -261,16 +343,19 @@ fn dump_function_report(
     )
     .unwrap();
     if let Some(coalescing) = report.coalescing {
+        let fallback = coalescing
+            .fallback_reason
+            .map_or("none", |reason| reason.code());
         writeln!(
             output,
-            "  coalescing tracked-values={} liveness-events={} segments={} candidates={} merges={} work={} fallback={:?}",
+            "  coalescing tracked-values={} liveness-events={} segments={} candidates={} merges={} work={} fallback={}",
             coalescing.liveness_tracked_values,
             coalescing.liveness_events,
             coalescing.liveness_segments,
             coalescing.candidates_considered,
             coalescing.merges_accepted,
             coalescing.work_used,
-            coalescing.fallback_reason
+            fallback
         )
         .unwrap();
     }
@@ -317,7 +402,7 @@ fn dump_branch_recipe(
         BranchArmRecipe::Materialized { reason } => {
             writeln!(
                 output,
-                "  control block={} arm={arm:?} recipe=ReturnDispatcher reason={reason:?}",
+                "  control block={} arm={arm:?} recipe=ReturnDispatcher reason={reason}",
                 block.index()
             )
             .unwrap();
@@ -326,12 +411,12 @@ fn dump_branch_recipe(
             let origins = recipe.origins();
             writeln!(
                 output,
-                "  control block={} arm={arm:?} recipe=InlineZeroAbiTerminalCall consumed={} call={} callee={} advantage={:?} completion={:?} origins=[{:?},{:?},{:?}]",
+                "  control block={} arm={arm:?} recipe=InlineZeroAbiTerminalCall consumed={} call={} callee={} advantage={} completion={:?} origins=[{:?},{:?},{:?}]",
                 block.index(),
                 recipe.consumed_block().index(),
                 recipe.call_instruction().index(),
                 recipe.callee().index(),
-                recipe.advantage(),
+                recipe.advantage().code(),
                 GeneratedCompletionContract::ExactlyOneOnNormalCompletion,
                 origins.branch(),
                 origins.call(),

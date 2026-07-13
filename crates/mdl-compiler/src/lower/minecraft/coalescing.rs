@@ -1,6 +1,7 @@
 //! Stable, bounded block-copy coalescing for Baseline home assignment.
 
 use std::collections::BTreeSet;
+use std::fmt;
 
 use crate::entity::EntityId;
 use crate::ir::core::{
@@ -20,6 +21,31 @@ pub(crate) enum CoalescingFallbackReason {
     Liveness(LivenessFallbackReason),
     WorkLimit,
     DerivedBoundOverflow,
+}
+
+impl CoalescingFallbackReason {
+    /// Stable machine-readable spelling used by deterministic reports.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Liveness(LivenessFallbackReason::PropagationEvents) => {
+                "liveness-propagation-events"
+            }
+            Self::Liveness(LivenessFallbackReason::RetainedSegments) => {
+                "liveness-retained-segments"
+            }
+            Self::Liveness(LivenessFallbackReason::DerivedBoundOverflow) => {
+                "liveness-derived-bound-overflow"
+            }
+            Self::WorkLimit => "work-limit",
+            Self::DerivedBoundOverflow => "derived-bound-overflow",
+        }
+    }
+}
+
+impl fmt::Display for CoalescingFallbackReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.code())
+    }
 }
 
 /// Deterministic coalescing counters retained with assignment decisions.
@@ -786,6 +812,32 @@ mod tests {
         Left,
         Right,
         Same,
+    }
+
+    #[test]
+    fn fallback_reason_codes_are_stable_kebab_case() {
+        for (reason, expected) in [
+            (
+                CoalescingFallbackReason::Liveness(LivenessFallbackReason::PropagationEvents),
+                "liveness-propagation-events",
+            ),
+            (
+                CoalescingFallbackReason::Liveness(LivenessFallbackReason::RetainedSegments),
+                "liveness-retained-segments",
+            ),
+            (
+                CoalescingFallbackReason::Liveness(LivenessFallbackReason::DerivedBoundOverflow),
+                "liveness-derived-bound-overflow",
+            ),
+            (CoalescingFallbackReason::WorkLimit, "work-limit"),
+            (
+                CoalescingFallbackReason::DerivedBoundOverflow,
+                "derived-bound-overflow",
+            ),
+        ] {
+            assert_eq!(reason.code(), expected);
+            assert_eq!(reason.to_string(), expected);
+        }
     }
 
     #[test]

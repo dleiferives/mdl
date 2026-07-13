@@ -79,6 +79,31 @@ fn public_lowering_boundary_returns_only_verified_output_and_read_only_abi() {
             .contains("function 0 name=Some(\"identity\")")
     );
     assert_eq!(output.program().target(), JavaEditionTarget::V26_2);
+    let report = output.report();
+    assert_eq!(
+        report.optimization_level(),
+        MinecraftOptimizationLevel::None
+    );
+    assert_eq!(report.target(), JavaEditionTarget::V26_2);
+    assert_eq!(report.namespace().as_str(), "mdl");
+    assert_eq!(report.register_objective().as_str(), "mdl.reg");
+    assert_eq!(
+        report.execution_contract(),
+        output.map().execution_contract()
+    );
+    let statistics = report.statistics();
+    assert_eq!(statistics.homes(), 2);
+    assert_eq!(statistics.target_functions(), 3);
+    assert_eq!(statistics.core_functions(), 1);
+    assert_eq!(statistics.branch_arms(), 0);
+    assert_eq!(statistics.selected_recipes(), 0);
+    assert_eq!(statistics.consumed_blocks(), 0);
+    assert_eq!(report.dump(), output.dump_lowering());
+
+    let (program, map, report) = output.into_parts();
+    assert_eq!(program.target(), JavaEditionTarget::V26_2);
+    assert_eq!(map.len(), 1);
+    assert_eq!(report.statistics(), statistics);
 }
 
 #[test]

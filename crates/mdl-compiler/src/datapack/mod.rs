@@ -233,4 +233,10 @@ impl EmissionOutput {
     pub const fn footprint(&self) -> &ArtifactFootprintReport {
         &self.footprint
     }
+
+    /// Consumes the output into its independently owned artifact, trace, and report.
+    #[must_use]
+    pub fn into_parts(self) -> (DatapackArtifact, TraceMap, ArtifactFootprintReport) {
+        (self.pack, self.trace, self.footprint)
+    }
 }

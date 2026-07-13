@@ -336,6 +336,16 @@ pub(crate) enum RecipeAdvantage {
     StableRecipeOrder,
 }
 
+impl RecipeAdvantage {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::RuntimeDominance => "runtime-dominance",
+            Self::StructuredSizeDominance => "structured-size-dominance",
+            Self::StableRecipeOrder => "stable-recipe-order",
+        }
+    }
+}
+
 /// Why the comparison conservatively retained the Stage 4 dispatcher.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum RecipeRetentionReason {
@@ -345,6 +355,19 @@ pub(crate) enum RecipeRetentionReason {
     StructuredSizeRegression,
     StructuredSizeIncomparable,
     StableRecipeOrder,
+}
+
+impl RecipeRetentionReason {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::WholeGraphImpactUnproven => "whole-graph-impact-unproven",
+            Self::RuntimeRegression => "runtime-regression",
+            Self::RuntimeIncomparable => "runtime-incomparable",
+            Self::StructuredSizeRegression => "structured-size-regression",
+            Self::StructuredSizeIncomparable => "structured-size-incomparable",
+            Self::StableRecipeOrder => "stable-recipe-order",
+        }
+    }
 }
 
 /// Deterministic result of comparing one already-legal candidate with Stage 4.
@@ -531,6 +554,42 @@ pub(crate) enum RecipeCostError {
         baseline: BranchArm,
         candidate: BranchArm,
     },
+}
+
+impl RecipeCostError {
+    pub(crate) fn fmt_code(self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ArithmeticOverflow(dimension) => {
+                write!(
+                    formatter,
+                    "arithmetic-overflow(dimension={})",
+                    dimension.code()
+                )
+            }
+            Self::NonExactLocalMaximumChain { .. } => {
+                formatter.write_str("non-exact-local-maximum-chain")
+            }
+            Self::IncompatibleWholeGraphProof { .. } => {
+                formatter.write_str("incompatible-whole-graph-proof")
+            }
+            Self::ExpectedReturnDispatcherBaseline { .. } => {
+                formatter.write_str("expected-return-dispatcher-baseline")
+            }
+            Self::MismatchedTerminalArm { .. } => formatter.write_str("mismatched-terminal-arm"),
+        }
+    }
+}
+
+impl RecipeCostDimension {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::PathCommandCounts => "path-command-counts",
+            Self::Functions => "functions",
+            Self::Helpers => "helpers",
+            Self::TopLevelCommands => "top-level-commands",
+            Self::CommandNodes => "command-nodes",
+        }
+    }
 }
 
 impl fmt::Display for RecipeCostError {

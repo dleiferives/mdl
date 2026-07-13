@@ -1,6 +1,6 @@
 # Stage 5 Implementation Checklist
 
-Status: **In progress — Stages 5A–5G complete and gated; Stage 5H next**
+Status: **Complete — reviewed revision 13; Stages 5A–5H implemented and gated**
 
 Design authority:
 [`stage-5-baseline-optimization-plan.md`](stage-5-baseline-optimization-plan.md)
@@ -754,21 +754,48 @@ Framework design:
 
 ## Stage 5H: Completion, measurements, and handoff
 
-- [ ] **5H.1 — Finalize report ownership and deterministic dumps.**
+- [x] **5H.1 — Finalize report ownership and deterministic dumps.**
 
   Expose narrow accessors for owned Core optimization output, lowering decisions,
   target execution cost, artifact footprint, and harness measurement records. Keep
   wall-clock time out of deterministic compiler reports. Prove default reports are
   linear and detailed remarks remain filtered/capped.
 
-- [ ] **5H.2 — Record compile-time and generated-code measurements.**
+  Completion evidence (2026-07-13): Core optimization, Minecraft lowering, explicit
+  target-cost analysis, datapack emission, and the harness each return an independently
+  owned typed output/report. `LoweringDecisionReport` exposes only frozen configuration
+  and compact statistics while retaining the complete deterministic dump; post-plan
+  failures may own that frozen report without exposing a runnable partial target.
+  Selected and rejected recipe reasons use explicit stable codes. Repeated-output tests
+  prove deterministic equality and reject elapsed/duration fields in compiler dumps.
+  Core detail remarks retain their existing opt-in filters and hard record cap; the
+  lowering selector emits exactly one linear decision per reachable branch arm, so no
+  speculative lowering-remark policy was added.
+
+- [x] **5H.2 — Record compile-time and generated-code measurements.**
 
   Measure verification modes, every pass, liveness, planning, target cost analysis,
   emission, and complete compilation on tiny/normal/scale fixtures. Record raw samples
-  with build/target/JVM metadata. Use visit/allocation counters for CI complexity
-  assertions; do not add brittle wall-clock thresholds or universal runtime weights.
+  with build/target metadata and exact JVM metadata for any subject that actually
+  launches Java. Use visit/allocation counters for CI complexity assertions; do not
+  add brittle wall-clock thresholds or universal runtime weights.
 
-- [ ] **5H.3 — Add generated/property and corruption coverage.**
+  Completion evidence (2026-07-13): `mdl-test` owns a versioned, self-validating JSONL
+  `MeasurementRecord` with the exact build compiler/profile/target triple, repository
+  revision/dirty state, Minecraft target, fixture, warm-up/sample protocol, explicit
+  subject/configuration schedule, and raw integer-nanosecond outcomes. The release
+  harness counterbalances all four Core `None|Baseline` × Minecraft `None|Baseline`
+  configurations per subject on tiny, normal, and scale fixtures. JVM/server metadata
+  is typed but is attached only to a record whose measured subject actually launches
+  that JVM; the compiler-only Stage 5 suite therefore does not claim an unused Java or
+  heap configuration. Private no-op production hooks expose every Core step and every
+  lowering phase to ignored release tests, including an explicit skipped-liveness event
+  for Minecraft `None`. Compact exact target-cost census/root summaries and artifact-
+  footprint totals remain deterministic generated-code evidence without flooding the
+  measurement log with every scale-fixture command. Existing exact visit/work/
+  allocation scale assertions—not wall time—remain the CI complexity gates.
+
+- [x] **5H.3 — Add generated/property and corruption coverage.**
 
   Generate small typed acyclic/cyclic Core CFGs, constants at integer boundaries,
   executable-edge combinations, copy graphs, and branch mutations. Compare optimized
@@ -778,28 +805,70 @@ Framework design:
   batches, plans, cost graphs, bound constructors, placement, assignments, symbolic
   home states, and predicted-cost fixtures.
 
-- [ ] **5H.4 — Run the complete official-server proof.**
+  Completion evidence (2026-07-13): deterministic generators and independent oracles
+  now retain generator version, seed, shape, and replay inputs even when fixture
+  construction itself fails; successful cases stay silent. The checked-in coverage
+  matrix is:
+
+  | Boundary | Generated/differential evidence | Corruption evidence |
+  | --- | --- | --- |
+  | Core CFG and dominance | reducible/irreducible, duplicate-edge, cyclic and wide CFGs | detached/cross-branch editor mutations |
+  | SCCP and semantics | executable-edge combinations, Boolean shapes, terminating acyclic/cyclic programs, integer boundaries | invalid dominance and declaration/edit sequences |
+  | Demand, copies, and homes | minimum-demand replay, copy cycles, symbolic home states | foreign-function homes, malformed assignments and placements |
+  | Target cost and recipes | deep/wide/cyclic graphs and `None`/Baseline differentials | malformed graph tables, bounds, command shapes, origins, and predicted-versus-constructed costs |
+
+  Generator regressions are replayable immediately; any minimized failure becomes a
+  named Rust builder fixture until Core has a round-trippable text form.
+
+- [x] **5H.4 — Run the complete official-server proof.**
 
   Extend the existing Core lowering conformance artifact with optimized and reference
   forms. Prove exact observable results, reload cleanliness, return semantics,
-  sequence/fork boundary accounting, allowed two-address/result-argument home reuse,
-  and no new parse/load errors in one pinned Java 26.2 startup. Preserve
-  world/artifacts/logs on failure.
+  allowed two-address/result-argument home reuse, and no new parse/load errors in one
+  pinned Java 26.2 startup. Keep the destructive sequence/fork limit probes in their
+  own pinned one-startup boundary suite so deliberately exhausting a root cannot
+  contaminate the Core conformance world. Preserve world/artifacts/logs on failure.
 
-- [ ] **5H.5 — Reconcile roadmap and Stage 6/11 handoff.**
+  Completion evidence (2026-07-13): one `core_lowering` startup installs output from
+  actual Core `None` and Baseline optimization followed by matching Minecraft lowering,
+  plus the terminal-call recipe differential. It proves exact success/results,
+  branches, nested calls, loops, cyclic copies, `i32::MIN/MAX` transfer, a real physical
+  home merge, initialization collision handling, clean load/reload logs, and successful
+  reinvocation after reload. `command_limits` separately pins exact sequence/fork
+  boundaries, while `minecraft_ir` remains the direct target-vocabulary and boundary-
+  arithmetic authority. All use the official 26.2 JAR with Java 25; failures preserve
+  their isolated sandbox and evidence.
+
+- [x] **5H.5 — Reconcile roadmap and Stage 6/11 handoff.**
 
   Update plan/checklist/status/index documentation. Confirm Stage 6 may consume the
   owned optimizer/lowering/emission outputs without collapsing them, Stage 9 owns
   soft scheduling, and Stage 11 owns inlining/specialization/outlining/global search.
   Record deferred recipe experiments explicitly.
 
-- [ ] **5H.6 — Run the final Stage 5 completion gate.**
+  Completion evidence (2026-07-13):
+  [`stage-5-handoff.md`](stage-5-handoff.md) fixes the producer ownership and `None`
+  reference contracts consumed by Stage 6, leaves multi-tick scheduling in Stage 9,
+  and leaves inlining, specialization, outlining, global representation search,
+  equality saturation, wider condition-stability analysis, and additional recipes in
+  Stage 11 or a later reviewed target pass.
 
-  Run formatting, warnings-denied Clippy, all fast tests, rustdoc, both existing
-  official-server conformance tests, benchmark inspection, deterministic repeated
-  builds, link/reference validation, and final diff/API review. Mark Stage 5 complete
-  only when optimized Core—not a hand-authored target substitute—passes vanilla and
-  the Stage 4 byte-stable reference path remains available.
+- [x] **5H.6 — Run the final Stage 5 completion gate.**
+
+  Run formatting, warnings-denied Clippy, all fast tests, rustdoc, all official-server
+  authority suites, benchmark inspection, deterministic repeated compiler-output
+  builds, link/reference validation, MSRV validation, and final diff/API review. Mark
+  Stage 5 complete only when optimized Core—not a hand-authored target substitute—
+  passes vanilla and the Stage 4 byte-stable reference path remains available.
+
+  Completion evidence (2026-07-13): formatting, workspace warnings-denied Clippy, 444
+  compiler unit tests plus all integration/doc tests, warnings-denied rustdoc, Rust
+  1.85.0 all-target checking, release phase/pass/geometric probes, the interleaved
+  aggregate measurement suite, Markdown relative-link validation, `git diff --check`,
+  and independent API/design audits pass. Repeated Core/lowering/emission tests retain
+  the Stage 4/Core-None/Minecraft-None byte oracle. The cached official 26.2 JAR is
+  `cdacdfb25898de5e4b4b0e5ddcc2722f77067e46605709c2d886c000ebb63ec5` and all four
+  server suites below pass with Homebrew OpenJDK 25.0.3.
 
 ## Completion commands
 
@@ -808,14 +877,36 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo +1.85.0 check --workspace --all-targets
+git diff --check
+```
+
+```sh
+cargo test -p mdl-compiler --release reports_ -- --ignored --nocapture
+cargo test -p mdl-test --release --test stage5_measurements \
+  records_raw_interleaved_stage5_measurements_without_timing_thresholds \
+  -- --ignored --exact --nocapture
 ```
 
 ```sh
 MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
 MDL_JAVA=/path/to/java25 \
-cargo test -p mdl-test --test minecraft_ir -- --ignored --nocapture
+cargo test -p mdl-test --test command_limits \
+  command_limit_boundaries_match_vanilla_26_2 -- --ignored --exact --nocapture
 
 MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
 MDL_JAVA=/path/to/java25 \
-cargo test -p mdl-test --test core_lowering -- --ignored --nocapture
+cargo test -p mdl-test --test minecraft_ir \
+  direct_minecraft_ir_runs_on_vanilla_26_2 -- --ignored --exact --nocapture
+
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test core_lowering \
+  optimized_core_lowering_conformance_runs_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test vanilla_smoke generated_pack_runs_on_vanilla \
+  -- --ignored --exact --nocapture
 ```

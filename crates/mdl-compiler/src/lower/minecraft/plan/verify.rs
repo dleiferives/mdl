@@ -2407,6 +2407,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_value_assigned_to_a_same_typed_foreign_function_home() {
+        let (core, consumer, call) = later_call_result_program();
+        let identity = FunctionId::from_index(0);
+        assert_ne!(identity, consumer);
+        let identity_definition = core.function(identity).unwrap().body().unwrap();
+        let identity_value = identity_definition
+            .block(identity_definition.entry())
+            .unwrap()
+            .parameters()[1]
+            .value();
+        let consumer_definition = core.function(consumer).unwrap().body().unwrap();
+        let consumer_value = consumer_definition.instruction(call).unwrap().results()[1];
+        assert_eq!(
+            identity_definition.value(identity_value).unwrap().ty(),
+            consumer_definition.value(consumer_value).unwrap().ty(),
+            "the corruption must isolate function ownership rather than physical type"
+        );
+
+        let mut plan = candidate(&core, MinecraftOptimizationLevel::Baseline);
+        let foreign_home = plan
+            .value_home(identity, identity_value)
+            .expect("callee ABI parameter must have a home");
+        plan.functions.get_mut(consumer).unwrap().value_homes[index(consumer_value)] =
+            Some(foreign_home);
+
+        assert_invalid(&core, &plan, "lower.plan.value-home");
+    }
+
+    #[test]
     fn rejects_a_recipe_temporary_with_the_wrong_physical_type() {
         let (core, function) = overflow_flag_program();
         let mut plan = candidate(&core, MinecraftOptimizationLevel::Baseline);

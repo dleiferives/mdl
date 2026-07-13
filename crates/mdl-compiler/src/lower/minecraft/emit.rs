@@ -262,6 +262,7 @@ fn value_home(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fmt::Debug;
 
     use super::construct_program;
     use crate::ir::core::{
@@ -287,6 +288,33 @@ mod tests {
     };
     use crate::source::{OriginId, SourceContext};
     use crate::target::JavaEditionTarget;
+
+    trait GeneratedFixtureResult<T> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T;
+    }
+
+    impl<T, E: Debug> GeneratedFixtureResult<T> for Result<T, E> {
+        #[track_caller]
+        fn expect_generated(self, context: &str) -> T {
+            self.unwrap_or_else(|error| {
+                panic!("{context}: generated fixture construction failed: {error:?}")
+            })
+        }
+    }
+
+    #[track_caller]
+    fn run_generated_case<T>(context: &str, case: impl FnOnce() -> T) -> T {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)).unwrap_or_else(|payload| {
+            if let Some(message) = payload.downcast_ref::<String>() {
+                panic!("{context}: generated lowering case failed: {message}");
+            }
+            if let Some(message) = payload.downcast_ref::<&str>() {
+                panic!("{context}: generated lowering case failed: {message}");
+            }
+            panic!("{context}: generated lowering case failed with a non-string panic payload");
+        })
+    }
 
     #[test]
     #[allow(
@@ -558,87 +586,95 @@ mod tests {
 
         let sources = SourceContext::new();
         for seed in SEEDS {
-            let suite = generated_target_suite(&sources, GENERATOR_VERSION, seed);
             let suite_context = format!(
                 "generator_version={GENERATOR_VERSION} shape=all seed={seed:#018x} inputs=all"
             );
-            crate::ir::core::verify_program(&suite.core, &sources).unwrap_or_else(|diagnostics| {
-                panic!("{suite_context}: generated Core verification failed: {diagnostics:?}")
-            });
-            let none = lower_to_minecraft(
-                &suite.core,
-                &sources,
-                &options().with_optimization_level(MinecraftOptimizationLevel::None),
-            )
-            .unwrap_or_else(|diagnostics| {
-                panic!("{suite_context}: Minecraft None lowering failed: {diagnostics:?}")
-            });
-            let baseline = lower_to_minecraft(
-                &suite.core,
-                &sources,
-                &options().with_optimization_level(MinecraftOptimizationLevel::Baseline),
-            )
-            .unwrap_or_else(|diagnostics| {
-                panic!("{suite_context}: Minecraft Baseline lowering failed: {diagnostics:?}")
-            });
-            verify_program(none.program(), &sources).unwrap_or_else(|diagnostics| {
-                panic!(
-                    "{suite_context}: Minecraft None target verification failed: {diagnostics:?}"
+            run_generated_case(&suite_context, || {
+                let suite = generated_target_suite(&sources, GENERATOR_VERSION, seed);
+                crate::ir::core::verify_program(&suite.core, &sources).unwrap_or_else(
+                    |diagnostics| {
+                        panic!(
+                            "{suite_context}: generated Core verification failed: {diagnostics:?}"
+                        )
+                    },
+                );
+                let none = lower_to_minecraft(
+                    &suite.core,
+                    &sources,
+                    &options().with_optimization_level(MinecraftOptimizationLevel::None),
                 )
-            });
-            verify_program(baseline.program(), &sources).unwrap_or_else(|diagnostics| {
-                panic!(
-                    "{suite_context}: Minecraft Baseline target verification failed: {diagnostics:?}"
+                .unwrap_or_else(|diagnostics| {
+                    panic!("{suite_context}: Minecraft None lowering failed: {diagnostics:?}")
+                });
+                let baseline = lower_to_minecraft(
+                    &suite.core,
+                    &sources,
+                    &options().with_optimization_level(MinecraftOptimizationLevel::Baseline),
                 )
-            });
-            assert!(
-                accepted_coalescing_merges(&baseline.dump_lowering()) > 0,
-                "{suite_context}: generated Baseline suite must exercise a real coalescing decision"
-            );
+                .unwrap_or_else(|diagnostics| {
+                    panic!("{suite_context}: Minecraft Baseline lowering failed: {diagnostics:?}")
+                });
+                verify_program(none.program(), &sources).unwrap_or_else(|diagnostics| {
+                    panic!(
+                        "{suite_context}: Minecraft None target verification failed: {diagnostics:?}"
+                    )
+                });
+                verify_program(baseline.program(), &sources).unwrap_or_else(|diagnostics| {
+                    panic!(
+                        "{suite_context}: Minecraft Baseline target verification failed: {diagnostics:?}"
+                    )
+                });
+                assert!(
+                    accepted_coalescing_merges(&baseline.dump_lowering()) > 0,
+                    "{suite_context}: generated Baseline suite must exercise a real coalescing decision"
+                );
 
-            for case in &suite.cases {
-                for inputs in case.inputs.iter().copied() {
-                    let context = format!(
-                        "generator_version={GENERATOR_VERSION} shape={} seed={seed:#018x} inputs={inputs:?}",
-                        case.shape.name()
-                    );
-                    let expected = case.oracle.observe(inputs);
-                    let none_observation = execute_lowered(
-                        &none,
-                        case.entry,
-                        &inputs,
-                        &case.observable_functions,
-                        &context,
-                    );
-                    let baseline_observation = execute_lowered(
-                        &baseline,
-                        case.entry,
-                        &inputs,
-                        &case.observable_functions,
-                        &context,
-                    );
-                    assert_eq!(
-                        none_observation.results, expected.results,
-                        "{context}: Minecraft None results disagree with the Core fixture model"
-                    );
-                    assert_eq!(
-                        none_observation.effect_calls, expected.effect_calls,
-                        "{context}: Minecraft None effect order disagrees with the Core fixture model"
-                    );
-                    assert_eq!(
-                        baseline_observation.results, expected.results,
-                        "{context}: Minecraft Baseline results disagree with the Core fixture model"
-                    );
-                    assert_eq!(
-                        baseline_observation.effect_calls, expected.effect_calls,
-                        "{context}: Minecraft Baseline effect order disagrees with the Core fixture model"
-                    );
-                    assert_eq!(
-                        baseline_observation, none_observation,
-                        "{context}: Minecraft lowering policies disagree"
-                    );
+                for case in &suite.cases {
+                    for inputs in case.inputs.iter().copied() {
+                        let context = format!(
+                            "generator_version={GENERATOR_VERSION} shape={} seed={seed:#018x} inputs={inputs:?}",
+                            case.shape.name()
+                        );
+                        run_generated_case(&context, || {
+                            let expected = case.oracle.observe(inputs);
+                            let none_observation = execute_lowered(
+                                &none,
+                                case.entry,
+                                &inputs,
+                                &case.observable_functions,
+                                &context,
+                            );
+                            let baseline_observation = execute_lowered(
+                                &baseline,
+                                case.entry,
+                                &inputs,
+                                &case.observable_functions,
+                                &context,
+                            );
+                            assert_eq!(
+                                none_observation.results, expected.results,
+                                "{context}: Minecraft None results disagree with the Core fixture model"
+                            );
+                            assert_eq!(
+                                none_observation.effect_calls, expected.effect_calls,
+                                "{context}: Minecraft None effect order disagrees with the Core fixture model"
+                            );
+                            assert_eq!(
+                                baseline_observation.results, expected.results,
+                                "{context}: Minecraft Baseline results disagree with the Core fixture model"
+                            );
+                            assert_eq!(
+                                baseline_observation.effect_calls, expected.effect_calls,
+                                "{context}: Minecraft Baseline effect order disagrees with the Core fixture model"
+                            );
+                            assert_eq!(
+                                baseline_observation, none_observation,
+                                "{context}: Minecraft lowering policies disagree"
+                            );
+                        });
+                    }
                 }
-            }
+            });
         }
     }
 
@@ -1027,11 +1063,28 @@ mod tests {
     ) -> GeneratedTargetSuite {
         let mut rng = GeneratedRng::new(generator_version, seed);
         let mut core = CoreProgram::new();
+        let replay_inputs = "[[0,0],[i32::MAX,1],[i32::MIN,-1],[-7,11],[generated,generated]]";
+        let straight_line_shape = GeneratedShape::StraightLine.name();
+        let branch_join_shape = GeneratedShape::BranchJoin.name();
+        let loop_shape = GeneratedShape::TerminatingLoop.name();
+        let calls_shape = GeneratedShape::MultiResultCalls.name();
+        let straight_line_context = format!(
+            "generator_version={generator_version} seed={seed:#018x} shape={straight_line_shape} inputs={replay_inputs}"
+        );
+        let branch_join_context = format!(
+            "generator_version={generator_version} seed={seed:#018x} shape={branch_join_shape} inputs={replay_inputs}"
+        );
+        let loop_context = format!(
+            "generator_version={generator_version} seed={seed:#018x} shape={loop_shape} inputs={replay_inputs}"
+        );
+        let calls_context = format!(
+            "generator_version={generator_version} seed={seed:#018x} shape={calls_shape} inputs={replay_inputs}"
+        );
         let cases = vec![
-            append_generated_straight_line(&mut core, sources, &mut rng),
-            append_generated_branch_join(&mut core, sources, &mut rng),
-            append_generated_loop(&mut core, sources, &mut rng),
-            append_generated_calls(&mut core, sources, &mut rng),
+            append_generated_straight_line(&mut core, sources, &mut rng, &straight_line_context),
+            append_generated_branch_join(&mut core, sources, &mut rng, &branch_join_context),
+            append_generated_loop(&mut core, sources, &mut rng, &loop_context),
+            append_generated_calls(&mut core, sources, &mut rng, &calls_context),
         ];
         GeneratedTargetSuite { core, cases }
     }
@@ -1040,6 +1093,7 @@ mod tests {
         core: &mut CoreProgram,
         sources: &SourceContext,
         rng: &mut GeneratedRng,
+        context: &str,
     ) -> GeneratedTargetCase {
         let entry = core
             .declare_function(
@@ -1048,45 +1102,45 @@ mod tests {
                 vec![CoreType::I32, CoreType::Bool, CoreType::Bool],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
+            .expect_generated(context);
         let left_offset = rng.next_i32();
         let right_offset = rng.next_i32();
         let predicate = rng.predicate();
         let negate = rng.next_bool();
         let inputs = generated_inputs(rng);
 
-        let mut builder = FunctionBuilder::new(core, sources, entry).unwrap();
+        let mut builder = FunctionBuilder::new(core, sources, entry).expect_generated(context);
         let block = builder.entry_block();
-        let left = parameter(&builder, block, 0);
-        let right = parameter(&builder, block, 1);
+        let left = generated_parameter(&builder, block, 0, context);
+        let right = generated_parameter(&builder, block, 1, context);
         let left_literal = builder
             .i32_constant(left_offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let right_literal = builder
             .i32_constant(right_offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let adjusted_left = builder
             .i32_add_wrapping(left, left_literal, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let adjusted_right = builder
             .i32_add_wrapping(right, right_literal, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let (sum, overflowed) = builder
             .i32_add_overflowing(adjusted_left, adjusted_right, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let compared = builder
             .i32_compare(predicate, adjusted_left, adjusted_right, OriginId::UNKNOWN)
-            .unwrap();
-        let compared = maybe_negate(&mut builder, compared, negate);
+            .expect_generated(context);
+        let compared = maybe_negate(&mut builder, compared, negate, context);
         let dead = builder
             .i32_constant(rng.next_i32(), OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         builder
             .i32_add_wrapping(dead, adjusted_left, OriginId::UNKNOWN)
-            .unwrap();
-        return_values(&mut builder, vec![sum, overflowed, compared]);
-        core.define_function(entry, builder.finish().unwrap())
-            .unwrap();
+            .expect_generated(context);
+        return_values(&mut builder, vec![sum, overflowed, compared], context);
+        let body = builder.finish().expect_generated(context);
+        core.define_function(entry, body).expect_generated(context);
 
         GeneratedTargetCase {
             shape: GeneratedShape::StraightLine,
@@ -1110,6 +1164,7 @@ mod tests {
         core: &mut CoreProgram,
         sources: &SourceContext,
         rng: &mut GeneratedRng,
+        context: &str,
     ) -> GeneratedTargetCase {
         let entry = core
             .declare_function(
@@ -1118,7 +1173,7 @@ mod tests {
                 vec![CoreType::I32, CoreType::Bool],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
+            .expect_generated(context);
         let condition = rng.predicate();
         let then_swap = rng.next_bool();
         let else_swap = rng.next_bool();
@@ -1130,43 +1185,49 @@ mod tests {
         let else_negate = rng.next_bool();
         let inputs = generated_inputs(rng);
 
-        let mut builder = FunctionBuilder::new(core, sources, entry).unwrap();
+        let mut builder = FunctionBuilder::new(core, sources, entry).expect_generated(context);
         let entry_block = builder.entry_block();
-        let left = parameter(&builder, entry_block, 0);
-        let right = parameter(&builder, entry_block, 1);
-        let then_block = builder.create_block(OriginId::UNKNOWN).unwrap();
+        let left = generated_parameter(&builder, entry_block, 0, context);
+        let right = generated_parameter(&builder, entry_block, 1, context);
+        let then_block = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let then_first = builder
             .append_block_parameter(then_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let then_second = builder
             .append_block_parameter(then_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let then_dead = builder
             .append_block_parameter(then_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
-        let else_block = builder.create_block(OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let else_block = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let else_first = builder
             .append_block_parameter(else_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let else_second = builder
             .append_block_parameter(else_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let else_dead = builder
             .append_block_parameter(else_block, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
-        let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let join = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let joined_integer = builder
             .append_block_parameter(join, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let joined_boolean = builder
             .append_block_parameter(join, CoreType::Bool, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let branch_condition = builder
             .i32_compare(condition, left, right, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let dead = builder
             .i32_constant(rng.next_i32(), OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let (then_left, then_right) = if then_swap {
             (right, left)
         } else {
@@ -1186,44 +1247,48 @@ mod tests {
                 },
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(then_block).unwrap();
+        builder
+            .switch_to_block(then_block)
+            .expect_generated(context);
         let offset = builder
             .i32_constant(then_offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let result = builder
             .i32_add_wrapping(then_first, offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let compared = builder
             .i32_compare(then_predicate, then_first, then_second, OriginId::UNKNOWN)
-            .unwrap();
-        let compared = maybe_negate(&mut builder, compared, then_negate);
+            .expect_generated(context);
+        let compared = maybe_negate(&mut builder, compared, then_negate, context);
         builder
             .i32_add_wrapping(then_dead, then_second, OriginId::UNKNOWN)
-            .unwrap();
-        jump(&mut builder, join, vec![result, compared]);
+            .expect_generated(context);
+        jump(&mut builder, join, vec![result, compared], context);
 
-        builder.switch_to_block(else_block).unwrap();
+        builder
+            .switch_to_block(else_block)
+            .expect_generated(context);
         let offset = builder
             .i32_constant(else_offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let result = builder
             .i32_add_wrapping(else_first, offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let compared = builder
             .i32_compare(else_predicate, else_first, else_second, OriginId::UNKNOWN)
-            .unwrap();
-        let compared = maybe_negate(&mut builder, compared, else_negate);
+            .expect_generated(context);
+        let compared = maybe_negate(&mut builder, compared, else_negate, context);
         builder
             .i32_add_wrapping(else_dead, else_second, OriginId::UNKNOWN)
-            .unwrap();
-        jump(&mut builder, join, vec![result, compared]);
+            .expect_generated(context);
+        jump(&mut builder, join, vec![result, compared], context);
 
-        builder.switch_to_block(join).unwrap();
-        return_values(&mut builder, vec![joined_integer, joined_boolean]);
-        core.define_function(entry, builder.finish().unwrap())
-            .unwrap();
+        builder.switch_to_block(join).expect_generated(context);
+        return_values(&mut builder, vec![joined_integer, joined_boolean], context);
+        let body = builder.finish().expect_generated(context);
+        core.define_function(entry, body).expect_generated(context);
 
         GeneratedTargetCase {
             shape: GeneratedShape::BranchJoin,
@@ -1252,6 +1317,7 @@ mod tests {
         core: &mut CoreProgram,
         sources: &SourceContext,
         rng: &mut GeneratedRng,
+        context: &str,
     ) -> GeneratedTargetCase {
         let entry = core
             .declare_function(
@@ -1260,41 +1326,49 @@ mod tests {
                 vec![CoreType::I32, CoreType::I32],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
+            .expect_generated(context);
         let iterations = rng.bounded_loop_iterations();
         let delta = rng.next_i32();
         let rotate = rng.next_bool();
         let inputs = generated_inputs(rng);
 
-        let mut builder = FunctionBuilder::new(core, sources, entry).unwrap();
+        let mut builder = FunctionBuilder::new(core, sources, entry).expect_generated(context);
         let entry_block = builder.entry_block();
-        let initial_accumulator = parameter(&builder, entry_block, 0);
-        let initial_carried = parameter(&builder, entry_block, 1);
-        let header = builder.create_block(OriginId::UNKNOWN).unwrap();
+        let initial_accumulator = generated_parameter(&builder, entry_block, 0, context);
+        let initial_carried = generated_parameter(&builder, entry_block, 1, context);
+        let header = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let count = builder
             .append_block_parameter(header, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let accumulator = builder
             .append_block_parameter(header, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let carried = builder
             .append_block_parameter(header, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let dead = builder
             .append_block_parameter(header, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
-        let body = builder.create_block(OriginId::UNKNOWN).unwrap();
-        let exit = builder.create_block(OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let body = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
+        let exit = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let result_accumulator = builder
             .append_block_parameter(exit, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let result_carried = builder
             .append_block_parameter(exit, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
-        let initial_count = builder.i32_constant(iterations, OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let initial_count = builder
+            .i32_constant(iterations, OriginId::UNKNOWN)
+            .expect_generated(context);
         let initial_dead = builder
             .i32_constant(rng.next_i32(), OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         jump(
             &mut builder,
             header,
@@ -1304,13 +1378,16 @@ mod tests {
                 initial_carried,
                 initial_dead,
             ],
+            context,
         );
 
-        builder.switch_to_block(header).unwrap();
-        let zero = builder.i32_constant(0, OriginId::UNKNOWN).unwrap();
+        builder.switch_to_block(header).expect_generated(context);
+        let zero = builder
+            .i32_constant(0, OriginId::UNKNOWN)
+            .expect_generated(context);
         let done = builder
             .i32_compare(I32Predicate::SignedLe, count, zero, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Branch {
@@ -1320,23 +1397,27 @@ mod tests {
                 },
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(body).unwrap();
-        let minus_one = builder.i32_constant(-1, OriginId::UNKNOWN).unwrap();
-        let delta_value = builder.i32_constant(delta, OriginId::UNKNOWN).unwrap();
+        builder.switch_to_block(body).expect_generated(context);
+        let minus_one = builder
+            .i32_constant(-1, OriginId::UNKNOWN)
+            .expect_generated(context);
+        let delta_value = builder
+            .i32_constant(delta, OriginId::UNKNOWN)
+            .expect_generated(context);
         let next_count = builder
             .i32_add_wrapping(count, minus_one, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let next_accumulator = builder
             .i32_add_wrapping(accumulator, carried, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let next_carried = builder
             .i32_add_wrapping(carried, delta_value, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let next_dead = builder
             .i32_add_wrapping(dead, delta_value, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let (next_accumulator, next_carried) = if rotate {
             (next_carried, next_accumulator)
         } else {
@@ -1346,12 +1427,17 @@ mod tests {
             &mut builder,
             header,
             vec![next_count, next_accumulator, next_carried, next_dead],
+            context,
         );
 
-        builder.switch_to_block(exit).unwrap();
-        return_values(&mut builder, vec![result_accumulator, result_carried]);
-        core.define_function(entry, builder.finish().unwrap())
-            .unwrap();
+        builder.switch_to_block(exit).expect_generated(context);
+        return_values(
+            &mut builder,
+            vec![result_accumulator, result_carried],
+            context,
+        );
+        let body = builder.finish().expect_generated(context);
+        core.define_function(entry, body).expect_generated(context);
 
         GeneratedTargetCase {
             shape: GeneratedShape::TerminatingLoop,
@@ -1374,6 +1460,7 @@ mod tests {
         core: &mut CoreProgram,
         sources: &SourceContext,
         rng: &mut GeneratedRng,
+        context: &str,
     ) -> GeneratedTargetCase {
         let entry = core
             .declare_function(
@@ -1382,7 +1469,7 @@ mod tests {
                 vec![CoreType::I32, CoreType::Bool],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
+            .expect_generated(context);
         let pair = core
             .declare_function(
                 Some("generated_pair"),
@@ -1390,7 +1477,7 @@ mod tests {
                 vec![CoreType::I32, CoreType::Bool, CoreType::I32],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
+            .expect_generated(context);
         let first = core
             .declare_function(
                 Some("generated_first_effect"),
@@ -1398,7 +1485,7 @@ mod tests {
                 vec![CoreType::I32],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
+            .expect_generated(context);
         let second = core
             .declare_function(
                 Some("generated_second_effect"),
@@ -1406,51 +1493,58 @@ mod tests {
                 vec![CoreType::I32],
                 OriginId::UNKNOWN,
             )
-            .unwrap();
+            .expect_generated(context);
         let first_offset = rng.next_i32();
         let second_offset = rng.next_i32();
         let extra_offset = rng.next_i32();
         let negate_condition = rng.next_bool();
         let inputs = generated_inputs(rng);
 
-        let mut pair_builder = FunctionBuilder::new(core, sources, pair).unwrap();
+        let mut pair_builder = FunctionBuilder::new(core, sources, pair).expect_generated(context);
         let pair_entry = pair_builder.entry_block();
-        let pair_left = parameter(&pair_builder, pair_entry, 0);
-        let pair_right = parameter(&pair_builder, pair_entry, 1);
+        let pair_left = generated_parameter(&pair_builder, pair_entry, 0, context);
+        let pair_right = generated_parameter(&pair_builder, pair_entry, 1, context);
         let (sum, overflowed) = pair_builder
             .i32_add_overflowing(pair_left, pair_right, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let extra_literal = pair_builder
             .i32_constant(extra_offset, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let extra = pair_builder
             .i32_add_wrapping(sum, extra_literal, OriginId::UNKNOWN)
-            .unwrap();
-        return_values(&mut pair_builder, vec![sum, overflowed, extra]);
-        core.define_function(pair, pair_builder.finish().unwrap())
-            .unwrap();
-        define_wrapping_offset(core, sources, first, first_offset);
-        define_wrapping_offset(core, sources, second, second_offset);
+            .expect_generated(context);
+        return_values(&mut pair_builder, vec![sum, overflowed, extra], context);
+        let pair_body = pair_builder.finish().expect_generated(context);
+        core.define_function(pair, pair_body)
+            .expect_generated(context);
+        define_generated_wrapping_offset(core, sources, first, first_offset, context);
+        define_generated_wrapping_offset(core, sources, second, second_offset, context);
 
-        let mut builder = FunctionBuilder::new(core, sources, entry).unwrap();
+        let mut builder = FunctionBuilder::new(core, sources, entry).expect_generated(context);
         let entry_block = builder.entry_block();
-        let left = parameter(&builder, entry_block, 0);
-        let right = parameter(&builder, entry_block, 1);
+        let left = generated_parameter(&builder, entry_block, 0, context);
+        let right = generated_parameter(&builder, entry_block, 1, context);
         let call_results = builder
             .call(pair, vec![left, right], OriginId::UNKNOWN)
-            .unwrap();
-        let sum = call_results[0];
-        let overflowed = call_results[1];
-        let condition = maybe_negate(&mut builder, overflowed, negate_condition);
-        let then_block = builder.create_block(OriginId::UNKNOWN).unwrap();
-        let else_block = builder.create_block(OriginId::UNKNOWN).unwrap();
-        let join = builder.create_block(OriginId::UNKNOWN).unwrap();
+            .expect_generated(context);
+        let sum = generated_result(&call_results, 0, context);
+        let overflowed = generated_result(&call_results, 1, context);
+        let condition = maybe_negate(&mut builder, overflowed, negate_condition, context);
+        let then_block = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
+        let else_block = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
+        let join = builder
+            .create_block(OriginId::UNKNOWN)
+            .expect_generated(context);
         let joined_integer = builder
             .append_block_parameter(join, CoreType::I32, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         let joined_boolean = builder
             .append_block_parameter(join, CoreType::Bool, OriginId::UNKNOWN)
-            .unwrap();
+            .expect_generated(context);
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Branch {
@@ -1460,26 +1554,38 @@ mod tests {
                 },
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
 
-        builder.switch_to_block(then_block).unwrap();
-        let after_first = builder.call(first, vec![sum], OriginId::UNKNOWN).unwrap()[0];
-        let after_second = builder
+        builder
+            .switch_to_block(then_block)
+            .expect_generated(context);
+        let after_first_results = builder
+            .call(first, vec![sum], OriginId::UNKNOWN)
+            .expect_generated(context);
+        let after_first = generated_result(&after_first_results, 0, context);
+        let after_second_results = builder
             .call(second, vec![after_first], OriginId::UNKNOWN)
-            .unwrap()[0];
-        jump(&mut builder, join, vec![after_second, overflowed]);
+            .expect_generated(context);
+        let after_second = generated_result(&after_second_results, 0, context);
+        jump(&mut builder, join, vec![after_second, overflowed], context);
 
-        builder.switch_to_block(else_block).unwrap();
-        let after_second = builder.call(second, vec![sum], OriginId::UNKNOWN).unwrap()[0];
-        let after_first = builder
+        builder
+            .switch_to_block(else_block)
+            .expect_generated(context);
+        let after_second_results = builder
+            .call(second, vec![sum], OriginId::UNKNOWN)
+            .expect_generated(context);
+        let after_second = generated_result(&after_second_results, 0, context);
+        let after_first_results = builder
             .call(first, vec![after_second], OriginId::UNKNOWN)
-            .unwrap()[0];
-        jump(&mut builder, join, vec![after_first, overflowed]);
+            .expect_generated(context);
+        let after_first = generated_result(&after_first_results, 0, context);
+        jump(&mut builder, join, vec![after_first, overflowed], context);
 
-        builder.switch_to_block(join).unwrap();
-        return_values(&mut builder, vec![joined_integer, joined_boolean]);
-        core.define_function(entry, builder.finish().unwrap())
-            .unwrap();
+        builder.switch_to_block(join).expect_generated(context);
+        return_values(&mut builder, vec![joined_integer, joined_boolean], context);
+        let body = builder.finish().expect_generated(context);
+        core.define_function(entry, body).expect_generated(context);
 
         GeneratedTargetCase {
             shape: GeneratedShape::MultiResultCalls,
@@ -1512,9 +1618,12 @@ mod tests {
         builder: &mut FunctionBuilder<'_>,
         value: crate::ir::core::ValueId,
         negate: bool,
+        context: &str,
     ) -> crate::ir::core::ValueId {
         if negate {
-            builder.bool_not(value, OriginId::UNKNOWN).unwrap()
+            builder
+                .bool_not(value, OriginId::UNKNOWN)
+                .expect_generated(context)
         } else {
             value
         }
@@ -1524,22 +1633,56 @@ mod tests {
         builder: &mut FunctionBuilder<'_>,
         target: BlockId,
         arguments: Vec<crate::ir::core::ValueId>,
+        context: &str,
     ) {
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Jump(BlockTarget::new(target, arguments)),
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
     }
 
-    fn return_values(builder: &mut FunctionBuilder<'_>, values: Vec<crate::ir::core::ValueId>) {
+    fn return_values(
+        builder: &mut FunctionBuilder<'_>,
+        values: Vec<crate::ir::core::ValueId>,
+        context: &str,
+    ) {
         builder
             .terminate(Terminator::new(
                 TerminatorKind::Return(values),
                 OriginId::UNKNOWN,
             ))
-            .unwrap();
+            .expect_generated(context);
+    }
+
+    fn generated_parameter(
+        builder: &FunctionBuilder<'_>,
+        block: BlockId,
+        index: usize,
+        context: &str,
+    ) -> crate::ir::core::ValueId {
+        builder
+            .body()
+            .block(block)
+            .unwrap_or_else(|| panic!("{context}: generated block {block:?} is missing"))
+            .parameters()
+            .get(index)
+            .unwrap_or_else(|| {
+                panic!("{context}: generated block {block:?} omitted parameter {index}")
+            })
+            .value()
+    }
+
+    fn generated_result(
+        results: &[crate::ir::core::ValueId],
+        index: usize,
+        context: &str,
+    ) -> crate::ir::core::ValueId {
+        results
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| panic!("{context}: generated call omitted result index {index}"))
     }
 
     const fn bool_score(value: bool) -> i32 {
@@ -1586,17 +1729,14 @@ mod tests {
         }
 
         fn predicate(&mut self) -> I32Predicate {
-            const PREDICATES: [I32Predicate; 6] = [
-                I32Predicate::Eq,
-                I32Predicate::Ne,
-                I32Predicate::SignedLt,
-                I32Predicate::SignedLe,
-                I32Predicate::SignedGt,
-                I32Predicate::SignedGe,
-            ];
-            let index =
-                usize::try_from(self.next_u64() % 6).expect("six generated predicates fit usize");
-            PREDICATES[index]
+            match self.next_u64() % 6 {
+                0 => I32Predicate::Eq,
+                1 => I32Predicate::Ne,
+                2 => I32Predicate::SignedLt,
+                3 => I32Predicate::SignedLe,
+                4 => I32Predicate::SignedGt,
+                _ => I32Predicate::SignedGe,
+            }
         }
 
         fn bounded_loop_iterations(&mut self) -> i32 {
@@ -1763,6 +1903,32 @@ mod tests {
             .unwrap();
     }
 
+    fn define_generated_wrapping_offset(
+        core: &mut CoreProgram,
+        sources: &SourceContext,
+        function: FunctionId,
+        offset: i32,
+        context: &str,
+    ) {
+        let mut builder = FunctionBuilder::new(core, sources, function).expect_generated(context);
+        let input = generated_parameter(&builder, builder.entry_block(), 0, context);
+        let offset = builder
+            .i32_constant(offset, OriginId::UNKNOWN)
+            .expect_generated(context);
+        let result = builder
+            .i32_add_wrapping(input, offset, OriginId::UNKNOWN)
+            .expect_generated(context);
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![result]),
+                OriginId::UNKNOWN,
+            ))
+            .expect_generated(context);
+        let body = builder.finish().expect_generated(context);
+        core.define_function(function, body)
+            .expect_generated(context);
+    }
+
     fn execute_lowered(
         output: &LoweringOutput,
         entry: FunctionId,
@@ -1770,26 +1936,34 @@ mod tests {
         observable_functions: &[FunctionId],
         context: &str,
     ) -> TargetObservation {
-        let lowered = output.map().function(entry).unwrap();
+        let lowered = output
+            .map()
+            .function(entry)
+            .unwrap_or_else(|| panic!("{context}: lowered entry {entry:?} is missing"));
         assert_eq!(
             lowered.parameter_homes().len(),
             arguments.len(),
-            "{context}: generated entry parameter arity changed during lowering"
+            "{context}: entry parameter arity changed during lowering"
         );
         let mut executor = TestExecutor::new(output.program(), 10_000);
         set_public_abi_parameters(&mut executor, lowered, arguments, context);
-        let outcome = executor.run(public_entry_target(output.program(), lowered));
-        assert!(outcome.success, "{context}: generated target call failed");
+        let outcome = executor.run(public_entry_target(output.program(), lowered, context));
+        assert!(outcome.success, "{context}: target call failed");
         assert_eq!(
             outcome.value, 1,
-            "{context}: generated target entry returned a non-success value"
+            "{context}: target entry returned a non-success value"
         );
         let observable_targets = observable_functions
             .iter()
             .copied()
             .map(|function| {
-                let lowered = output.map().function(function).unwrap();
-                (public_entry_target(output.program(), lowered), function)
+                let lowered = output.map().function(function).unwrap_or_else(|| {
+                    panic!("{context}: lowered observable function {function:?} is missing")
+                });
+                (
+                    public_entry_target(output.program(), lowered, context),
+                    function,
+                )
             })
             .collect::<HashMap<_, _>>();
         let effect_calls = executor
@@ -1821,17 +1995,21 @@ mod tests {
         {
             assert!(
                 *ty != CoreType::Bool || matches!(value, 0 | 1),
-                "{context}: generated Boolean ABI input is not canonical"
+                "{context}: Boolean ABI input is not canonical"
             );
             executor.scores.insert(register_score(slot), value);
         }
     }
 
-    fn public_entry_target(program: &MinecraftProgram, function: &LoweredFunction) -> McFunctionId {
+    fn public_entry_target(
+        program: &MinecraftProgram,
+        function: &LoweredFunction,
+        context: &str,
+    ) -> McFunctionId {
         program
             .functions()
             .find_map(|(id, data)| (data.resource() == function.entry_resource()).then_some(id))
-            .unwrap()
+            .unwrap_or_else(|| panic!("{context}: lowered public entry resource is missing"))
     }
 
     fn register_score(slot: &RegisterSlot) -> ScoreRef {

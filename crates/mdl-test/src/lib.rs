@@ -4,6 +4,14 @@
 //! command behavior. Fast compiler tests should not use this crate; it is for
 //! pack-load and command-execution integration tests.
 
+mod measurement;
+
+pub use measurement::{
+    JvmMeasurementMetadata, MEASUREMENT_SCHEMA_VERSION, MeasurementConfigurationSchedule,
+    MeasurementMetadata, MeasurementProtocol, MeasurementRecord, MeasurementRecordError,
+    MeasurementSample, MeasurementSampleStatus, sha256_file,
+};
+
 use std::collections::HashSet;
 use std::env;
 use std::error::Error as StdError;

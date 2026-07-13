@@ -29,7 +29,7 @@ mod symbolic;
 mod verify;
 
 pub(crate) use reconcile::verify_constructed_control_recipes;
-pub(crate) use report::LoweringReport;
+pub use report::{LoweringDecisionReport, LoweringDecisionStatistics};
 use verify::verify_plan;
 
 entity_id!(
@@ -369,8 +369,8 @@ pub(crate) struct LoweringPlan {
 }
 
 impl LoweringPlan {
-    pub(crate) fn report(&self) -> LoweringReport {
-        LoweringReport::from_plan(self)
+    pub(crate) fn report(&self) -> LoweringDecisionReport {
+        LoweringDecisionReport::from_plan(self)
     }
 
     pub(crate) const fn target(&self) -> JavaEditionTarget {

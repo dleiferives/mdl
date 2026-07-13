@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use mdl_compiler::datapack::{DatapackArtifact, EmissionOptions, emit_datapack};
+use mdl_compiler::datapack::{DatapackArtifact, EmissionOptions, EmissionOutput, emit_datapack};
 use mdl_compiler::ir::core::{
     BlockId, BlockTarget, CanonicalPrinter, CoreProgram, CoreType, FunctionBuilder, FunctionId,
     I32Predicate, Terminator, TerminatorKind, ValueId,
@@ -13,11 +13,10 @@ use mdl_compiler::lower::minecraft::{
     LoweredFunction, LoweringOptions, LoweringOutput, MinecraftOptimizationLevel, RegisterSlot,
     lower_to_minecraft,
 };
+use mdl_compiler::opt::core::{CoreOptimizationLevel, CoreOptimizationOptions, optimize_core};
 use mdl_compiler::source::{Origin, OriginId, SourceContext};
 use mdl_compiler::target::JavaEditionTarget;
 use mdl_test::{ServerConfig, ServerSandbox, TestServer};
-
-const SENTINEL: &str = "storage mdl:__mdl/init/v0/6d646c2e726567 \"initialized\"";
 
 #[derive(Clone, Copy)]
 struct FixtureIds {
@@ -27,125 +26,67 @@ struct FixtureIds {
     countdown_swap: FunctionId,
 }
 
+#[derive(Clone, Copy)]
+struct CoreConfiguration {
+    label: &'static str,
+    runtime_label: &'static str,
+    pack_name: &'static str,
+    namespace: &'static str,
+    objective: &'static str,
+    core_level: CoreOptimizationLevel,
+    minecraft_level: MinecraftOptimizationLevel,
+}
+
+const REFERENCE_CONFIGURATION: CoreConfiguration = CoreConfiguration {
+    label: "core-none-minecraft-none",
+    runtime_label: "none",
+    pack_name: "mdl_stage5h_core_none",
+    namespace: "mdl_stage5h_core_none",
+    objective: "mdl5h.core.none",
+    core_level: CoreOptimizationLevel::None,
+    minecraft_level: MinecraftOptimizationLevel::None,
+};
+
+const BASELINE_CONFIGURATION: CoreConfiguration = CoreConfiguration {
+    label: "core-baseline-minecraft-baseline",
+    runtime_label: "baseline",
+    pack_name: "mdl_stage5h_core_baseline",
+    namespace: "mdl_stage5h_core_baseline",
+    objective: "mdl5h.core.base",
+    core_level: CoreOptimizationLevel::Baseline,
+    minecraft_level: MinecraftOptimizationLevel::Baseline,
+};
+
 #[test]
 #[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
-fn core_lowering_runs_on_vanilla_26_2() {
-    if let Err(error) = run_conformance(MinecraftOptimizationLevel::None, "stage4") {
+fn optimized_core_lowering_conformance_runs_on_vanilla_26_2() {
+    if let Err(error) = run_official_server_conformance() {
         panic!("{error}");
     }
 }
 
-#[test]
-#[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
-fn baseline_core_lowering_runs_on_vanilla_26_2() {
-    if let Err(error) = run_conformance(MinecraftOptimizationLevel::Baseline, "stage5-baseline") {
-        panic!("{error}");
-    }
+struct CompiledCorePack {
+    configuration: CoreConfiguration,
+    optimized_core: CoreProgram,
+    fixture: FixtureIds,
+    optimization_report: String,
+    lowering: LoweringOutput,
+    emission: EmissionOutput,
 }
 
-#[test]
-#[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
-fn baseline_terminal_call_recipe_matches_none_on_vanilla_26_2() {
-    if let Err(error) = run_terminal_call_recipe_differential() {
-        panic!("{error}");
-    }
+struct CompiledTerminalRecipes {
+    fixture: TerminalCallRecipeFixture,
+    none: LoweringOutput,
+    none_emission: EmissionOutput,
+    baseline: LoweringOutput,
+    baseline_emission: EmissionOutput,
 }
 
-fn run_terminal_call_recipe_differential() -> Result<(), String> {
-    let server_jar = env::var_os("MDL_SERVER_JAR")
-        .map(PathBuf::from)
-        .ok_or_else(|| "set MDL_SERVER_JAR to the official Minecraft 26.2 server JAR".to_owned())?;
-    let java = env::var_os("MDL_JAVA").map_or_else(|| PathBuf::from("java"), PathBuf::from);
-    let config = ServerConfig::new(java, server_jar);
-    let mut sources = SourceContext::new();
-    let origin = sources
-        .add_origin(Origin::Unknown)
-        .map_err(|error| error.to_string())?;
-    let fixture = build_terminal_call_recipe_fixture(&sources, origin);
-    let none_options = lowering_options_for("mdl_stage5g_none", "mdl5g.none")?
-        .with_optimization_level(MinecraftOptimizationLevel::None);
-    let baseline_options = lowering_options_for("mdl_stage5g_baseline", "mdl5g.base")?
-        .with_optimization_level(MinecraftOptimizationLevel::Baseline);
-    let none = lower_to_minecraft(&fixture.core, &sources, &none_options)
-        .map_err(|error| error.to_string())?;
-    let baseline = lower_to_minecraft(&fixture.core, &sources, &baseline_options)
-        .map_err(|error| error.to_string())?;
-    let none_emission = emit_datapack(
-        none.program(),
-        &sources,
-        &EmissionOptions::new("MDL Stage 5G reference terminal-call recipe"),
-    )
-    .map_err(|error| error.to_string())?;
-    let baseline_emission = emit_datapack(
-        baseline.program(),
-        &sources,
-        &EmissionOptions::new("MDL Stage 5G selected terminal-call recipe"),
-    )
-    .map_err(|error| error.to_string())?;
-    assert_terminal_call_recipe_shape(
-        &none,
-        none_emission.pack(),
-        &baseline,
-        baseline_emission.pack(),
-        &fixture,
-    )?;
-
-    let preserve_success = env::var_os("MDL_KEEP_TEST_DIR").is_some();
-    let sandbox = ServerSandbox::create(preserve_success).map_err(|error| error.to_string())?;
-    sandbox
-        .install_datapack(
-            "mdl_stage5g_none",
-            none_emission
-                .pack()
-                .files()
-                .iter()
-                .map(|file| (file.path().as_str(), file.bytes())),
-        )
-        .map_err(|error| error.to_string())?;
-    sandbox
-        .install_datapack(
-            "mdl_stage5g_baseline",
-            baseline_emission
-                .pack()
-                .files()
-                .iter()
-                .map(|file| (file.path().as_str(), file.bytes())),
-        )
-        .map_err(|error| error.to_string())?;
-    write_artifact_dumps(
-        &sandbox,
-        &fixture.core,
-        &sources,
-        &none.dump_lowering(),
-        &MinecraftDebugDumper::program(none.program()),
-        &trace_dump(none_emission.trace()),
-        "stage5g-none",
-    )?;
-    write_artifact_dumps(
-        &sandbox,
-        &fixture.core,
-        &sources,
-        &baseline.dump_lowering(),
-        &MinecraftDebugDumper::program(baseline.program()),
-        &trace_dump(baseline_emission.trace()),
-        "stage5g-baseline",
-    )?;
-
-    let mut server = sandbox.start(&config).map_err(|error| error.to_string())?;
-    let root = server.root().to_path_buf();
-    let result =
-        exercise_terminal_call_recipe_differential(&mut server, &none, &baseline, &fixture);
-    if let Err(error) = result {
-        server.preserve_sandbox();
-        return Err(format!(
-            "{error}\nStage 5G differential sandbox preserved at {}",
-            root.display()
-        ));
-    }
-    server.shutdown().map_err(|error| error.to_string())
-}
-
-fn run_conformance(level: MinecraftOptimizationLevel, label: &str) -> Result<(), String> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one server lifecycle owns all Stage 5H Core and terminal-recipe conformance packs"
+)]
+fn run_official_server_conformance() -> Result<(), String> {
     let server_jar = env::var_os("MDL_SERVER_JAR")
         .map(PathBuf::from)
         .ok_or_else(|| "set MDL_SERVER_JAR to the official Minecraft 26.2 server JAR".to_owned())?;
@@ -156,20 +97,163 @@ fn run_conformance(level: MinecraftOptimizationLevel, label: &str) -> Result<(),
         .add_origin(Origin::Unknown)
         .map_err(|error| error.to_string())?;
     let (core, fixture) = build_fixture(&sources, origin);
-    let options = lowering_options()?.with_optimization_level(level);
-    let first = lower_to_minecraft(&core, &sources, &options).map_err(|error| error.to_string())?;
-    let second =
-        lower_to_minecraft(&core, &sources, &options).map_err(|error| error.to_string())?;
+    let reference = compile_core_pack(&core, fixture, &sources, REFERENCE_CONFIGURATION)?;
+    let baseline = compile_core_pack(&core, fixture, &sources, BASELINE_CONFIGURATION)?;
+    let accepted_merges = accepted_coalescing_merges(&baseline.lowering.dump_lowering());
+    if accepted_merges == 0 {
+        return Err(
+            "the official-server Baseline fixture did not exercise a real home-coalescing merge"
+                .to_owned(),
+        );
+    }
+    let recipes = compile_terminal_call_recipes(&sources, origin)?;
+
+    let preserve_success = env::var_os("MDL_KEEP_TEST_DIR").is_some();
+    let sandbox = ServerSandbox::create(preserve_success).map_err(|error| error.to_string())?;
+    for pack in [&reference, &baseline] {
+        install_emission(&sandbox, pack.configuration.pack_name, &pack.emission)?;
+        write_artifact_dumps(
+            &sandbox,
+            &pack.optimized_core,
+            &sources,
+            &pack.lowering.dump_lowering(),
+            &MinecraftDebugDumper::program(pack.lowering.program()),
+            &trace_dump(pack.emission.trace()),
+            pack.configuration.label,
+        )?;
+        write_retained_file(
+            &sandbox,
+            &format!("{}-optimization.txt", pack.configuration.label),
+            &pack.optimization_report,
+        )?;
+    }
+    install_emission(&sandbox, "mdl_stage5g_none", &recipes.none_emission)?;
+    install_emission(&sandbox, "mdl_stage5g_baseline", &recipes.baseline_emission)?;
+    write_artifact_dumps(
+        &sandbox,
+        &recipes.fixture.core,
+        &sources,
+        &recipes.none.dump_lowering(),
+        &MinecraftDebugDumper::program(recipes.none.program()),
+        &trace_dump(recipes.none_emission.trace()),
+        "terminal-recipe-none",
+    )?;
+    write_artifact_dumps(
+        &sandbox,
+        &recipes.fixture.core,
+        &sources,
+        &recipes.baseline.dump_lowering(),
+        &MinecraftDebugDumper::program(recipes.baseline.program()),
+        &trace_dump(recipes.baseline_emission.trace()),
+        "terminal-recipe-baseline",
+    )?;
+
+    let mut server = sandbox.start(&config).map_err(|error| error.to_string())?;
+    let root = server.root().to_path_buf();
+    let result = exercise_terminal_call_recipe_differential(
+        &mut server,
+        &recipes.none,
+        &recipes.baseline,
+        &recipes.fixture,
+    )
+    .and_then(|()| exercise_core_differential(&mut server, &reference, &baseline));
+    if let Err(error) = result {
+        server.preserve_sandbox();
+        return Err(format!(
+            "{error}\nStage 5H official-server sandbox preserved at {}",
+            root.display()
+        ));
+    }
+    server.shutdown().map_err(|error| error.to_string())
+}
+
+fn compile_terminal_call_recipes(
+    sources: &SourceContext,
+    origin: OriginId,
+) -> Result<CompiledTerminalRecipes, String> {
+    let fixture = build_terminal_call_recipe_fixture(sources, origin);
+    let none_options = lowering_options_for("mdl_stage5g_none", "mdl5g.none")?
+        .with_optimization_level(MinecraftOptimizationLevel::None);
+    let baseline_options = lowering_options_for("mdl_stage5g_baseline", "mdl5g.base")?
+        .with_optimization_level(MinecraftOptimizationLevel::Baseline);
+    let none = lower_to_minecraft(&fixture.core, sources, &none_options)
+        .map_err(|error| error.to_string())?;
+    let baseline = lower_to_minecraft(&fixture.core, sources, &baseline_options)
+        .map_err(|error| error.to_string())?;
+    let none_emission = emit_datapack(
+        none.program(),
+        sources,
+        &EmissionOptions::new("MDL Stage 5G reference terminal-call recipe"),
+    )
+    .map_err(|error| error.to_string())?;
+    let baseline_emission = emit_datapack(
+        baseline.program(),
+        sources,
+        &EmissionOptions::new("MDL Stage 5G selected terminal-call recipe"),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_terminal_call_recipe_shape(
+        &none,
+        none_emission.pack(),
+        &baseline,
+        baseline_emission.pack(),
+        &fixture,
+    )?;
+    Ok(CompiledTerminalRecipes {
+        fixture,
+        none,
+        none_emission,
+        baseline,
+        baseline_emission,
+    })
+}
+
+fn compile_core_pack(
+    core: &CoreProgram,
+    fixture: FixtureIds,
+    sources: &SourceContext,
+    configuration: CoreConfiguration,
+) -> Result<CompiledCorePack, String> {
+    let optimization_options = CoreOptimizationOptions::new(configuration.core_level);
+    let first_optimization = optimize_core(core.clone(), sources, &optimization_options)
+        .map_err(|error| error.to_string())?;
+    let second_optimization = optimize_core(core.clone(), sources, &optimization_options)
+        .map_err(|error| error.to_string())?;
+    let first_core = CanonicalPrinter::new(first_optimization.program(), sources)
+        .map_err(|error| error.to_string())?
+        .render();
+    let second_core = CanonicalPrinter::new(second_optimization.program(), sources)
+        .map_err(|error| error.to_string())?
+        .render();
+    if first_optimization.report() != second_optimization.report() || first_core != second_core {
+        return Err(format!(
+            "{} Core optimization was not byte-stable",
+            configuration.label
+        ));
+    }
+
+    let options = lowering_options_for(configuration.namespace, configuration.objective)?
+        .with_optimization_level(configuration.minecraft_level);
+    let first = lower_to_minecraft(first_optimization.program(), sources, &options)
+        .map_err(|error| error.to_string())?;
+    let second = lower_to_minecraft(second_optimization.program(), sources, &options)
+        .map_err(|error| error.to_string())?;
     let first_emission = emit_datapack(
         first.program(),
-        &sources,
-        &EmissionOptions::new(format!("MDL {label} Core lowering conformance")),
+        sources,
+        &EmissionOptions::new(format!(
+            "MDL {} Core lowering conformance",
+            configuration.label
+        )),
     )
     .map_err(|error| error.to_string())?;
     let second_emission = emit_datapack(
         second.program(),
-        &sources,
-        &EmissionOptions::new(format!("MDL {label} Core lowering conformance")),
+        sources,
+        &EmissionOptions::new(format!(
+            "MDL {} Core lowering conformance",
+            configuration.label
+        )),
     )
     .map_err(|error| error.to_string())?;
     if first.dump_lowering() != second.dump_lowering()
@@ -178,42 +262,39 @@ fn run_conformance(level: MinecraftOptimizationLevel, label: &str) -> Result<(),
         || first_emission.pack() != second_emission.pack()
         || trace_dump(first_emission.trace()) != trace_dump(second_emission.trace())
     {
-        return Err("repeated Core lowering or emission was not byte-identical".to_owned());
+        return Err(format!(
+            "{} repeated lowering or emission was not byte-identical",
+            configuration.label
+        ));
     }
+    let optimization_report = first_optimization.report().dump();
+    let (optimized_core, _) = first_optimization.into_parts();
+    Ok(CompiledCorePack {
+        configuration,
+        optimized_core,
+        fixture,
+        optimization_report,
+        lowering: first,
+        emission: first_emission,
+    })
+}
 
-    let preserve_success = env::var_os("MDL_KEEP_TEST_DIR").is_some();
-    let sandbox = ServerSandbox::create(preserve_success).map_err(|error| error.to_string())?;
+fn install_emission(
+    sandbox: &ServerSandbox,
+    pack_name: &str,
+    emission: &EmissionOutput,
+) -> Result<(), String> {
     sandbox
         .install_datapack(
-            &format!("mdl_{}", label.replace('-', "_")),
-            first_emission
+            pack_name,
+            emission
                 .pack()
                 .files()
                 .iter()
                 .map(|file| (file.path().as_str(), file.bytes())),
         )
-        .map_err(|error| error.to_string())?;
-    write_artifact_dumps(
-        &sandbox,
-        &core,
-        &sources,
-        &first.dump_lowering(),
-        &MinecraftDebugDumper::program(first.program()),
-        &trace_dump(first_emission.trace()),
-        label,
-    )?;
-
-    let mut server = sandbox.start(&config).map_err(|error| error.to_string())?;
-    let root = server.root().to_path_buf();
-    let result = exercise_pack(&mut server, first.map(), fixture);
-    if let Err(error) = result {
-        server.preserve_sandbox();
-        return Err(format!(
-            "{error}\n{label} conformance sandbox preserved at {}",
-            root.display()
-        ));
-    }
-    server.shutdown().map_err(|error| error.to_string())
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 struct TerminalCallRecipeFixture {
@@ -472,73 +553,174 @@ fn function_pack_path(resource: &str) -> Result<String, String> {
     Ok(format!("data/{namespace}/function/{path}.mcfunction"))
 }
 
-fn exercise_pack(
+fn exercise_core_differential(
     server: &mut TestServer,
-    map: &mdl_compiler::lower::minecraft::LoweringMap,
-    fixture: FixtureIds,
+    reference: &CompiledCorePack,
+    baseline: &CompiledCorePack,
 ) -> Result<(), String> {
-    expect_marker(
-        server,
-        &format!("execute if data {SENTINEL} run say MDL_STAGE4_FRESH_INIT"),
-        "MDL_STAGE4_FRESH_INIT",
-    )?;
+    server
+        .command("data modify storage mdl_test:stage5h observations set value {}")
+        .map_err(|error| error.to_string())?;
+    server
+        .command("data modify storage mdl_test:stage5h collisions set value {}")
+        .map_err(|error| error.to_string())?;
+    for pack in [reference, baseline] {
+        let marker = format!(
+            "MDL_STAGE5H_{}_FRESH_INIT",
+            pack.configuration.runtime_label.to_ascii_uppercase()
+        );
+        expect_marker(
+            server,
+            &format!(
+                "execute if data {} run say {marker}",
+                initialization_sentinel(pack.configuration)
+            ),
+            &marker,
+        )?;
+        exercise_core_functions(server, pack)?;
+    }
 
-    invoke(
-        server,
-        map.function(fixture.call_choose).unwrap(),
-        &[1, 40, 2],
-        &[40],
-    )?;
-    invoke(
-        server,
-        map.function(fixture.call_choose).unwrap(),
-        &[0, 40, 2],
-        &[2],
-    )?;
-    invoke(
-        server,
-        map.function(fixture.sum_down).unwrap(),
-        &[4, 10],
-        &[20],
-    )?;
-    invoke(
-        server,
-        map.function(fixture.countdown_swap).unwrap(),
-        &[3, 10, 20],
-        &[20, 10],
-    )?;
-
-    let preserved = &map.function(fixture.choose).unwrap().parameter_homes()[1].1;
-    set_score(server, preserved, 123)?;
+    let reference_preserved = reference
+        .lowering
+        .map()
+        .function(reference.fixture.choose)
+        .ok_or_else(|| "reference lowering omitted choose".to_owned())?
+        .parameter_homes()[1]
+        .1
+        .clone();
+    let baseline_preserved = baseline
+        .lowering
+        .map()
+        .function(baseline.fixture.choose)
+        .ok_or_else(|| "Baseline lowering omitted choose".to_owned())?
+        .parameter_homes()[1]
+        .1
+        .clone();
+    set_score(server, &reference_preserved, 123)?;
+    set_score(server, &baseline_preserved, 456)?;
     let checkpoint = server.log_checkpoint();
     server
         .command("reload")
         .map_err(|error| error.to_string())?;
     server
-        .command("say MDL_STAGE4_RELOAD_COMPLETE")
+        .command("say MDL_STAGE5H_RELOAD_COMPLETE")
         .map_err(|error| error.to_string())?;
     server
-        .wait_for_command_log("MDL_STAGE4_RELOAD_COMPLETE")
+        .wait_for_command_log("MDL_STAGE5H_RELOAD_COMPLETE")
         .map_err(|error| error.to_string())?;
     server
         .check_datapack_logs_since(checkpoint)
         .map_err(|error| error.to_string())?;
-    expect_score(server, preserved, 123)?;
+    expect_score(server, &reference_preserved, 123)?;
+    expect_score(server, &baseline_preserved, 456)?;
+    for pack in [reference, baseline] {
+        let marker = format!(
+            "MDL_STAGE5H_{}_RELOAD_INIT",
+            pack.configuration.runtime_label.to_ascii_uppercase()
+        );
+        expect_marker(
+            server,
+            &format!(
+                "execute if data {} run say {marker}",
+                initialization_sentinel(pack.configuration)
+            ),
+            &marker,
+        )?;
+        exercise_core_functions(server, pack)?;
+    }
 
+    exercise_initialization_collision(server, reference.configuration)?;
+    exercise_initialization_collision(server, baseline.configuration)
+}
+
+fn exercise_core_functions(server: &mut TestServer, pack: &CompiledCorePack) -> Result<(), String> {
+    let map = pack.lowering.map();
+    let fixture = pack.fixture;
+    let label = pack.configuration.runtime_label;
+
+    invoke(
+        server,
+        map.function(fixture.call_choose)
+            .ok_or_else(|| format!("{label} lowering omitted call_choose"))?,
+        &[1, 40, 2],
+        &[40],
+        &format!("{label}_call_choose_true"),
+    )?;
+    invoke(
+        server,
+        map.function(fixture.call_choose)
+            .ok_or_else(|| format!("{label} lowering omitted call_choose"))?,
+        &[0, 40, 2],
+        &[2],
+        &format!("{label}_call_choose_false"),
+    )?;
+    invoke(
+        server,
+        map.function(fixture.call_choose)
+            .ok_or_else(|| format!("{label} lowering omitted call_choose"))?,
+        &[1, i32::MIN, i32::MAX],
+        &[i32::MIN],
+        &format!("{label}_call_choose_i32_min"),
+    )?;
+    invoke(
+        server,
+        map.function(fixture.call_choose)
+            .ok_or_else(|| format!("{label} lowering omitted call_choose"))?,
+        &[0, i32::MIN, i32::MAX],
+        &[i32::MAX],
+        &format!("{label}_call_choose_i32_max"),
+    )?;
+    invoke(
+        server,
+        map.function(fixture.sum_down)
+            .ok_or_else(|| format!("{label} lowering omitted sum_down"))?,
+        &[4, 10],
+        &[20],
+        &format!("{label}_sum_down"),
+    )?;
+    invoke(
+        server,
+        map.function(fixture.countdown_swap)
+            .ok_or_else(|| format!("{label} lowering omitted countdown_swap"))?,
+        &[3, 10, 20],
+        &[20, 10],
+        &format!("{label}_countdown_swap"),
+    )?;
+    Ok(())
+}
+
+fn exercise_initialization_collision(
+    server: &mut TestServer,
+    configuration: CoreConfiguration,
+) -> Result<(), String> {
+    let sentinel = initialization_sentinel(configuration);
     server
-        .command(&format!("data remove {SENTINEL}"))
+        .command(&format!("data remove {sentinel}"))
         .map_err(|error| error.to_string())?;
     for key in ["first", "second"] {
         server
             .command(&format!(
-                "execute store success storage mdl:stage4 {key} byte 1 run function mdl:__mdl/load"
+                "execute store success storage mdl_test:stage5h collisions.{}_{key}_success byte 1 store result storage mdl_test:stage5h collisions.{}_{key}_result int 1 run function {}:__mdl/load",
+                configuration.runtime_label,
+                configuration.runtime_label,
+                configuration.namespace,
             ))
             .map_err(|error| error.to_string())?;
     }
+    let marker = format!(
+        "MDL_STAGE5H_{}_COLLISION_REJECTED",
+        configuration.runtime_label.to_ascii_uppercase()
+    );
     expect_marker(
         server,
-        "execute if data storage mdl:stage4 {first:0b,second:0b} unless data storage mdl:__mdl/init/v0/6d646c2e726567 \"initialized\" run say MDL_STAGE4_COLLISION_REJECTED",
-        "MDL_STAGE4_COLLISION_REJECTED",
+        &format!(
+            "execute if data storage mdl_test:stage5h collisions{{{}_first_success:0b,{}_first_result:0,{}_second_success:0b,{}_second_result:0}} unless data {sentinel} run say {marker}",
+            configuration.runtime_label,
+            configuration.runtime_label,
+            configuration.runtime_label,
+            configuration.runtime_label,
+        ),
+        &marker,
     )
 }
 
@@ -547,6 +729,7 @@ fn invoke(
     function: &LoweredFunction,
     arguments: &[i32],
     expected_results: &[i32],
+    observation: &str,
 ) -> Result<(), String> {
     if function.parameter_homes().len() != arguments.len()
         || function.result_homes().len() != expected_results.len()
@@ -562,12 +745,38 @@ fn invoke(
         set_score(server, slot, *value)?;
     }
     server
-        .command(&format!("function {}", function.entry_resource()))
+        .command(&format!(
+            "execute store success storage mdl_test:stage5h observations.{observation}_success byte 1 store result storage mdl_test:stage5h observations.{observation}_result int 1 run function {}",
+            function.entry_resource()
+        ))
         .map_err(|error| error.to_string())?;
     for ((_, slot), expected) in function.result_homes().iter().zip(expected_results) {
         expect_score(server, slot, *expected)?;
     }
-    Ok(())
+    let marker = format!("MDL_STAGE5H_{}", observation.to_ascii_uppercase());
+    expect_marker(
+        server,
+        &format!(
+            "execute if data storage mdl_test:stage5h observations{{{observation}_success:1b,{observation}_result:1}} run say {marker}"
+        ),
+        &marker,
+    )
+}
+
+fn initialization_sentinel(configuration: CoreConfiguration) -> String {
+    format!(
+        "storage {}:__mdl/init/v0/{} \"initialized\"",
+        configuration.namespace,
+        encode_hex(configuration.objective)
+    )
+}
+
+fn encode_hex(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.bytes() {
+        write!(encoded, "{byte:02x}").unwrap();
+    }
+    encoded
 }
 
 fn set_score(server: &mut TestServer, slot: &RegisterSlot, value: i32) -> Result<(), String> {
@@ -625,10 +834,14 @@ fn write_artifact_dumps(
         (format!("{label}-target.txt"), target),
         (format!("{label}-trace.txt"), trace),
     ] {
-        fs::write(sandbox.root().join(&name), contents)
-            .map_err(|error| format!("write retained {name}: {error}"))?;
+        write_retained_file(sandbox, &name, contents)?;
     }
     Ok(())
+}
+
+fn write_retained_file(sandbox: &ServerSandbox, name: &str, contents: &str) -> Result<(), String> {
+    fs::write(sandbox.root().join(name), contents)
+        .map_err(|error| format!("write retained {name}: {error}"))
 }
 
 fn trace_dump(trace: &mdl_compiler::datapack::TraceMap) -> String {
@@ -646,8 +859,15 @@ fn trace_dump(trace: &mdl_compiler::datapack::TraceMap) -> String {
     output
 }
 
-fn lowering_options() -> Result<LoweringOptions, String> {
-    lowering_options_for("mdl", "mdl.reg")
+fn accepted_coalescing_merges(report: &str) -> u64 {
+    report
+        .lines()
+        .filter_map(|line| {
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix("merges="))
+        })
+        .filter_map(|merges| merges.parse::<u64>().ok())
+        .sum()
 }
 
 fn lowering_options_for(namespace: &str, objective: &str) -> Result<LoweringOptions, String> {

@@ -48,6 +48,45 @@ pub(crate) enum RecipeDecisionReason {
     CostRetained(RecipeRetentionReason),
 }
 
+impl fmt::Display for RecipeDecisionReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::OptimizationDisabled => formatter.write_str("optimization-disabled"),
+            Self::DestinationIsEntry => formatter.write_str("destination-is-entry"),
+            Self::IncomingEdgeOccurrenceCount { actual } => {
+                write!(formatter, "incoming-edge-occurrence-count(actual={actual})")
+            }
+            Self::EdgeTransferNotEmpty => formatter.write_str("edge-transfer-not-empty"),
+            Self::DestinationHasParameters => formatter.write_str("destination-has-parameters"),
+            Self::InstructionCountNotOne { actual } => {
+                write!(formatter, "instruction-count-not-one(actual={actual})")
+            }
+            Self::InstructionIsNotCall => formatter.write_str("instruction-is-not-call"),
+            Self::CallHasSemanticArgumentsOrResults => {
+                formatter.write_str("call-has-semantic-arguments-or-results")
+            }
+            Self::CallHasPhysicalArgumentsOrResults => {
+                formatter.write_str("call-has-physical-arguments-or-results")
+            }
+            Self::CalleeHasParametersOrResults => {
+                formatter.write_str("callee-has-parameters-or-results")
+            }
+            Self::TerminalReturnIsNotEmpty => formatter.write_str("terminal-return-is-not-empty"),
+            Self::CallerHasResults => formatter.write_str("caller-has-results"),
+            Self::NormalCompletionNotProven => formatter.write_str("normal-completion-not-proven"),
+            Self::PlacementAlreadyConsumed => formatter.write_str("placement-already-consumed"),
+            Self::AccountingUnavailable(error) => {
+                formatter.write_str("accounting-unavailable(")?;
+                error.fmt_code(formatter)?;
+                formatter.write_str(")")
+            }
+            Self::CostRetained(reason) => {
+                write!(formatter, "cost-retained({})", reason.code())
+            }
+        }
+    }
+}
+
 /// Exhaustive generated-callee completion contract used by the first recipe.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum GeneratedCompletionContract {

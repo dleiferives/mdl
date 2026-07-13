@@ -26,7 +26,7 @@ use super::emit::construct_program;
 use super::liveness::{LivenessError, LivenessLimits, LivenessResult};
 use super::placement::{ControlRecipePlan, ControlRecipePlanError};
 use super::plan::{
-    LoweringPlan, LoweringReport, PlanBuildError, PlanFinishError, PlanTable,
+    LoweringDecisionReport, LoweringPlan, PlanBuildError, PlanFinishError, PlanTable,
     verify_constructed_control_recipes,
 };
 use super::resources::{ResourceInventory, ResourceInventoryError};
@@ -237,7 +237,7 @@ impl LoweringMap {
 pub struct LoweringOutput {
     program: MinecraftProgram,
     map: LoweringMap,
-    report: LoweringReport,
+    report: LoweringDecisionReport,
 }
 
 impl LoweringOutput {
@@ -253,10 +253,22 @@ impl LoweringOutput {
         &self.map
     }
 
+    /// Returns the frozen physical mapping and control-selection report.
+    #[must_use]
+    pub const fn report(&self) -> &LoweringDecisionReport {
+        &self.report
+    }
+
     /// Dumps deterministic lowering decisions without exposing mutable plan state.
     #[must_use]
     pub fn dump_lowering(&self) -> String {
         self.report.dump()
+    }
+
+    /// Consumes the output into its independently owned target, ABI map, and report.
+    #[must_use]
+    pub fn into_parts(self) -> (MinecraftProgram, LoweringMap, LoweringDecisionReport) {
+        (self.program, self.map, self.report)
     }
 
     /// Analyzes every public Core entry and the generated load tag without
@@ -342,7 +354,7 @@ pub enum LoweringPhase {
 pub struct LoweringFailure {
     phase: LoweringPhase,
     diagnostics: Diagnostics,
-    report: Option<Box<LoweringReport>>,
+    report: Option<Box<LoweringDecisionReport>>,
 }
 
 impl LoweringFailure {
@@ -354,7 +366,11 @@ impl LoweringFailure {
         }
     }
 
-    fn after_plan(phase: LoweringPhase, diagnostics: Diagnostics, report: &LoweringReport) -> Self {
+    fn after_plan(
+        phase: LoweringPhase,
+        diagnostics: Diagnostics,
+        report: &LoweringDecisionReport,
+    ) -> Self {
         Self {
             phase,
             diagnostics,
@@ -374,10 +390,16 @@ impl LoweringFailure {
         &self.diagnostics
     }
 
+    /// Returns frozen non-runnable decisions when planning completed before failure.
+    #[must_use]
+    pub fn report(&self) -> Option<&LoweringDecisionReport> {
+        self.report.as_deref()
+    }
+
     /// Dumps frozen non-runnable lowering decisions when planning had completed.
     #[must_use]
     pub fn dump_lowering(&self) -> Option<String> {
-        self.report.as_deref().map(LoweringReport::dump)
+        self.report.as_deref().map(LoweringDecisionReport::dump)
     }
 }
 
@@ -397,6 +419,55 @@ impl Error for LoweringFailure {
     }
 }
 
+/// Closed observation points for developer-only lowering measurements.
+///
+/// These are deliberately private: the compilation contract is expressed by
+/// [`LoweringPhase`], while this finer inventory may evolve with the implementation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoweringMeasurementPhase {
+    CoreVerification,
+    Options,
+    SemanticInventory,
+    Legality,
+    RuntimeDemand,
+    Liveness,
+    Assignment,
+    EdgeTransfers,
+    ControlRecipes,
+    Resources,
+    PlanFreeze,
+    Construction,
+    Reconciliation,
+    TargetVerification,
+}
+
+/// Private observation boundary. Production instantiates the zero-sized no-op sink.
+trait LoweringInstrumentation {
+    fn before_phase(&mut self, _phase: LoweringMeasurementPhase) {}
+
+    fn after_phase(&mut self, _phase: LoweringMeasurementPhase, _succeeded: bool) {}
+
+    fn skipped(&mut self, _phase: LoweringMeasurementPhase, _reason: &'static str) {}
+}
+
+struct NoLoweringInstrumentation;
+
+impl LoweringInstrumentation for NoLoweringInstrumentation {}
+
+fn instrument_lowering_phase<I, T, E>(
+    instrumentation: &mut I,
+    phase: LoweringMeasurementPhase,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E>
+where
+    I: LoweringInstrumentation,
+{
+    instrumentation.before_phase(phase);
+    let result = operation();
+    instrumentation.after_phase(phase, result.is_ok());
+    result
+}
+
 /// Verifies, plans, constructs, and verifies one complete Minecraft target program.
 ///
 /// # Errors
@@ -407,100 +478,252 @@ pub fn lower_to_minecraft(
     sources: &SourceContext,
     options: &LoweringOptions,
 ) -> Result<LoweringOutput, LoweringFailure> {
-    crate::ir::core::verify_program(core, sources).map_err(|diagnostics| {
-        LoweringFailure::before_plan(LoweringPhase::CoreVerification, diagnostics)
-    })?;
-    options.validate().map_err(|error| {
-        LoweringFailure::before_plan(LoweringPhase::Options, options_diagnostics(error))
-    })?;
-    let inventory = SemanticInventory::new(core).map_err(|error| {
-        LoweringFailure::before_plan(LoweringPhase::Legality, analysis_diagnostics(error))
-    })?;
-    audit_legality(core, &inventory).map_err(|diagnostics| {
-        LoweringFailure::before_plan(LoweringPhase::Legality, diagnostics)
-    })?;
-    let demand = RuntimeDemand::for_level(
+    lower_to_minecraft_with_instrumentation(core, sources, options, &mut NoLoweringInstrumentation)
+}
+
+fn lower_to_minecraft_with_instrumentation<I>(
+    core: &CoreProgram,
+    sources: &SourceContext,
+    options: &LoweringOptions,
+    instrumentation: &mut I,
+) -> Result<LoweringOutput, LoweringFailure>
+where
+    I: LoweringInstrumentation,
+{
+    let (inventory, demand, liveness) =
+        analyze_lowering_request(core, sources, options, instrumentation)?;
+    let (assignment, transfers) = assign_lowering_homes(
         core,
         &inventory,
-        options.optimization_level(),
-        RuntimeDemandLimits::derived(),
-    )
-    .map_err(|error| {
-        LoweringFailure::before_plan(LoweringPhase::Planning, demand_diagnostics(&error))
-    })?;
-    let assignment = match options.optimization_level() {
-        MinecraftOptimizationLevel::None => {
-            HomeAssignment::for_none(core, &inventory).map_err(|error| {
-                LoweringFailure::before_plan(
-                    LoweringPhase::Planning,
-                    assignment_diagnostics(&error),
-                )
-            })?
-        }
-        MinecraftOptimizationLevel::Baseline => {
-            let liveness =
-                LivenessResult::for_baseline(core, &inventory, &demand, LivenessLimits::derived())
-                    .map_err(|error| {
-                        LoweringFailure::before_plan(
-                            LoweringPhase::Planning,
-                            liveness_diagnostics(&error),
-                        )
-                    })?;
-            HomeAssignment::for_baseline(core, &inventory, &demand, &liveness).map_err(|error| {
-                LoweringFailure::before_plan(
-                    LoweringPhase::Planning,
-                    assignment_diagnostics(&error),
-                )
-            })?
-        }
-    };
-    let transfers = match options.optimization_level() {
-        MinecraftOptimizationLevel::None => {
-            EdgeTransferPlan::for_none(core, &inventory, &assignment)
-        }
-        MinecraftOptimizationLevel::Baseline => {
-            EdgeTransferPlan::for_baseline(core, &inventory, &assignment)
-        }
-    }
-    .map_err(|error| {
-        LoweringFailure::before_plan(LoweringPhase::Planning, transfer_diagnostics(&error))
-    })?;
-    let control = ControlRecipePlan::new(
+        &demand,
+        liveness.as_ref(),
+        options,
+        instrumentation,
+    )?;
+    let (plan, report) = freeze_lowering_plan(
         core,
         &inventory,
-        &assignment,
-        &transfers,
-        options.optimization_level(),
-    )
-    .map_err(|error| {
-        LoweringFailure::before_plan(LoweringPhase::Planning, control_diagnostics(&error))
-    })?;
-    let resources =
-        ResourceInventory::for_control_plan(core, &inventory, &transfers, &control, options)
-            .map_err(|error| {
-                LoweringFailure::before_plan(LoweringPhase::Planning, resource_diagnostics(&error))
-            })?;
-    let plan =
-        LoweringPlan::from_selected_parts(core, options, assignment, transfers, control, resources)
-            .map_err(|error| {
-                LoweringFailure::before_plan(LoweringPhase::Planning, finish_diagnostics(error))
-            })?;
-    let report = plan.report();
-    let program = construct_program(core, &plan).map_err(|diagnostics| {
-        LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
-    })?;
-    verify_constructed_control_recipes(core, &plan, &program).map_err(|diagnostics| {
-        LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
-    })?;
-    verify_program(&program, sources).map_err(|diagnostics| {
-        LoweringFailure::after_plan(LoweringPhase::TargetVerification, diagnostics, &report)
-    })?;
+        assignment,
+        transfers,
+        options,
+        instrumentation,
+    )?;
+    let program = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::Construction,
+        || {
+            construct_program(core, &plan).map_err(|diagnostics| {
+                LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
+            })
+        },
+    )?;
+    instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::Reconciliation,
+        || {
+            verify_constructed_control_recipes(core, &plan, &program).map_err(|diagnostics| {
+                LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
+            })
+        },
+    )?;
+    instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::TargetVerification,
+        || {
+            verify_program(&program, sources).map_err(|diagnostics| {
+                LoweringFailure::after_plan(LoweringPhase::TargetVerification, diagnostics, &report)
+            })
+        },
+    )?;
     let map = report.map();
     Ok(LoweringOutput {
         program,
         map,
         report,
     })
+}
+
+fn analyze_lowering_request<I>(
+    core: &CoreProgram,
+    sources: &SourceContext,
+    options: &LoweringOptions,
+    instrumentation: &mut I,
+) -> Result<(SemanticInventory, RuntimeDemand, Option<LivenessResult>), LoweringFailure>
+where
+    I: LoweringInstrumentation,
+{
+    instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::CoreVerification,
+        || {
+            crate::ir::core::verify_program(core, sources).map_err(|diagnostics| {
+                LoweringFailure::before_plan(LoweringPhase::CoreVerification, diagnostics)
+            })
+        },
+    )?;
+    instrument_lowering_phase(instrumentation, LoweringMeasurementPhase::Options, || {
+        options.validate().map_err(|error| {
+            LoweringFailure::before_plan(LoweringPhase::Options, options_diagnostics(error))
+        })
+    })?;
+    let inventory = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::SemanticInventory,
+        || {
+            SemanticInventory::new(core).map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Legality, analysis_diagnostics(error))
+            })
+        },
+    )?;
+    instrument_lowering_phase(instrumentation, LoweringMeasurementPhase::Legality, || {
+        audit_legality(core, &inventory).map_err(|diagnostics| {
+            LoweringFailure::before_plan(LoweringPhase::Legality, diagnostics)
+        })
+    })?;
+    let demand = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::RuntimeDemand,
+        || {
+            RuntimeDemand::for_level(
+                core,
+                &inventory,
+                options.optimization_level(),
+                RuntimeDemandLimits::derived(),
+            )
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, demand_diagnostics(&error))
+            })
+        },
+    )?;
+    let liveness = match options.optimization_level() {
+        MinecraftOptimizationLevel::None => {
+            instrumentation.skipped(
+                LoweringMeasurementPhase::Liveness,
+                "physical-optimization-disabled",
+            );
+            None
+        }
+        MinecraftOptimizationLevel::Baseline => Some(instrument_lowering_phase(
+            instrumentation,
+            LoweringMeasurementPhase::Liveness,
+            || {
+                LivenessResult::for_baseline(core, &inventory, &demand, LivenessLimits::derived())
+                    .map_err(|error| {
+                        LoweringFailure::before_plan(
+                            LoweringPhase::Planning,
+                            liveness_diagnostics(&error),
+                        )
+                    })
+            },
+        )?),
+    };
+    Ok((inventory, demand, liveness))
+}
+
+fn assign_lowering_homes<I>(
+    core: &CoreProgram,
+    inventory: &SemanticInventory,
+    demand: &RuntimeDemand,
+    liveness: Option<&LivenessResult>,
+    options: &LoweringOptions,
+    instrumentation: &mut I,
+) -> Result<(HomeAssignment, EdgeTransferPlan), LoweringFailure>
+where
+    I: LoweringInstrumentation,
+{
+    let assignment = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::Assignment,
+        || {
+            match options.optimization_level() {
+                MinecraftOptimizationLevel::None => HomeAssignment::for_none(core, inventory),
+                MinecraftOptimizationLevel::Baseline => HomeAssignment::for_baseline(
+                    core,
+                    inventory,
+                    demand,
+                    liveness.expect("baseline liveness was constructed in the preceding phase"),
+                ),
+            }
+            .map_err(|error| {
+                LoweringFailure::before_plan(
+                    LoweringPhase::Planning,
+                    assignment_diagnostics(&error),
+                )
+            })
+        },
+    )?;
+    let transfers = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::EdgeTransfers,
+        || {
+            match options.optimization_level() {
+                MinecraftOptimizationLevel::None => {
+                    EdgeTransferPlan::for_none(core, inventory, &assignment)
+                }
+                MinecraftOptimizationLevel::Baseline => {
+                    EdgeTransferPlan::for_baseline(core, inventory, &assignment)
+                }
+            }
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, transfer_diagnostics(&error))
+            })
+        },
+    )?;
+    Ok((assignment, transfers))
+}
+
+fn freeze_lowering_plan<I>(
+    core: &CoreProgram,
+    inventory: &SemanticInventory,
+    assignment: HomeAssignment,
+    transfers: EdgeTransferPlan,
+    options: &LoweringOptions,
+    instrumentation: &mut I,
+) -> Result<(LoweringPlan, LoweringDecisionReport), LoweringFailure>
+where
+    I: LoweringInstrumentation,
+{
+    let control = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::ControlRecipes,
+        || {
+            ControlRecipePlan::new(
+                core,
+                inventory,
+                &assignment,
+                &transfers,
+                options.optimization_level(),
+            )
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, control_diagnostics(&error))
+            })
+        },
+    )?;
+    let resources =
+        instrument_lowering_phase(instrumentation, LoweringMeasurementPhase::Resources, || {
+            ResourceInventory::for_control_plan(core, inventory, &transfers, &control, options)
+                .map_err(|error| {
+                    LoweringFailure::before_plan(
+                        LoweringPhase::Planning,
+                        resource_diagnostics(&error),
+                    )
+                })
+        })?;
+    let (plan, report) = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::PlanFreeze,
+        || {
+            let plan = LoweringPlan::from_selected_parts(
+                core, options, assignment, transfers, control, resources,
+            )
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, finish_diagnostics(error))
+            })?;
+            let report = plan.report();
+            Ok::<_, LoweringFailure>((plan, report))
+        },
+    )?;
+    Ok((plan, report))
 }
 
 fn options_diagnostics(error: LoweringOptionsError) -> Diagnostics {
@@ -609,16 +832,18 @@ fn one_diagnostic(diagnostic: Diagnostic) -> Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::{
-        LoweringFailure, LoweringPhase, lower_to_minecraft, one_diagnostic, planning_diagnostics,
+        LoweringFailure, LoweringInstrumentation, LoweringMeasurementPhase, LoweringPhase,
+        lower_to_minecraft, lower_to_minecraft_with_instrumentation, one_diagnostic,
+        planning_diagnostics,
     };
     use crate::analysis::minecraft::{
         AnalysisArithmeticCaps, CommandLimitAssumptions, CommandLimitStatus,
         TargetExecutionAnalysisLimits, TargetExecutionRoot, analyze_target_execution,
     };
     use crate::diagnostic::Diagnostic;
-    use crate::ir::core::{CoreProgram, FunctionBuilder, Terminator, TerminatorKind};
+    use crate::ir::core::{CoreProgram, CoreType, FunctionBuilder, Terminator, TerminatorKind};
     use crate::ir::minecraft::{
-        FunctionTagResourceId, ObjectiveName, PackNamespace, verify_program,
+        FunctionTagResourceId, MinecraftDebugDumper, ObjectiveName, PackNamespace, verify_program,
     };
     use crate::lower::minecraft::plan::{PlanBuildError, PlanTable};
     use crate::lower::minecraft::{
@@ -626,6 +851,58 @@ mod tests {
     };
     use crate::source::{Origin, OriginId, SourceContext};
     use crate::target::JavaEditionTarget;
+
+    #[derive(Debug)]
+    enum TimedLoweringOutcome {
+        Completed { elapsed_nanoseconds: u128 },
+        Skipped { reason: &'static str },
+    }
+
+    #[derive(Debug)]
+    struct TimedLoweringSample {
+        phase: LoweringMeasurementPhase,
+        outcome: TimedLoweringOutcome,
+    }
+
+    #[derive(Default)]
+    struct TimedLoweringRecorder {
+        active: Option<(LoweringMeasurementPhase, std::time::Instant)>,
+        samples: Vec<TimedLoweringSample>,
+    }
+
+    impl LoweringInstrumentation for TimedLoweringRecorder {
+        fn before_phase(&mut self, phase: LoweringMeasurementPhase) {
+            assert!(
+                self.active
+                    .replace((phase, std::time::Instant::now()))
+                    .is_none(),
+                "lowering phase instrumentation must not overlap"
+            );
+        }
+
+        fn after_phase(&mut self, phase: LoweringMeasurementPhase, succeeded: bool) {
+            let (active_phase, started) = self
+                .active
+                .take()
+                .expect("every completed lowering phase has a matching start event");
+            assert_eq!(active_phase, phase);
+            assert!(succeeded, "the measurement fixture must lower successfully");
+            self.samples.push(TimedLoweringSample {
+                phase,
+                outcome: TimedLoweringOutcome::Completed {
+                    elapsed_nanoseconds: started.elapsed().as_nanos(),
+                },
+            });
+        }
+
+        fn skipped(&mut self, phase: LoweringMeasurementPhase, reason: &'static str) {
+            assert!(self.active.is_none());
+            self.samples.push(TimedLoweringSample {
+                phase,
+                outcome: TimedLoweringOutcome::Skipped { reason },
+            });
+        }
+    }
 
     #[test]
     fn option_validation_is_a_real_preplan_failure_phase() {
@@ -650,6 +927,7 @@ mod tests {
                 .contains_code("lower.reserved-pack-namespace")
         );
         assert_eq!(failure.dump_lowering(), None);
+        assert!(failure.report().is_none());
         assert_eq!(
             LoweringOptions::new(
                 JavaEditionTarget::V26_2,
@@ -668,6 +946,7 @@ mod tests {
         let planning = LoweringFailure::before_plan(LoweringPhase::Planning, planning);
         assert_eq!(planning.phase(), LoweringPhase::Planning);
         assert_eq!(planning.dump_lowering(), None);
+        assert!(planning.report().is_none());
 
         let mut sources = SourceContext::new();
         let origin = sources.add_origin(Origin::Unknown).unwrap();
@@ -684,6 +963,7 @@ mod tests {
         );
         assert_eq!(construction.phase(), LoweringPhase::Construction);
         assert!(construction.dump_lowering().is_some());
+        assert_eq!(construction.report(), Some(output.report()));
 
         let diagnostics = verify_program(output.program(), &SourceContext::new()).unwrap_err();
         let target = LoweringFailure::after_plan(
@@ -767,6 +1047,83 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "environment-specific per-phase measurements; inspect a --release run"]
+    fn reports_every_lowering_phase_as_a_raw_completed_or_skipped_sample() {
+        let sources = SourceContext::new();
+        let core = measurement_program(&sources, 4_096);
+        let phases = [
+            LoweringMeasurementPhase::CoreVerification,
+            LoweringMeasurementPhase::Options,
+            LoweringMeasurementPhase::SemanticInventory,
+            LoweringMeasurementPhase::Legality,
+            LoweringMeasurementPhase::RuntimeDemand,
+            LoweringMeasurementPhase::Liveness,
+            LoweringMeasurementPhase::Assignment,
+            LoweringMeasurementPhase::EdgeTransfers,
+            LoweringMeasurementPhase::ControlRecipes,
+            LoweringMeasurementPhase::Resources,
+            LoweringMeasurementPhase::PlanFreeze,
+            LoweringMeasurementPhase::Construction,
+            LoweringMeasurementPhase::Reconciliation,
+            LoweringMeasurementPhase::TargetVerification,
+        ];
+
+        for level in [
+            MinecraftOptimizationLevel::None,
+            MinecraftOptimizationLevel::Baseline,
+        ] {
+            let options = options().with_optimization_level(level);
+            let expected = lower_to_minecraft(&core, &sources, &options).unwrap();
+            let mut recorder = TimedLoweringRecorder::default();
+            let started = std::time::Instant::now();
+            let output =
+                lower_to_minecraft_with_instrumentation(&core, &sources, &options, &mut recorder)
+                    .unwrap();
+            eprintln!(
+                "minecraft-lowering level={level:?} elapsed_nanoseconds={}",
+                started.elapsed().as_nanos()
+            );
+            for sample in &recorder.samples {
+                match sample.outcome {
+                    TimedLoweringOutcome::Completed {
+                        elapsed_nanoseconds,
+                    } => eprintln!(
+                        "lowering-phase level={level:?} phase={:?} status=completed elapsed_nanoseconds={elapsed_nanoseconds}",
+                        sample.phase,
+                    ),
+                    TimedLoweringOutcome::Skipped { reason } => eprintln!(
+                        "lowering-phase level={level:?} phase={:?} status=skipped reason={reason}",
+                        sample.phase,
+                    ),
+                }
+            }
+
+            assert_eq!(
+                recorder
+                    .samples
+                    .iter()
+                    .map(|sample| sample.phase)
+                    .collect::<Vec<_>>(),
+                phases
+            );
+            assert_eq!(
+                recorder
+                    .samples
+                    .iter()
+                    .filter(|sample| matches!(sample.outcome, TimedLoweringOutcome::Skipped { .. }))
+                    .count(),
+                usize::from(level == MinecraftOptimizationLevel::None)
+            );
+            assert_eq!(output.report(), expected.report());
+            assert_eq!(
+                MinecraftDebugDumper::program(output.program()),
+                MinecraftDebugDumper::program(expected.program())
+            );
+            assert!(!output.report().dump().contains("elapsed"));
+        }
+    }
+
     fn empty_return_program(sources: &SourceContext, origin: OriginId) -> CoreProgram {
         let mut core = CoreProgram::new();
         let function = core
@@ -775,6 +1132,35 @@ mod tests {
         let mut builder = FunctionBuilder::new(&core, sources, function).unwrap();
         builder
             .terminate(Terminator::new(TerminatorKind::Return(vec![]), origin))
+            .unwrap();
+        core.define_function(function, builder.finish().unwrap())
+            .unwrap();
+        core
+    }
+
+    fn measurement_program(sources: &SourceContext, values: usize) -> CoreProgram {
+        let mut core = CoreProgram::new();
+        let function = core
+            .declare_function(
+                Some("measurement"),
+                vec![CoreType::I32],
+                vec![CoreType::I32],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&core, sources, function).unwrap();
+        let entry = builder.entry_block();
+        let mut current = builder.body().block(entry).unwrap().parameters()[0].value();
+        for _ in 0..values {
+            current = builder
+                .i32_add_wrapping(current, current, OriginId::UNKNOWN)
+                .unwrap();
+        }
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![current]),
+                OriginId::UNKNOWN,
+            ))
             .unwrap();
         core.define_function(function, builder.finish().unwrap())
             .unwrap();

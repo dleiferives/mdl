@@ -1,0 +1,6 @@
+func @fn0(%v0: i32) -> (i32) // baseline_snapshot {
+^bb0:
+  %v9 = core.i32.add.wrapping %v0, %v0
+  %v11 = core.i32.add.wrapping %v9, %v9
+  return %v11
+}

@@ -9,6 +9,26 @@ use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityId;
 use crate::source::{OriginId, SourceContext};
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static FUNCTION_VERIFY_CALLS: Cell<usize> = const { Cell::new(0) };
+    static PROGRAM_VERIFY_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_verifier_counters() {
+    FUNCTION_VERIFY_CALLS.set(0);
+    PROGRAM_VERIFY_CALLS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn verifier_counters() -> (usize, usize) {
+    (FUNCTION_VERIFY_CALLS.get(), PROGRAM_VERIFY_CALLS.get())
+}
+
 #[derive(Default)]
 struct Verifier {
     findings: Vec<Diagnostic>,
@@ -41,6 +61,9 @@ pub fn verify_function(
     function: FunctionId,
     body: &FunctionBody,
 ) -> Result<(), Diagnostics> {
+    #[cfg(test)]
+    FUNCTION_VERIFY_CALLS.with(|calls| calls.set(calls.get() + 1));
+
     let mut verifier = Verifier::default();
     let declaration = program.function(function);
     let fallback_origin = declaration.map_or(OriginId::UNKNOWN, |item| item.origin);
@@ -59,6 +82,7 @@ pub fn verify_function(
         );
     }
 
+    verify_raw_instruction_ownership(body, &mut verifier, fallback_origin);
     verify_placement(body, &mut verifier, fallback_origin);
     verify_definitions(body, &mut verifier, fallback_origin);
     verify_origins(body, sources, &mut verifier, fallback_origin);
@@ -79,6 +103,9 @@ pub fn verify_function(
 ///
 /// Returns accumulated diagnostics, including every declaration left undefined.
 pub fn verify_program(program: &CoreProgram, sources: &SourceContext) -> Result<(), Diagnostics> {
+    #[cfg(test)]
+    PROGRAM_VERIFY_CALLS.with(|calls| calls.set(calls.get() + 1));
+
     let mut findings = vec![];
     for (function, declaration) in program.functions() {
         if sources.origin(declaration.origin).is_none() {
@@ -106,6 +133,46 @@ pub fn verify_program(program: &CoreProgram, sources: &SourceContext) -> Result<
     match Diagnostics::from_findings(findings) {
         Some(diagnostics) => Err(diagnostics),
         None => Ok(()),
+    }
+}
+
+fn verify_raw_instruction_ownership(
+    body: &FunctionBody,
+    verifier: &mut Verifier,
+    fallback: OriginId,
+) {
+    let mut owners = vec![None; body.instructions.len()];
+    for (block, data) in body.blocks.iter() {
+        for instruction in &data.instructions {
+            let Ok(index) = usize::try_from(instruction.index()) else {
+                verifier.report(
+                    "core.invalid-instruction-container",
+                    format!("{block:?} contains invalid instruction {instruction:?}"),
+                    data.origin,
+                );
+                continue;
+            };
+            let Some(owner) = owners.get_mut(index) else {
+                verifier.report(
+                    "core.invalid-instruction-container",
+                    format!("{block:?} contains invalid instruction {instruction:?}"),
+                    data.origin,
+                );
+                continue;
+            };
+            if let Some(previous) = *owner {
+                verifier.report(
+                    "core.duplicate-instruction-container",
+                    format!(
+                        "instruction {instruction:?} occurs more than once in raw block containers ({previous:?} then {block:?})"
+                    ),
+                    body.instruction(*instruction)
+                        .map_or(fallback, |item| item.origin),
+                );
+            } else {
+                *owner = Some(block);
+            }
+        }
     }
 }
 
@@ -782,10 +849,53 @@ mod tests {
         let diagnostics = verify_function(&program, &sources, function, &body).unwrap_err();
         assert!(diagnostics.contains_code("core.duplicate-block-placement"));
         assert!(diagnostics.contains_code("core.duplicate-instruction-placement"));
+        assert!(diagnostics.contains_code("core.duplicate-instruction-container"));
         assert!(diagnostics.contains_code("core.invalid-instruction"));
         assert!(diagnostics.contains_code("core.invalid-value"));
         assert!(diagnostics.contains_code("core.result-count"));
         assert!(diagnostics.contains_code("core.missing-terminator"));
         assert!(diagnostics.len() >= 6);
+    }
+
+    #[test]
+    fn raw_instruction_ownership_spans_attached_and_detached_containers() {
+        let sources = SourceContext::new();
+        let mut program = CoreProgram::new();
+        let function = program
+            .declare_function(
+                Some("raw-owner"),
+                vec![],
+                vec![CoreType::I32],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
+        let entry = builder.entry_block();
+        let value = builder.i32_constant(1, OriginId::UNKNOWN).unwrap();
+        let instruction = builder.body().block(entry).unwrap().instructions[0];
+        let detached = builder.create_block(OriginId::UNKNOWN).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![value]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        builder.switch_to_block(detached).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Unreachable,
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        let mut body = builder.finish().unwrap();
+        body.block_order.retain(|block| *block != detached);
+        body.block_mut(detached)
+            .unwrap()
+            .instructions
+            .push(instruction);
+
+        let diagnostics = verify_function(&program, &sources, function, &body).unwrap_err();
+        assert!(diagnostics.contains_code("core.duplicate-instruction-container"));
+        assert!(!diagnostics.contains_code("core.duplicate-instruction-placement"));
     }
 }

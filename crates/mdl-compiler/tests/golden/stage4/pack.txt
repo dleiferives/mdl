@@ -1,0 +1,102 @@
+file data/mdl/function/__mdl/f0/b0.mcfunction bytes=117
+execute if score #f0v0 mdl.reg matches 1 run return run function mdl:__mdl/f0/b1
+return run function mdl:__mdl/f0/b2
+end-file
+file data/mdl/function/__mdl/f0/b1.mcfunction bytes=95
+scoreboard players operation #f0v3 mdl.reg = #f0v1 mdl.reg
+return run function mdl:__mdl/f0/b3
+end-file
+file data/mdl/function/__mdl/f0/b2.mcfunction bytes=95
+scoreboard players operation #f0v3 mdl.reg = #f0v2 mdl.reg
+return run function mdl:__mdl/f0/b3
+end-file
+file data/mdl/function/__mdl/f0/b3.mcfunction bytes=68
+scoreboard players operation #f0r0 mdl.reg = #f0v3 mdl.reg
+return 1
+end-file
+file data/mdl/function/__mdl/f1/b0.mcfunction bytes=329
+scoreboard players operation #f0v0 mdl.reg = #f1v0 mdl.reg
+scoreboard players operation #f0v1 mdl.reg = #f1v1 mdl.reg
+scoreboard players operation #f0v2 mdl.reg = #f1v2 mdl.reg
+function mdl:__mdl/f0/b0
+scoreboard players operation #f1v3 mdl.reg = #f0r0 mdl.reg
+scoreboard players operation #f1r0 mdl.reg = #f1v3 mdl.reg
+return 1
+end-file
+file data/mdl/function/__mdl/f2/b0.mcfunction bytes=154
+scoreboard players operation #f2v2 mdl.reg = #f2v0 mdl.reg
+scoreboard players operation #f2v3 mdl.reg = #f2v1 mdl.reg
+return run function mdl:__mdl/f2/b1
+end-file
+file data/mdl/function/__mdl/f2/b1.mcfunction bytes=288
+scoreboard players set #f2v5 mdl.reg 0
+scoreboard players set #f2v6 mdl.reg 0
+execute if score #f2v2 mdl.reg <= #f2v5 mdl.reg run scoreboard players set #f2v6 mdl.reg 1
+execute if score #f2v6 mdl.reg matches 1 run return run function mdl:__mdl/f2/e1_0
+return run function mdl:__mdl/f2/b2
+end-file
+file data/mdl/function/__mdl/f2/b2.mcfunction bytes=432
+scoreboard players set #f2v7 mdl.reg -1
+scoreboard players operation #f2v8 mdl.reg = #f2v2 mdl.reg
+scoreboard players operation #f2v8 mdl.reg += #f2v7 mdl.reg
+scoreboard players operation #f2v9 mdl.reg = #f2v3 mdl.reg
+scoreboard players operation #f2v9 mdl.reg += #f2v2 mdl.reg
+scoreboard players operation #f2v2 mdl.reg = #f2v8 mdl.reg
+scoreboard players operation #f2v3 mdl.reg = #f2v9 mdl.reg
+return run function mdl:__mdl/f2/b1
+end-file
+file data/mdl/function/__mdl/f2/b3.mcfunction bytes=68
+scoreboard players operation #f2r0 mdl.reg = #f2v4 mdl.reg
+return 1
+end-file
+file data/mdl/function/__mdl/f2/e1_0.mcfunction bytes=95
+scoreboard players operation #f2v4 mdl.reg = #f2v3 mdl.reg
+return run function mdl:__mdl/f2/b3
+end-file
+file data/mdl/function/__mdl/f3/b0.mcfunction bytes=213
+scoreboard players operation #f3v3 mdl.reg = #f3v0 mdl.reg
+scoreboard players operation #f3v4 mdl.reg = #f3v1 mdl.reg
+scoreboard players operation #f3v5 mdl.reg = #f3v2 mdl.reg
+return run function mdl:__mdl/f3/b1
+end-file
+file data/mdl/function/__mdl/f3/b1.mcfunction bytes=288
+scoreboard players set #f3v8 mdl.reg 0
+scoreboard players set #f3v9 mdl.reg 0
+execute if score #f3v3 mdl.reg <= #f3v8 mdl.reg run scoreboard players set #f3v9 mdl.reg 1
+execute if score #f3v9 mdl.reg matches 1 run return run function mdl:__mdl/f3/e1_0
+return run function mdl:__mdl/f3/b2
+end-file
+file data/mdl/function/__mdl/f3/b2.mcfunction bytes=436
+scoreboard players set #f3v10 mdl.reg -1
+scoreboard players operation #f3v11 mdl.reg = #f3v3 mdl.reg
+scoreboard players operation #f3v11 mdl.reg += #f3v10 mdl.reg
+scoreboard players operation #f3v3 mdl.reg = #f3v11 mdl.reg
+scoreboard players operation #f3t0 mdl.reg = #f3v4 mdl.reg
+scoreboard players operation #f3v4 mdl.reg = #f3v5 mdl.reg
+scoreboard players operation #f3v5 mdl.reg = #f3t0 mdl.reg
+return run function mdl:__mdl/f3/b1
+end-file
+file data/mdl/function/__mdl/f3/b3.mcfunction bytes=127
+scoreboard players operation #f3r0 mdl.reg = #f3v6 mdl.reg
+scoreboard players operation #f3r1 mdl.reg = #f3v7 mdl.reg
+return 1
+end-file
+file data/mdl/function/__mdl/f3/e1_0.mcfunction bytes=154
+scoreboard players operation #f3v6 mdl.reg = #f3v4 mdl.reg
+scoreboard players operation #f3v7 mdl.reg = #f3v5 mdl.reg
+return run function mdl:__mdl/f3/b3
+end-file
+file data/mdl/function/__mdl/init/try_create.mcfunction bytes=51
+return run scoreboard objectives add mdl.reg dummy
+end-file
+file data/mdl/function/__mdl/load.mcfunction bytes=237
+execute if data storage mdl:__mdl/init/v0/6d646c2e726567 "initialized" run return 1
+execute if function mdl:__mdl/init/try_create run return run data modify storage mdl:__mdl/init/v0/6d646c2e726567 "initialized" set value 1b
+return fail
+end-file
+file data/minecraft/tags/function/load.json bytes=30
+{"values":["mdl:__mdl/load"]}
+end-file
+file pack.mcmeta bytes=90
+{"pack":{"description":"stage 4 public proof","min_format":[107,1],"max_format":[107,1]}}
+end-file

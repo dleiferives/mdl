@@ -1,0 +1,181 @@
+minecraft.program target=V26_2
+function McFunctionId(0) resource=mdl:__mdl/load origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) execute
+      modifier 0 origin=OriginId(0) if DataExists(StoragePath { storage: StorageId(ResourceLocation { namespace: Namespace("mdl"), path: ResourcePath("__mdl/init/v0/6d646c2e726567") }), path: NbtPath { segments: [Key(NbtPathKey(NbtKey("initialized")))] } })
+      run
+        origin=OriginId(0) return.value 1
+  command CommandId(1)
+    origin=OriginId(0) execute
+      modifier 0 origin=OriginId(0) if Function(McFunctionId(1))
+      run
+        origin=OriginId(0) return.run
+          origin=OriginId(0) data.modify target=StoragePath { storage: StorageId(ResourceLocation { namespace: Namespace("mdl"), path: ResourcePath("__mdl/init/v0/6d646c2e726567") }), path: NbtPath { segments: [Key(NbtPathKey(NbtKey("initialized")))] } } mode=Set value=NbtValue { kind: Byte(1) }
+  command CommandId(2)
+    origin=OriginId(0) return.fail
+function McFunctionId(1) resource=mdl:__mdl/init/try_create origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) score.objective_add_dummy objective=mdl.reg
+function McFunctionId(2) resource=mdl:__mdl/f0/b0 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) execute
+      modifier 0 origin=OriginId(0) if ScoreMatches(ScoreRef { holder: Fake(FakeScoreHolder(ScoreWord("f0v0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }, ScoreRange(Exact(1)))
+      run
+        origin=OriginId(0) return.run
+          origin=OriginId(0) function target=Internal(Function(McFunctionId(3)))
+  command CommandId(1)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(4)))
+function McFunctionId(3) resource=mdl:__mdl/f0/b1 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v1"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(5)))
+function McFunctionId(4) resource=mdl:__mdl/f0/b2 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(5)))
+function McFunctionId(5) resource=mdl:__mdl/f0/b3 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0r0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) return.value 1
+function McFunctionId(6) resource=mdl:__mdl/f1/b0 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f1v0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v1"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f1v1"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(2)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f1v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(3)
+    origin=OriginId(0) function target=Internal(Function(McFunctionId(2)))
+  command CommandId(4)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f1v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f0r0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(5)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f1r0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f1v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(6)
+    origin=OriginId(0) return.value 1
+function McFunctionId(7) resource=mdl:__mdl/f2/b0 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v1"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(2)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(8)))
+function McFunctionId(8) resource=mdl:__mdl/f2/b1 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v5"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=0
+  command CommandId(1)
+    origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v6"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=0
+  command CommandId(2)
+    origin=OriginId(0) execute
+      modifier 0 origin=OriginId(0) if ScoreCompare(ScoreRef { holder: Fake(FakeScoreHolder(ScoreWord("f2v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }, LessOrEqual, ScoreRef { holder: Fake(FakeScoreHolder(ScoreWord("f2v5"))), objective: ObjectiveName(ScoreWord("mdl.reg")) })
+      run
+        origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v6"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=1
+  command CommandId(3)
+    origin=OriginId(0) execute
+      modifier 0 origin=OriginId(0) if ScoreMatches(ScoreRef { holder: Fake(FakeScoreHolder(ScoreWord("f2v6"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }, ScoreRange(Exact(1)))
+      run
+        origin=OriginId(0) return.run
+          origin=OriginId(0) function target=Internal(Function(McFunctionId(11)))
+  command CommandId(4)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(9)))
+function McFunctionId(9) resource=mdl:__mdl/f2/b2 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v7"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=-1
+  command CommandId(1)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v8"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(2)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v8"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Add source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v7"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(3)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v9"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(4)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v9"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Add source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(5)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v8"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(6)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v9"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(7)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(8)))
+function McFunctionId(10) resource=mdl:__mdl/f2/b3 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2r0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v4"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) return.value 1
+function McFunctionId(11) resource=mdl:__mdl/f2/e1_0 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v4"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f2v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(10)))
+function McFunctionId(12) resource=mdl:__mdl/f3/b0 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v4"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v1"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(2)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v5"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v2"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(3)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(13)))
+function McFunctionId(13) resource=mdl:__mdl/f3/b1 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v8"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=0
+  command CommandId(1)
+    origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v9"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=0
+  command CommandId(2)
+    origin=OriginId(0) execute
+      modifier 0 origin=OriginId(0) if ScoreCompare(ScoreRef { holder: Fake(FakeScoreHolder(ScoreWord("f3v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }, LessOrEqual, ScoreRef { holder: Fake(FakeScoreHolder(ScoreWord("f3v8"))), objective: ObjectiveName(ScoreWord("mdl.reg")) })
+      run
+        origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v9"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=1
+  command CommandId(3)
+    origin=OriginId(0) execute
+      modifier 0 origin=OriginId(0) if ScoreMatches(ScoreRef { holder: Fake(FakeScoreHolder(ScoreWord("f3v9"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }, ScoreRange(Exact(1)))
+      run
+        origin=OriginId(0) return.run
+          origin=OriginId(0) function target=Internal(Function(McFunctionId(16)))
+  command CommandId(4)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(14)))
+function McFunctionId(14) resource=mdl:__mdl/f3/b2 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_set target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v10"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } value=-1
+  command CommandId(1)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v11"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(2)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v11"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Add source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v10"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(3)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v3"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v11"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(4)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3t0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v4"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(5)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v4"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v5"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(6)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v5"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3t0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(7)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(13)))
+function McFunctionId(15) resource=mdl:__mdl/f3/b3 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3r0"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v6"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3r1"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v7"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(2)
+    origin=OriginId(0) return.value 1
+function McFunctionId(16) resource=mdl:__mdl/f3/e1_0 origin=OriginId(0)
+  command CommandId(0)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v6"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v4"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(1)
+    origin=OriginId(0) score.players_operation target=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v7"))), objective: ObjectiveName(ScoreWord("mdl.reg")) } op=Assign source=ScoreSelection { holders: Fake(FakeScoreHolder(ScoreWord("f3v5"))), objective: ObjectiveName(ScoreWord("mdl.reg")) }
+  command CommandId(2)
+    origin=OriginId(0) return.run
+      origin=OriginId(0) function target=Internal(Function(McFunctionId(15)))
+tag FunctionTagId(0) resource=minecraft:load origin=OriginId(0) merge=Append
+  entry 0 origin=OriginId(0) internal function=McFunctionId(0)

@@ -358,22 +358,35 @@ fn compose_modifier(nested: CommandContract, modifier: &ExecuteModifierKind) -> 
 }
 
 fn condition_contract(condition: &Condition) -> CommandContract {
-    let (effects, reads) = match condition {
-        Condition::ScoreMatches(score, _) => (
+    match condition {
+        Condition::Function(_) => CommandContract::new(
+            EffectSummary::Unknown,
+            ContextSummary::Unknown,
+            ForkClass::Unknown,
+        ),
+        Condition::ScoreMatches(score, _) => known_condition_contract(
             EffectCategories::SCORE_READ.union(single_holder_effects(score)),
             single_holder_context(score),
         ),
-        Condition::ScoreCompare(left, _, right) => (
+        Condition::ScoreCompare(left, _, right) => known_condition_contract(
             EffectCategories::SCORE_READ
                 .union(single_holder_effects(left))
                 .union(single_holder_effects(right)),
             single_holder_context(left).union(single_holder_context(right)),
         ),
-        Condition::DataExists(_) => (EffectCategories::STORAGE_READ, ContextMask::NONE),
-        Condition::EntityExists(selector) => {
-            (EffectCategories::ENTITY_QUERY, selector.context_reads())
+        Condition::DataExists(_) => {
+            known_condition_contract(EffectCategories::STORAGE_READ, ContextMask::NONE)
         }
-    };
+        Condition::EntityExists(selector) => {
+            known_condition_contract(EffectCategories::ENTITY_QUERY, selector.context_reads())
+        }
+    }
+}
+
+const fn known_condition_contract(
+    effects: EffectCategories,
+    reads: ContextMask,
+) -> CommandContract {
     CommandContract::new(
         EffectSummary::Known(effects),
         ContextSummary::Known {
@@ -440,10 +453,11 @@ fn single_holder_context(score: &ScoreRef) -> ContextMask {
 #[cfg(test)]
 mod tests {
     use super::{ContextMask, ContextSummary, EffectCategories, EffectSummary, ForkClass};
+    use crate::entity::EntityId;
     use crate::ir::minecraft::{
         AtMostOneSelector, CommandKind, CommandNode, Condition, ExecuteCommand, ExecuteModifier,
-        ExecuteModifierKind, ExecuteModifiers, FunctionCall, ObjectiveName, ScoreCommand,
-        ScoreHolders, ScoreSelection, Selector, UnboundedSelector,
+        ExecuteModifierKind, ExecuteModifiers, FunctionCall, McFunctionId, ObjectiveName,
+        ScoreCommand, ScoreHolders, ScoreSelection, Selector, UnboundedSelector,
     };
     use crate::source::OriginId;
 
@@ -508,6 +522,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(command.contract().fork(), ForkClass::Never);
+    }
+
+    #[test]
+    fn internal_function_predicate_is_an_unknown_barrier() {
+        let function = <McFunctionId as EntityId>::from_index(7);
+        let modifier = ExecuteModifier::new(
+            ExecuteModifierKind::If(Condition::Function(function)),
+            OriginId::UNKNOWN,
+        );
+        let command = CommandNode::new(
+            CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(modifier, vec![]),
+                known_leaf(),
+            )),
+            OriginId::UNKNOWN,
+        )
+        .unwrap();
+        let contract = command.contract();
+
+        assert_eq!(contract.effects(), EffectSummary::Unknown);
+        assert_eq!(contract.context(), ContextSummary::Unknown);
+        assert_eq!(contract.fork(), ForkClass::Unknown);
     }
 
     #[test]

@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use serde::Serialize;
 
-use crate::datapack::{DatapackArtifact, EmissionOutput, FunctionTrace, PackFile, TraceMap};
+use crate::datapack::{
+    ArtifactFileKind, DatapackArtifact, EmissionOutput, FunctionTrace, PackFile, TraceMap,
+};
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityVec;
 use crate::ir::minecraft::{
@@ -49,7 +51,11 @@ pub fn emit_datapack(
     let mut findings = vec![];
     let mut files = vec![];
     match serialize_metadata(program, options) {
-        Ok(bytes) => files.push(PackFile::new(PackPath::metadata(), bytes)),
+        Ok(bytes) => files.push(PackFile::new(
+            PackPath::metadata(),
+            bytes,
+            ArtifactFileKind::Metadata,
+        )),
         Err(error) => findings.push(Diagnostic::new(
             "datapack.metadata-json",
             format!("failed to serialize pack metadata: {error}"),
@@ -64,6 +70,7 @@ pub fn emit_datapack(
                 files.push(PackFile::new(
                     function.resource().pack_path(program.target()),
                     bytes,
+                    ArtifactFileKind::Function,
                 ));
                 let origins = EntityVec::from_constrained_values(
                     function
@@ -97,6 +104,7 @@ pub fn emit_datapack(
             Ok(bytes) => files.push(PackFile::new(
                 tag.resource().pack_path(program.target()),
                 bytes,
+                ArtifactFileKind::FunctionTag,
             )),
             Err(diagnostic) => findings.push(diagnostic),
         }
@@ -242,6 +250,7 @@ fn external_text(target: &ExternalCallableRef) -> String {
 #[cfg(test)]
 mod tests {
     use super::{EmissionOptions, emit_datapack};
+    use crate::datapack::ArtifactFileKind;
     use crate::ir::minecraft::{
         CommandKind, CommandNode, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
         ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, ExternalCallableRef,
@@ -378,6 +387,122 @@ mod tests {
         assert_eq!(record.line().get(), 1);
         assert_eq!(record.origin(), OriginId::UNKNOWN);
         assert!(first.trace().function(empty).unwrap().is_empty());
+        assert_exact_mixed_footprint(&first, &second);
+    }
+
+    fn assert_exact_mixed_footprint(
+        first: &crate::datapack::EmissionOutput,
+        second: &crate::datapack::EmissionOutput,
+    ) {
+        let footprint = first.footprint();
+        assert!(std::ptr::eq(footprint, first.footprint()));
+        assert_eq!(footprint.metadata_files(), 1);
+        assert_eq!(footprint.function_files(), 2);
+        assert_eq!(footprint.function_tag_files(), 1);
+        assert_eq!(footprint.physical_function_lines(), 1);
+        assert_eq!(footprint.maximum_function_line_utf16_units(), 10);
+        assert_eq!(footprint.trace_records(), 1);
+        assert_eq!(
+            footprint
+                .files()
+                .iter()
+                .map(|file| (file.path().as_str(), file.kind(), file.utf8_bytes()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "data/mdl/function/empty.mcfunction",
+                    ArtifactFileKind::Function,
+                    0,
+                ),
+                (
+                    "data/mdl/function/entry.mcfunction",
+                    ArtifactFileKind::Function,
+                    11,
+                ),
+                (
+                    "data/mdl/tags/function/entries.json",
+                    ArtifactFileKind::FunctionTag,
+                    63,
+                ),
+                ("pack.mcmeta", ArtifactFileKind::Metadata, 82),
+            ]
+        );
+        assert_eq!(footprint.total_utf8_bytes(), 156);
+        assert_eq!(footprint, second.footprint());
+        assert_eq!(
+            footprint.dump(),
+            concat!(
+                "artifact-footprint files=4 metadata=1 functions=2 function-tags=1 function-lines=1 utf8-bytes=156 max-function-line-utf16=10 trace-records=1\n",
+                "file data/mdl/function/empty.mcfunction kind=Function utf8-bytes=0\n",
+                "file data/mdl/function/entry.mcfunction kind=Function utf8-bytes=11\n",
+                "file data/mdl/tags/function/entries.json kind=FunctionTag utf8-bytes=63\n",
+                "file pack.mcmeta kind=Metadata utf8-bytes=82\n",
+            )
+        );
+    }
+
+    #[test]
+    fn empty_artifact_has_only_metadata_and_zero_line_metrics() {
+        let program = MinecraftProgramBuilder::new(JavaEditionTarget::V26_2)
+            .finish()
+            .unwrap();
+        let output = emit_datapack(
+            &program,
+            &SourceContext::new(),
+            &EmissionOptions::new("empty"),
+        )
+        .unwrap();
+        let footprint = output.footprint();
+
+        assert_eq!(footprint.files().len(), 1);
+        assert_eq!(footprint.metadata_files(), 1);
+        assert_eq!(footprint.function_files(), 0);
+        assert_eq!(footprint.function_tag_files(), 0);
+        assert_eq!(footprint.physical_function_lines(), 0);
+        assert_eq!(footprint.maximum_function_line_utf16_units(), 0);
+        assert_eq!(footprint.trace_records(), 0);
+        assert_eq!(footprint.total_utf8_bytes(), 75);
+    }
+
+    #[test]
+    fn footprint_counts_unicode_bytes_and_java_utf16_line_units_separately() {
+        let mut builder = MinecraftProgramBuilder::new(JavaEditionTarget::V26_2);
+        let function = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:unicode").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let mut body = builder.begin_function(function).unwrap();
+        body.push(raw("say 💖", OriginId::UNKNOWN)).unwrap();
+        body.push(raw("say longest", OriginId::UNKNOWN)).unwrap();
+        body.finish();
+        let output = emit_datapack(
+            &builder.finish().unwrap(),
+            &SourceContext::new(),
+            &EmissionOptions::new("💖"),
+        )
+        .unwrap();
+        let footprint = output.footprint();
+        let function = footprint
+            .files()
+            .iter()
+            .find(|file| file.kind() == ArtifactFileKind::Function)
+            .unwrap();
+
+        assert_eq!(function.utf8_bytes(), "say 💖\nsay longest\n".len());
+        assert_eq!(footprint.physical_function_lines(), 2);
+        assert_eq!(footprint.maximum_function_line_utf16_units(), 11);
+        assert_eq!(footprint.trace_records(), 2);
+        assert_eq!(
+            output.pack().file("pack.mcmeta").unwrap().bytes().len(),
+            footprint
+                .files()
+                .iter()
+                .find(|file| file.kind() == ArtifactFileKind::Metadata)
+                .unwrap()
+                .utf8_bytes()
+        );
     }
 
     #[test]

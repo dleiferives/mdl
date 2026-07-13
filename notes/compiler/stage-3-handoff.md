@@ -25,9 +25,8 @@ emitter creates no helpers and selects no branch or call policy.
 Stage 4 remains responsible for:
 
 - choosing target function boundaries and stable declaration order;
-- selecting conditional-gate, proven dual-guard, snapshotted-Boolean, or
-  return-dispatcher lowering;
-- proving when a condition is stable across an arm;
+- using the mandatory single-evaluation return dispatcher for its correctness
+  baseline;
 - assigning physical scoreboard and storage homes;
 - allocating deterministic objective, holder, storage, function, and tag names;
 - generating initialization and choosing load/tick entry points;
@@ -35,13 +34,35 @@ Stage 4 remains responsible for:
 - retaining source origins while constructing nested target commands.
 
 These choices are semantic lowering and layout. None belongs in datapack emission.
+Snapshot, proven dual-guard, and other profitable branch selection starts in Stage
+5 after the baseline exists; Stage 4 does not expose a strategy option with one
+implemented choice.
 
-## Frozen Stage 3 boundary
+## Closed Stage 3 boundary and the completed concrete extension
 
-The handoff audit found no missing typed operation for the first Stage 4 vertical
-slice (`Int`, `Bool`, constants, scoreboard state, comparisons, calls, branches,
-returns, and raw barriers). New language features may require new closed target
-variants later, but they must be added from a concrete lowering need.
+The original handoff audit found no missing typed operation for ordinary Core
+computation. The later Stage 4 initialization audit found one concrete target-level
+gap: collision-safe objective creation needs internal `execute if function`, which
+Stage 3 does not currently represent. Stage 4 task 4A.1 adds one closed internal
+function condition. Stage 4A added `Condition::Function(McFunctionId)`, threaded
+program-aware rendering and internal-reference verification through execute
+modifiers, and pinned positive, zero, and failed `return run` behavior on vanilla
+before construction began. Its command contract remains conservatively unknown like
+an ordinary function call. This was a narrow extension from a demonstrated consumer,
+not a general reopening of Stage 3.
+
+Stage 4 now uses that condition only for collision-safe initialization. Its ordinary
+branch baseline is the fixed two-command dispatcher: one guarded
+`return run function` for the true edge followed by one unconditional false tail.
+Edges with simultaneous block-argument moves route through preplanned helpers; empty
+edges call their destination block directly.
+
+Core still has no scoreboard-backed mutable state, selector/context operation, or raw
+operation. Stage 3's score, storage, selector, and `UnsafeRawCommand` forms are target
+vocabulary, not evidence that those features already exist at the semantic Core
+level. Source mutable state and raw commands still require target-neutral
+effect/import semantics; adding a Minecraft raw variant to Core would collapse the
+layer boundary Stage 4 just proved.
 
 Stage 3 deliberately contains no Core values, blocks, or terminators; generated-name
 allocator; mutable final-IR editor; scheduler; macro ABI; branch optimizer; selector
@@ -53,10 +74,12 @@ filter framework; or filesystem writer. Pending builder state cannot enter
 The ignored `mdl-test/tests/minecraft_ir.rs` test directly constructs Stage 3 IR,
 emits it twice, validates trace-to-physical-line correspondence, installs the generic
 artifact before startup, and executes it on the official Minecraft Java 26.2 server
-under Java 25. It covers every initial structured command family, load/tick and
+under Java 25. Stage 4A extended the same one-startup run instead of adding a second
+server fixture. It covers every initial structured command family, load/tick and
 nested/optional tags, exact scoreboard/storage outcomes, return result versus
-success, empty functions, raw execution, and the 2,000,000-UTF-16-unit function-line
-boundary.
+success, the internal function condition, signed-boundary scoreboard behavior,
+current command-limit gamerules, empty functions, raw execution, and the
+2,000,000-UTF-16-unit function-line boundary.
 
 The successful pinned inputs used to close Stage 3 were:
 

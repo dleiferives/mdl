@@ -1,10 +1,7 @@
-use std::cell::Cell;
-
 use mdl_compiler::ir::core::{
     BlockId, BlockTarget, CanonicalPrinter, ControlFlowGraph, CoreProgram, CoreType, DebugDumper,
-    EditError, FunctionBuilder, FunctionEditor, FunctionPass, I32Predicate, PassError, PassRunner,
-    PlacementIndex, Terminator, TerminatorKind, UseIndex, ValueDef, ValueId, verify_function,
-    verify_program,
+    EditError, FunctionBuilder, FunctionEditor, I32Predicate, PlacementIndex, Terminator,
+    TerminatorKind, UseIndex, ValueDef, ValueId, verify_function, verify_program,
 };
 use mdl_compiler::source::{Origin, OriginId, SourceContext};
 
@@ -538,83 +535,6 @@ fn rejected_dominance_replacement_leaves_body_identical() {
         .unwrap_err();
     assert!(matches!(error, EditError::DoesNotDominate { .. }));
     assert_eq!(format!("{body:#?}"), before);
-}
-
-struct FailingPass {
-    entry: BlockId,
-}
-
-impl FunctionPass for FailingPass {
-    fn name(&self) -> &'static str {
-        "fail-after-valid-edit"
-    }
-
-    fn run(&mut self, editor: &mut FunctionEditor<'_>) -> Result<(), PassError> {
-        editor
-            .set_terminator(
-                self.entry,
-                Terminator::new(TerminatorKind::Unreachable, UNKNOWN),
-            )
-            .map_err(|error| PassError::new(error.to_string()))?;
-        Err(PassError::new("deliberate failure"))
-    }
-}
-
-struct MustNotRun<'a> {
-    ran: &'a Cell<bool>,
-}
-
-impl FunctionPass for MustNotRun<'_> {
-    fn name(&self) -> &'static str {
-        "must-not-run"
-    }
-
-    fn run(&mut self, _editor: &mut FunctionEditor<'_>) -> Result<(), PassError> {
-        self.ran.set(true);
-        Ok(())
-    }
-}
-
-#[test]
-fn failing_pass_stops_pipeline_and_emits_complete_bundle() {
-    let sources = SourceContext::new();
-    let mut program = CoreProgram::new();
-    let function = program
-        .declare_function(Some("failure"), vec![], vec![], UNKNOWN)
-        .unwrap();
-    let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
-    let entry = builder.entry_block();
-    builder
-        .terminate(Terminator::new(TerminatorKind::Return(vec![]), UNKNOWN))
-        .unwrap();
-    program
-        .define_function(function, builder.finish().unwrap())
-        .unwrap();
-
-    let ran = Cell::new(false);
-    let mut failing = FailingPass { entry };
-    let mut later = MustNotRun { ran: &ran };
-    let bundle = PassRunner::new(true)
-        .run(
-            &mut program,
-            &sources,
-            function,
-            &mut [&mut failing, &mut later],
-        )
-        .unwrap_err();
-
-    assert_eq!(bundle.pass, "fail-after-valid-edit");
-    assert_eq!(
-        bundle.pipeline,
-        vec!["fail-after-valid-edit", "must-not-run"]
-    );
-    assert_eq!(
-        bundle.pass_error.as_ref().unwrap().message(),
-        "deliberate failure"
-    );
-    assert!(bundle.before.as_ref().unwrap().contains("Return"));
-    assert!(bundle.after.contains("Unreachable"));
-    assert!(!ran.get());
 }
 
 #[test]

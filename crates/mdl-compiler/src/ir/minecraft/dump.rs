@@ -1,8 +1,9 @@
 use std::fmt;
 
 use super::{
-    CommandKind, CommandNode, DataCommand, DataSource, ExecuteModifierKind, FunctionTagEntry,
-    FunctionTagEntryKind, InternalCallableRef, MinecraftProgram, ReturnCommand, ScoreCommand,
+    CommandKind, CommandNode, Condition, DataCommand, DataSource, ExecuteModifierKind,
+    FunctionTagEntry, FunctionTagEntryKind, InternalCallableRef, MinecraftProgram, ReturnCommand,
+    ScoreCommand,
 };
 
 /// Deterministic diagnostics-only text for valid or malformed Minecraft IR.
@@ -162,11 +163,27 @@ fn write_modifier(modifier: &ExecuteModifierKind, output: &mut impl fmt::Write) 
         ExecuteModifierKind::As(selector) => write!(output, "as {selector:?}"),
         ExecuteModifierKind::At(selector) => write!(output, "at {selector:?}"),
         ExecuteModifierKind::In(dimension) => write!(output, "in {dimension}"),
-        ExecuteModifierKind::If(condition) => write!(output, "if {condition:?}"),
-        ExecuteModifierKind::Unless(condition) => write!(output, "unless {condition:?}"),
+        ExecuteModifierKind::If(condition) => {
+            output.write_str("if ")?;
+            write_condition(condition, output)
+        }
+        ExecuteModifierKind::Unless(condition) => {
+            output.write_str("unless ")?;
+            write_condition(condition, output)
+        }
         ExecuteModifierKind::Store(channel, destination) => {
             write!(output, "store {channel:?} {destination:?}")
         }
+    }
+}
+
+fn write_condition(condition: &Condition, output: &mut impl fmt::Write) -> fmt::Result {
+    match condition {
+        Condition::ScoreMatches(_, _)
+        | Condition::ScoreCompare(_, _, _)
+        | Condition::DataExists(_)
+        | Condition::EntityExists(_)
+        | Condition::Function(_) => write!(output, "{condition:?}"),
     }
 }
 
@@ -210,7 +227,9 @@ mod tests {
     use super::MinecraftDebugDumper;
     use crate::entity::EntityId;
     use crate::ir::minecraft::{
-        CallableRef, CommandKind, CommandNode, FunctionCall, InternalCallableRef, McFunctionId,
+        CallableRef, CommandKind, CommandNode, Condition, ExecuteCommand, ExecuteModifier,
+        ExecuteModifierKind, ExecuteModifiers, FunctionCall, InternalCallableRef, McFunctionId,
+        ReturnCommand,
     };
     use crate::source::OriginId;
 
@@ -241,6 +260,37 @@ mod tests {
         assert_eq!(
             MinecraftDebugDumper::command(&command),
             "origin=OriginId(0) raw.unknown \"say marker\"\n"
+        );
+    }
+
+    #[test]
+    fn internal_function_condition_dumps_typed_identity_exactly() {
+        let function = <McFunctionId as EntityId>::from_index(900);
+        let modifier = ExecuteModifier::new(
+            ExecuteModifierKind::If(Condition::Function(function)),
+            OriginId::UNKNOWN,
+        );
+        let command = CommandNode::new(
+            CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(modifier, vec![]),
+                CommandNode::new(
+                    CommandKind::Return(ReturnCommand::Value(1)),
+                    OriginId::UNKNOWN,
+                )
+                .unwrap(),
+            )),
+            OriginId::UNKNOWN,
+        )
+        .unwrap();
+
+        assert_eq!(
+            MinecraftDebugDumper::command(&command),
+            concat!(
+                "origin=OriginId(0) execute\n",
+                "  modifier 0 origin=OriginId(0) if Function(McFunctionId(900))\n",
+                "  run\n",
+                "    origin=OriginId(0) return.value 1\n",
+            )
         );
     }
 

@@ -167,6 +167,10 @@ Exit criteria:
 
 ## Stage 4: First vertical slice
 
+Status: **Complete for the first vertical slice.** See
+[`stage-4-first-lowering-plan.md`](stage-4-first-lowering-plan.md) and
+[`stage-4-todo.md`](stage-4-todo.md).
+
 Construct programs directly with the Rust IR builder and compile them all the way to
 Minecraft.
 
@@ -176,69 +180,132 @@ The intentionally small feature set is:
 Int
 Bool
 constants
-scoreboard-backed mutable state
 comparison
 function call
 if/else
 return
-raw command
+block parameters / loops
 ```
 
-At least one test must reproduce the condition-mutation trap from the branch
-research and prove that the safe dispatcher runs exactly one arm.
-
-The same semantic branch should be lowerable through explicitly selected policies:
-
-```text
-return dispatcher
-snapshotted Boolean
-dual guards when stability is proven
-```
+This list follows the Core vocabulary that actually exists at the Stage 3 handoff.
+Scoreboard-backed source mutation and raw commands need a target-neutral
+effect/import design; Stage 4 must not add Minecraft syntax to Core to satisfy an
+obsolete checklist. The existing target-level condition-mutation fixture remains
+the proof for using the single safe return-dispatch lowering.
 
 Exit criteria:
 
 - one nontrivial CFG compiles and executes correctly on vanilla 26.2;
-- alternative legal lowerings produce equivalent observable results;
-- invalid unsafe dual evaluation is rejected or not selected;
+- the fixed-slot ABI is explicitly single-context and non-reentrant;
+- the public contract states that runtime-dependent Stage 4 loops remain the
+  caller's responsibility to keep within target command limits until Stage 9;
+- recursive calls and entry-reachable unsupported terminators are rejected before
+  target construction;
 - the compiler can dump every IR level and the final generated datapack;
 - failures preserve the disposable test world and logs when requested.
 
 This is the first real compiler milestone. It deliberately has no user-facing source
 language yet.
 
+The completed path verifies Core, audits reachable legality and recursion, freezes a
+deterministic physical plan, constructs and verifies Stage 3, exposes a typed
+read-only ABI map, emits an exact datapack/trace, and runs that Core-built artifact on
+the official vanilla 26.2 server. The baseline uses fixed global call/result slots,
+resolved simultaneous edge copies, a mandatory return dispatcher, and a
+single-context non-reentrant execution contract. Finite CFG loops work in one tick;
+partitioning work across ticks remains Stage 9.
+
 ## Stage 5: Baseline optimization and cost instrumentation
 
-Add conventional, auditable optimizations before advanced search techniques:
+Status: **Reviewed revision 11; Stages 5A–5F are implemented and gated; Stage 5G is
+next.** See
+[`stage-5-baseline-optimization-plan.md`](stage-5-baseline-optimization-plan.md) and
+[`stage-5-todo.md`](stage-5-todo.md).
 
-1. constant folding and propagation;
-2. unreachable-block elimination;
-3. dead-instruction elimination using effects;
-4. Boolean and branch simplification;
-5. straight-line block fusion;
-6. condition stability analysis;
-7. phi/block-argument coalescing;
-8. local common-subexpression elimination for pure operations;
-9. small-function inlining and cold outlining;
-10. Minecraft lowering selection.
+Add conventional, auditable optimizations before advanced search techniques. The
+closed baseline Core pipeline implements items 1–5, Stage 5F implements physical
+storage item 6, and Stage 5A implements accounting item 10; items 7–9 remain:
 
-Each pass should have verification before/after in debug and test configurations,
-standalone snapshots, and semantic integration tests.
+1. cheap closed Core canonicalization;
+2. sparse conditional constant propagation and branch folding;
+3. unreachable-block and dead-pure-instruction elimination;
+4. straight-line Core block fusion;
+5. local dominance-scoped common-subexpression elimination;
+6. dead physical-home pruning and conservative block-argument coalescing;
+7. physical condition-stability analysis;
+8. narrow target block placement and control recipes;
+9. costed Minecraft lowering selection with the Stage 4 dispatcher as fallback; and
+10. exact footprint, exact command-step/local-path cost, conservative per-root bound,
+    and empirical measurement reports.
 
-Cost instrumentation records multiple dimensions rather than only line count:
+Core optimization has an owned boundary: it consumes a `CoreProgram` and returns
+only a verified optimized program plus its report. A closed compiler-internal pass
+algebra replaces public pass injection; callers choose a level rather than constructing
+a pipeline. Batch editing prepares one atomic fact set, performs each required
+ownership/closure/dominance validation once, and commits with one application scan;
+it never falls back to repeated scalar edits. Effects, speculation, structural result
+equivalence, and operand symmetry are separate exhaustive Core questions, while
+expression keys remain optimizer-owned. Each pass has a reviewed
+algorithm/proof plan in [`stage-5-passes/`](stage-5-passes/README.md).
 
-- command contexts and execute stages;
-- function invocations;
-- selector forks and cardinality bounds;
-- scoreboard and NBT operations;
-- macro invocations and argument locality;
-- generated functions, lines, bytes, and reload time;
-- measured tick/wall time where the harness can obtain reliable samples.
+Minecraft planning proceeds one way through private immutable semantic inventory,
+runtime demand, Baseline sparse liveness, home/instruction assignment, edge-transfer,
+and resource results. (`None` bypasses liveness and preserves the Stage 4 assignment.)
+Each phase borrows explicit prerequisites and the final plan consumes and independently
+verifies compatible parts. Stage 5G adds physical effects, recipes, and placement only
+when those facts have a consumer. Recipes never feed back into Stage 5 coalescing. This
+is ordinary Rust dataflow, not a public physical IR or generic typestate framework.
+Physical homes remain typed and only same-type block-argument copies are coalesced; a
+separate symbolic home-content dataflow checker verifies the frozen assignment without
+trusting chooser demand or liveness.
+
+Every optional analysis has a typed completion state and conservative fallback:
+incomplete SCCP applies nothing, incomplete liveness uses distinct homes, incomplete
+stability rejects dependent recipes, and incomplete cost bounds become unknown.
+Required verification and construction never degrade to best effort.
+
+Every pipeline verifies input and final output. Tests/CI and debug builds verify after
+each pass; optimized compiler builds may use boundary verification, with an internal
+verify-all override and scale benchmarks. Validity checking is instrumentation, not
+an optimization level.
+
+Cost instrumentation keeps three cost-evidence domains separate:
+
+- exact post-emission artifact footprint, including files, physical lines, bytes, and
+  trace records;
+- exact per-generated-function local work plus finite, cap-exceeding,
+  no-finite-bound-proven, or unknown summaries for every supported external entry,
+  including execute stages, function calls, selector forks, and scoreboard/NBT
+  command executions; and
+- target/JVM/fixture-specific tick, wall-time, and reload measurements.
+
+Target execution cost is an explicit read-only analysis over verified Stage 3, not a
+mandatory lowering phase. A cost-analysis failure cannot discard an otherwise valid
+`LoweringOutput`; the Stage 6 façade will invoke and aggregate it once.
+
+Ordinary reports contain bounded aggregate statistics and the complete chosen
+lowering. Per-rewrite and rejected-candidate remarks are filtered, capped, and
+opt-in, so diagnostics cannot dwarf a large input.
+
+Stage 5 accepts typed assumed `max_command_sequence_length` and `max_command_forks`
+values for compatibility assessment, defaulting to the selected target. It reports
+but never mutates the server gamerules. Java 26.2 accepts configured values from zero
+through `2_147_483_647`; sequence zero has an effective quota of one, while fork zero
+requires special treatment for checked redirects. An override is a deployment
+precondition: lower actual values invalidate a retained `ProvenWithin` result. Soft
+per-tick budgets and work partitioning remain Stage 9.
+
+Small-function inlining, specialization, cold outlining, region duplication, and
+profile-guided layout remain Stage 11. Stage 5 first builds the cost and decision
+records needed to implement those transformations without a definition-size guess.
 
 Exit criteria:
 
 - the compiler can explain why it chose a branch lowering;
 - optimization preserves differential test results;
 - command-limit estimates are checked against boundary tests;
+- the byte-stable Stage 4 lowering remains available as a correctness oracle;
+- scale tests reject dense quadratic liveness/interference representations; and
 - no wall-time coefficient is treated as authoritative without repeatable evidence.
 
 ## Stage 6: Minimal typed source language
@@ -377,12 +444,14 @@ Once semantics, effects, representations, and measurements are credible, add mor
 aggressive search:
 
 - costed trace and basic-block layout;
+- call-site inlining with bounded speculative cleanup;
+- function specialization and cold outlining;
+- region duplication under explicit growth budgets;
 - representation selection across regions;
 - loop specialization and bulk-operation recognition;
 - context-prefix fusion;
 - linear, balanced, and macro dispatch selection;
 - profile-guided hot/cold decisions;
-- interprocedural specialization;
 - equality saturation/e-graphs for pure, bounded rewrite domains.
 
 E-graphs should initially operate on regions where equivalence and effects are easy
@@ -419,18 +488,17 @@ installation.
 
 ## Immediate implementation tranche
 
-The next engineering tranche is Stages 1 through 4:
+Stages 1 through 4 have completed the first vertical slice. Stage 5A accounting, the
+Stage 5B–5D Core pipeline, the Stage 5E immutable physical planner, and Stage 5F sparse
+liveness/coalescing are also complete. The remaining engineering tranche is:
 
 ```text
-workspace + server harness
-        -> verified SSA substrate
-        -> Minecraft IR and emitter
-        -> one real end-to-end branch program
+target recipes + measured completion gates
 ```
 
-We should resist expanding the surface language until this path is reliable. Once it
-exists, every backend research result can become an alternative lowering plus a
-real-server regression test.
+The Stage 4 lowering remains the byte-stable differential oracle throughout this
+tranche. Stage 6 should not expand the surface language until the optimized path is
+auditable, bounded in compiler resource use, and covered by real-server regressions.
 
 ## Cross-cutting rules
 

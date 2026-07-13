@@ -18,6 +18,7 @@ fn public_stage3_api_expresses_stage4_branch_and_call_handoffs_exactly() {
     let dispatcher = declare(&mut builder, "mdl:dispatcher");
     let ordinary = declare(&mut builder, "mdl:ordinary");
     let tail = declare(&mut builder, "mdl:tail");
+    let function_condition = declare(&mut builder, "mdl:function_condition");
 
     define(&mut builder, when_true, vec![raw("say TRUE")]);
     define(&mut builder, when_false, vec![raw("say FALSE")]);
@@ -53,6 +54,15 @@ fn public_stage3_api_expresses_stage4_branch_and_call_handoffs_exactly() {
             when_true,
         ))))],
     );
+    define(
+        &mut builder,
+        function_condition,
+        vec![execute_with_condition(
+            true,
+            Condition::Function(when_true),
+            call(when_false),
+        )],
+    );
 
     let program = builder.finish().unwrap();
     let output = emit_datapack(
@@ -61,7 +71,7 @@ fn public_stage3_api_expresses_stage4_branch_and_call_handoffs_exactly() {
         &EmissionOptions::new("Stage 4 handoff"),
     )
     .unwrap();
-    assert_eq!(output.pack().files().len(), 8);
+    assert_eq!(output.pack().files().len(), 9);
     assert_function(
         &output,
         "gate",
@@ -85,6 +95,11 @@ fn public_stage3_api_expresses_stage4_branch_and_call_handoffs_exactly() {
     );
     assert_function(&output, "ordinary", "function mdl:true\nsay RESUMED\n");
     assert_function(&output, "tail", "return run function mdl:true\n");
+    assert_function(
+        &output,
+        "function_condition",
+        "execute if function mdl:true run function mdl:false\n",
+    );
 }
 
 fn declare(builder: &mut MinecraftProgramBuilder, resource: &str) -> McFunctionId {
@@ -129,10 +144,14 @@ fn guarded_call(positive: bool, function: McFunctionId) -> CommandNode {
 }
 
 fn execute(positive: bool, run: CommandNode) -> CommandNode {
+    execute_with_condition(positive, condition(), run)
+}
+
+fn execute_with_condition(positive: bool, condition: Condition, run: CommandNode) -> CommandNode {
     let modifier = if positive {
-        ExecuteModifierKind::If(condition())
+        ExecuteModifierKind::If(condition)
     } else {
-        ExecuteModifierKind::Unless(condition())
+        ExecuteModifierKind::Unless(condition)
     };
     node(CommandKind::Execute(ExecuteCommand::new(
         ExecuteModifiers::new(ExecuteModifier::new(modifier, OriginId::UNKNOWN), vec![]),

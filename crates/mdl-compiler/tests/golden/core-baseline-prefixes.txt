@@ -1,0 +1,54 @@
+=== canonicalize.initial ===
+func @fn0(%v0: i32) -> (i32) // baseline_snapshot {
+^bb0:
+  %v4 = core.i32.constant 0
+  %v6 = core.bool.constant true
+  jump ^bb1(%v6, %v0)
+^bb1(%v1: bool, %v2: i32):
+  branch %v1, ^bb2, ^bb3
+^bb2():
+  %v7 = core.i32.constant 1
+  %v8 = core.i32.add.wrapping %v2, %v7
+  %v9 = core.i32.add.wrapping %v2, %v2
+  %v10 = core.i32.add.wrapping %v2, %v2
+  %v11 = core.i32.add.wrapping %v9, %v10
+  jump ^bb4(%v11)
+^bb3():
+  %v12 = core.i32.constant -1
+  jump ^bb4(%v12)
+^bb4(%v3: i32):
+  return %v3
+}
+=== sccp ===
+func @fn0(%v0: i32) -> (i32) // baseline_snapshot {
+^bb0:
+  %v4 = core.i32.constant 0
+  %v6 = core.bool.constant true
+  jump ^bb1(%v6, %v0)
+^bb1(%v1: bool, %v2: i32):
+  jump ^bb2
+^bb2():
+  %v7 = core.i32.constant 1
+  %v8 = core.i32.add.wrapping %v2, %v7
+  %v9 = core.i32.add.wrapping %v2, %v2
+  %v10 = core.i32.add.wrapping %v2, %v2
+  %v11 = core.i32.add.wrapping %v9, %v10
+  jump ^bb4(%v11)
+^bb4(%v3: i32):
+  return %v3
+}
+=== dce.after-sccp ===
+func @fn0(%v0: i32) -> (i32) // baseline_snapshot {
+^bb0:
+  %v6 = core.bool.constant true
+  jump ^bb1(%v6, %v0)
+^bb1(%v1: bool, %v2: i32):
+  jump ^bb2
+^bb2():
+  %v9 = core.i32.add.wrapping %v2, %v2
+  %v10 = core.i32.add.wrapping %v2, %v2
+  %v11 = core.i32.add.wrapping %v9, %v10
+  jump ^bb4(%v11)
+^bb4(%v3: i32):
+  return %v3
+}

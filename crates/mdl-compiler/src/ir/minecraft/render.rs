@@ -139,7 +139,7 @@ fn render_command(
             sink.push_checked("execute")?;
             for modifier in command.modifiers().as_slice() {
                 sink.push_checked(" ")?;
-                render_modifier(modifier.kind(), sink)?;
+                render_modifier(program, modifier.kind(), sink)?;
             }
             sink.push_checked(" run ")?;
             render_command(program, command.run(), sink)
@@ -290,6 +290,7 @@ fn render_nbt(value: &NbtValue, sink: &mut CommandSink) -> Result<(), RenderErro
 }
 
 fn render_modifier(
+    program: &MinecraftProgram,
     modifier: &ExecuteModifierKind,
     sink: &mut CommandSink,
 ) -> Result<(), RenderError> {
@@ -299,11 +300,11 @@ fn render_modifier(
         ExecuteModifierKind::In(dimension) => sink.write_arguments(format_args!("in {dimension}")),
         ExecuteModifierKind::If(condition) => {
             sink.push_checked("if ")?;
-            render_condition(condition, sink)
+            render_condition(program, condition, sink)
         }
         ExecuteModifierKind::Unless(condition) => {
             sink.push_checked("unless ")?;
-            render_condition(condition, sink)
+            render_condition(program, condition, sink)
         }
         ExecuteModifierKind::Store(channel, destination) => {
             sink.write_arguments(format_args!("store {} ", store_channel_token(*channel)))?;
@@ -312,7 +313,11 @@ fn render_modifier(
     }
 }
 
-fn render_condition(condition: &Condition, sink: &mut CommandSink) -> Result<(), RenderError> {
+fn render_condition(
+    program: &MinecraftProgram,
+    condition: &Condition,
+    sink: &mut CommandSink,
+) -> Result<(), RenderError> {
     match condition {
         Condition::ScoreMatches(score, range) => {
             sink.push_checked("score ")?;
@@ -331,6 +336,10 @@ fn render_condition(condition: &Condition, sink: &mut CommandSink) -> Result<(),
         }
         Condition::EntityExists(selector) => {
             sink.write_arguments(format_args!("entity {selector}"))
+        }
+        Condition::Function(function) => {
+            sink.push_checked("function ")?;
+            render_internal_callable(program, InternalCallableRef::Function(*function), sink)
         }
     }
 }
@@ -391,24 +400,34 @@ fn render_callable(
     sink: &mut CommandSink,
 ) -> Result<(), RenderError> {
     match target {
-        CallableRef::Internal(InternalCallableRef::Function(function)) => {
-            let resource = program
-                .function(*function)
-                .ok_or(RenderError::InvalidInternalFunction(*function))?
-                .resource();
-            sink.write_arguments(format_args!("{resource}"))
-        }
-        CallableRef::Internal(InternalCallableRef::Tag(tag)) => {
-            let resource = program
-                .function_tag(*tag)
-                .ok_or(RenderError::InvalidInternalTag(*tag))?
-                .resource();
-            sink.write_arguments(format_args!("#{resource}"))
-        }
+        CallableRef::Internal(target) => render_internal_callable(program, *target, sink),
         CallableRef::External(ExternalCallableRef::Function(resource)) => {
             sink.write_arguments(format_args!("{resource}"))
         }
         CallableRef::External(ExternalCallableRef::Tag(resource)) => {
+            sink.write_arguments(format_args!("#{resource}"))
+        }
+    }
+}
+
+fn render_internal_callable(
+    program: &MinecraftProgram,
+    target: InternalCallableRef,
+    sink: &mut CommandSink,
+) -> Result<(), RenderError> {
+    match target {
+        InternalCallableRef::Function(function) => {
+            let resource = program
+                .function(function)
+                .ok_or(RenderError::InvalidInternalFunction(function))?
+                .resource();
+            sink.write_arguments(format_args!("{resource}"))
+        }
+        InternalCallableRef::Tag(tag) => {
+            let resource = program
+                .function_tag(tag)
+                .ok_or(RenderError::InvalidInternalTag(tag))?
+                .resource();
             sink.write_arguments(format_args!("#{resource}"))
         }
     }
@@ -585,6 +604,49 @@ mod tests {
                 "execute as @e if score #a mdl.reg matches 1..3 unless score #a mdl.reg >= #b mdl.reg store success storage mdl:state \"ok\" byte 1 run function other:run\n",
                 "return run scoreboard players get #a mdl.reg\n"
             )
+        );
+    }
+
+    #[test]
+    fn internal_function_condition_resolves_a_forward_reference_exactly() {
+        let mut builder = MinecraftProgramBuilder::new(JavaEditionTarget::V26_2);
+        let caller = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:caller").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let target = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:target").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        {
+            let condition = ExecuteModifier::new(
+                ExecuteModifierKind::If(Condition::Function(target)),
+                OriginId::UNKNOWN,
+            );
+            let execute = node(CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(condition, vec![]),
+                node(CommandKind::Return(ReturnCommand::Value(7))),
+            )));
+            let mut body = builder.begin_function(caller).unwrap();
+            body.push(execute).unwrap();
+            body.finish();
+        }
+        {
+            let mut body = builder.begin_function(target).unwrap();
+            body.push(node(CommandKind::Return(ReturnCommand::Value(1))))
+                .unwrap();
+            body.finish();
+        }
+
+        let program = builder.finish().unwrap();
+        let bytes = render_function(&program, program.function(caller).unwrap()).unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "execute if function mdl:target run return 7\n"
         );
     }
 }

@@ -1,0 +1,135 @@
+lowering-report V26_2 mdl mdl.reg homes=36 target-functions=17
+execution activation=SingleContextNonReentrant command-limits=CallerBoundedToTarget { max_command_sequence_length: 65536, max_command_forks: 65536 }
+pack-abi load=0 init-try-create=1 sentinel=StoragePath { storage: StorageId(ResourceLocation { namespace: Namespace("mdl"), path: ResourcePath("__mdl/init/v0/6d646c2e726567") }), path: NbtPath { segments: [Key(NbtPathKey(NbtKey("initialized")))] } }
+home 0 #f0v0 Value { function: FunctionId(0), value: ValueId(0), ty: Bool }
+home 1 #f0v1 Value { function: FunctionId(0), value: ValueId(1), ty: I32 }
+home 2 #f0v2 Value { function: FunctionId(0), value: ValueId(2), ty: I32 }
+home 3 #f0v3 Value { function: FunctionId(0), value: ValueId(3), ty: I32 }
+home 4 #f0r0 Result { function: FunctionId(0), result_index: 0, ty: I32 }
+home 5 #f1v0 Value { function: FunctionId(1), value: ValueId(0), ty: Bool }
+home 6 #f1v1 Value { function: FunctionId(1), value: ValueId(1), ty: I32 }
+home 7 #f1v2 Value { function: FunctionId(1), value: ValueId(2), ty: I32 }
+home 8 #f1v3 Value { function: FunctionId(1), value: ValueId(3), ty: I32 }
+home 9 #f1r0 Result { function: FunctionId(1), result_index: 0, ty: I32 }
+home 10 #f2v0 Value { function: FunctionId(2), value: ValueId(0), ty: I32 }
+home 11 #f2v1 Value { function: FunctionId(2), value: ValueId(1), ty: I32 }
+home 12 #f2v2 Value { function: FunctionId(2), value: ValueId(2), ty: I32 }
+home 13 #f2v3 Value { function: FunctionId(2), value: ValueId(3), ty: I32 }
+home 14 #f2v5 Value { function: FunctionId(2), value: ValueId(5), ty: I32 }
+home 15 #f2v6 Value { function: FunctionId(2), value: ValueId(6), ty: Bool }
+home 16 #f2v7 Value { function: FunctionId(2), value: ValueId(7), ty: I32 }
+home 17 #f2v8 Value { function: FunctionId(2), value: ValueId(8), ty: I32 }
+home 18 #f2v9 Value { function: FunctionId(2), value: ValueId(9), ty: I32 }
+home 19 #f2v4 Value { function: FunctionId(2), value: ValueId(4), ty: I32 }
+home 20 #f2r0 Result { function: FunctionId(2), result_index: 0, ty: I32 }
+home 21 #f3v0 Value { function: FunctionId(3), value: ValueId(0), ty: I32 }
+home 22 #f3v1 Value { function: FunctionId(3), value: ValueId(1), ty: I32 }
+home 23 #f3v2 Value { function: FunctionId(3), value: ValueId(2), ty: I32 }
+home 24 #f3v3 Value { function: FunctionId(3), value: ValueId(3), ty: I32 }
+home 25 #f3v4 Value { function: FunctionId(3), value: ValueId(4), ty: I32 }
+home 26 #f3v5 Value { function: FunctionId(3), value: ValueId(5), ty: I32 }
+home 27 #f3v8 Value { function: FunctionId(3), value: ValueId(8), ty: I32 }
+home 28 #f3v9 Value { function: FunctionId(3), value: ValueId(9), ty: Bool }
+home 29 #f3v10 Value { function: FunctionId(3), value: ValueId(10), ty: I32 }
+home 30 #f3v11 Value { function: FunctionId(3), value: ValueId(11), ty: I32 }
+home 31 #f3v6 Value { function: FunctionId(3), value: ValueId(6), ty: I32 }
+home 32 #f3v7 Value { function: FunctionId(3), value: ValueId(7), ty: I32 }
+home 33 #f3r0 Result { function: FunctionId(3), result_index: 0, ty: I32 }
+home 34 #f3r1 Result { function: FunctionId(3), result_index: 1, ty: I32 }
+home 35 #f3t0 EdgeTemporary { function: FunctionId(3) }
+target-function 0 mdl:__mdl/load Load OriginId(0)
+target-function 1 mdl:__mdl/init/try_create InitTryCreate OriginId(0)
+target-function 2 mdl:__mdl/f0/b0 Block { function: FunctionId(0), block: BlockId(0) } OriginId(0)
+target-function 3 mdl:__mdl/f0/b1 Block { function: FunctionId(0), block: BlockId(1) } OriginId(0)
+target-function 4 mdl:__mdl/f0/b2 Block { function: FunctionId(0), block: BlockId(2) } OriginId(0)
+target-function 5 mdl:__mdl/f0/b3 Block { function: FunctionId(0), block: BlockId(3) } OriginId(0)
+target-function 6 mdl:__mdl/f1/b0 Block { function: FunctionId(1), block: BlockId(0) } OriginId(0)
+target-function 7 mdl:__mdl/f2/b0 Block { function: FunctionId(2), block: BlockId(0) } OriginId(0)
+target-function 8 mdl:__mdl/f2/b1 Block { function: FunctionId(2), block: BlockId(1) } OriginId(0)
+target-function 9 mdl:__mdl/f2/b2 Block { function: FunctionId(2), block: BlockId(2) } OriginId(0)
+target-function 10 mdl:__mdl/f2/b3 Block { function: FunctionId(2), block: BlockId(3) } OriginId(0)
+target-function 11 mdl:__mdl/f2/e1_0 BranchHelper { function: FunctionId(2), edge: BranchEdge { source: BlockId(1), arm: Then } } OriginId(0)
+target-function 12 mdl:__mdl/f3/b0 Block { function: FunctionId(3), block: BlockId(0) } OriginId(0)
+target-function 13 mdl:__mdl/f3/b1 Block { function: FunctionId(3), block: BlockId(1) } OriginId(0)
+target-function 14 mdl:__mdl/f3/b2 Block { function: FunctionId(3), block: BlockId(2) } OriginId(0)
+target-function 15 mdl:__mdl/f3/b3 Block { function: FunctionId(3), block: BlockId(3) } OriginId(0)
+target-function 16 mdl:__mdl/f3/e1_0 BranchHelper { function: FunctionId(3), edge: BranchEdge { source: BlockId(1), arm: Then } } OriginId(0)
+function 0 name=Some("choose") params=[(Bool, HomeId(0), FakeScoreHolder(ScoreWord("f0v0"))), (I32, HomeId(1), FakeScoreHolder(ScoreWord("f0v1"))), (I32, HomeId(2), FakeScoreHolder(ScoreWord("f0v2")))] results=[(I32, HomeId(4), FakeScoreHolder(ScoreWord("f0r0")))]
+  abi entry=0 resource=mdl:__mdl/f0/b0 temp=None
+  block 0 -> 2 mdl:__mdl/f0/b0
+  block 1 -> 3 mdl:__mdl/f0/b1
+  block 2 -> 4 mdl:__mdl/f0/b2
+  block 3 -> 5 mdl:__mdl/f0/b3
+  value 0 -> 0
+  value 1 -> 1
+  value 2 -> 2
+  value 3 -> 3
+  edge 0 then helper=None
+  edge 0 else helper=None
+  edge 1 jump
+    move 3 <- 1
+  edge 2 jump
+    move 3 <- 2
+function 1 name=Some("call_choose") params=[(Bool, HomeId(5), FakeScoreHolder(ScoreWord("f1v0"))), (I32, HomeId(6), FakeScoreHolder(ScoreWord("f1v1"))), (I32, HomeId(7), FakeScoreHolder(ScoreWord("f1v2")))] results=[(I32, HomeId(9), FakeScoreHolder(ScoreWord("f1r0")))]
+  abi entry=0 resource=mdl:__mdl/f1/b0 temp=None
+  block 0 -> 6 mdl:__mdl/f1/b0
+  value 0 -> 5
+  value 1 -> 6
+  value 2 -> 7
+  value 3 -> 8
+function 2 name=Some("sum_down") params=[(I32, HomeId(10), FakeScoreHolder(ScoreWord("f2v0"))), (I32, HomeId(11), FakeScoreHolder(ScoreWord("f2v1")))] results=[(I32, HomeId(20), FakeScoreHolder(ScoreWord("f2r0")))]
+  abi entry=0 resource=mdl:__mdl/f2/b0 temp=None
+  block 0 -> 7 mdl:__mdl/f2/b0
+  block 1 -> 8 mdl:__mdl/f2/b1
+  block 2 -> 9 mdl:__mdl/f2/b2
+  block 3 -> 10 mdl:__mdl/f2/b3
+  value 0 -> 10
+  value 1 -> 11
+  value 2 -> 12
+  value 3 -> 13
+  value 4 -> 19
+  value 5 -> 14
+  value 6 -> 15
+  value 7 -> 16
+  value 8 -> 17
+  value 9 -> 18
+  edge 0 jump
+    move 12 <- 10
+    move 13 <- 11
+  edge 1 then helper=Some(PlannedFunctionId(11))
+    move 19 <- 13
+  edge 1 else helper=None
+  edge 2 jump
+    move 12 <- 17
+    move 13 <- 18
+function 3 name=Some("countdown_swap") params=[(I32, HomeId(21), FakeScoreHolder(ScoreWord("f3v0"))), (I32, HomeId(22), FakeScoreHolder(ScoreWord("f3v1"))), (I32, HomeId(23), FakeScoreHolder(ScoreWord("f3v2")))] results=[(I32, HomeId(33), FakeScoreHolder(ScoreWord("f3r0"))), (I32, HomeId(34), FakeScoreHolder(ScoreWord("f3r1")))]
+  abi entry=0 resource=mdl:__mdl/f3/b0 temp=Some((HomeId(35), FakeScoreHolder(ScoreWord("f3t0"))))
+  block 0 -> 12 mdl:__mdl/f3/b0
+  block 1 -> 13 mdl:__mdl/f3/b1
+  block 2 -> 14 mdl:__mdl/f3/b2
+  block 3 -> 15 mdl:__mdl/f3/b3
+  value 0 -> 21
+  value 1 -> 22
+  value 2 -> 23
+  value 3 -> 24
+  value 4 -> 25
+  value 5 -> 26
+  value 6 -> 31
+  value 7 -> 32
+  value 8 -> 27
+  value 9 -> 28
+  value 10 -> 29
+  value 11 -> 30
+  edge 0 jump
+    move 24 <- 21
+    move 25 <- 22
+    move 26 <- 23
+  edge 1 then helper=Some(PlannedFunctionId(16))
+    move 31 <- 25
+    move 32 <- 26
+  edge 1 else helper=None
+  edge 2 jump
+    move 24 <- 30
+    move 35 <- 25
+    move 25 <- 26
+    move 26 <- 35

@@ -24,7 +24,7 @@ supported by Mojang's game-rule documentation.
 
 ## The sequence limit does not mean “lines in one file”
 
-Mojang defines sequence operations to include:
+Mojang defines sequence operations to include, in the ordinary case:
 
 - executing one command for one context;
 - executing a stage in an `execute` chain;
@@ -32,6 +32,14 @@ Mojang defines sequence operations to include:
 
 The limit follows the execution chain across nested function calls. A compact line
 can be expensive when it forks, while comments and unexecuted branches cost nothing.
+
+The official deobfuscated 26.2 server implementation has two custom-executor
+exceptions that matter to exact accounting. `return <value>` and `return fail` do
+not increment the sequence cost themselves. An `execute if/unless function` modifier
+is still an execute-stage metric, but the custom modifier does not increment sequence
+cost independently; each function invocation it queues still does. Ordinary execute
+modifiers increment once even when the current context list is already empty, while
+the final nested body runs once per surviving context (or not at all for zero).
 
 The separate fork limit bounds contexts created by commands such as `execute as`.
 For five matching entities, `as @e` creates five contexts, while `as @e at @e` can
@@ -124,15 +132,38 @@ With `max_command_forks` set to 4:
 - one combined `execute as` three stands `at` three stands, which would produce nine
   contexts, executed zero bodies.
 
+The final 26.2 server checks `accumulated_output_size + new_size >= fork_limit`.
+Therefore a chain expansion must be strictly less than the gamerule: a value of 4
+permits at most 3 output contexts at the checked redirect stage. An exact boundary
+fixture measured three contexts executing the body three times, while four and five
+contexts both rejected the redirect and executed the body zero times.
+
+Configured fork zero is accepted by 26.2. Direct non-redirect commands still execute;
+an `execute as` producing one context did not. Values zero and one were
+observationally identical for that one-context redirect, while value two allowed it.
+Bytecode inspection additionally shows that a checked redirect at zero compares even
+a zero-sized result against zero, so a compiler must retain whether a redirect check
+is reachable rather than assuming every numeric zero is safe.
+
+There is a target-specific exception: `execute if function` and `execute unless
+function` use a custom modifier path that returns before the generic `BuildContexts`
+fork guard. At both configured fork zero and one, a true function condition ran its
+body once while one-context `as`, `in`, `store result`, and an ordinary passing `if
+score` ran no bodies. The compiler must therefore distinguish ordinary fork-checked
+redirect expansion from custom function-condition context flow; “execute stage” alone
+is too broad to be the fork metric.
+
 Thus the relevant bound is the context expansion of an individual `execute` chain,
 not a total fork-token budget accumulated across all commands in a root. Scheduled
 roots still give independent command execution, but they are not needed merely to
 reset a cumulative fork counter because the observed counter is not cumulative in
 that way.
 
-For the compiler, every generated `execute` chain needs a proven or configured bound
-on the product of its fork-producing stages. Splitting one large fork into multiple
-bounded commands can fit the gamerule, but still consumes the combined runtime work.
+For the compiler, every generated ordinary fork-checked redirect needs a proven or
+configured bound on the product of its fork-producing stages. Custom function
+conditions still need outcome and sequence accounting, but do not add a generic fork
+check of their own. Splitting one large fork into multiple bounded commands can fit
+the gamerule, but still consumes the combined runtime work.
 
 ## Other mechanisms can stop or punish a huge tick
 
@@ -192,6 +223,23 @@ multi_completed = true
 Status: **Measured**. Scheduling the continuation in a later tick begins a new
 command sequence and can therefore continue work beyond the original sequence
 limit.
+
+## Exact sequence equality and configured zero
+
+With `max_command_sequence_length = 10`, a chain containing nine nonforking
+`execute in` stages plus its final scoreboard body completed all ten counted
+operations. Adding one more stage stopped before the body. The exact-ten run still
+logged the limit-stop message after its final state change, so tests must assert
+world state rather than interpreting that message alone as failure.
+
+The configured values zero and one behaved identically: one direct operation ran,
+but a two-operation chain stopped after the first operation. Invoking a function used
+that sole operation and its body did not run. Java 26.2 therefore executes with an
+effective sequence quota of `max(1, configured_value)`.
+
+These boundary fixtures used the extracted official 26.2 server JAR with SHA-256
+`183c0499c5f855570ee487dd38e141a53f0121f83a0b07a3bac2d8b6698823e8` and OpenJDK
+25.0.3, without a connected client.
 
 ## Compiler configuration: hard limits and soft budgets
 
@@ -384,9 +432,11 @@ assumption that supplied each cardinality.
 
 ## Remaining tests
 
-- exact boundary behavior at 0, 1, and 65,536;
-- nested function and `execute` stage accounting;
-- fork-limit boundary and partial execution behavior;
+- exact sequence boundary behavior at the default 65,536;
+- deeper nested function-result and `execute` stage accounting;
+- fork-zero command result, stored success/result, and `return run` behavior for a
+  zero-output redirect;
+- rejection of configured values above Java's signed-integer maximum;
 - multiple `append` schedules of the same function;
 - scheduled callback ordering within a tick;
 - persistence across reload and server restart;

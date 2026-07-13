@@ -1,6 +1,7 @@
 //! Checked deterministic datapack emission.
 
 mod emit;
+mod footprint;
 
 use std::num::NonZeroU64;
 
@@ -10,17 +11,19 @@ use crate::source::OriginId;
 use crate::target::JavaEditionTarget;
 
 pub use emit::{EmissionOptions, emit_datapack};
+pub use footprint::{ArtifactFileFootprint, ArtifactFileKind, ArtifactFootprintReport};
 
 /// One target-relative file in deterministic artifact order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackFile {
     path: PackPath,
     bytes: Vec<u8>,
+    kind: ArtifactFileKind,
 }
 
 impl PackFile {
-    pub(crate) const fn new(path: PackPath, bytes: Vec<u8>) -> Self {
-        Self { path, bytes }
+    pub(crate) const fn new(path: PackPath, bytes: Vec<u8>, kind: ArtifactFileKind) -> Self {
+        Self { path, bytes, kind }
     }
 
     /// Returns the normalized logical artifact path.
@@ -33,6 +36,10 @@ impl PackFile {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    pub(crate) const fn kind(&self) -> ArtifactFileKind {
+        self.kind
     }
 }
 
@@ -196,11 +203,17 @@ impl<'a> TraceRecord<'a> {
 pub struct EmissionOutput {
     pack: DatapackArtifact,
     trace: TraceMap,
+    footprint: ArtifactFootprintReport,
 }
 
 impl EmissionOutput {
-    pub(crate) const fn new(pack: DatapackArtifact, trace: TraceMap) -> Self {
-        Self { pack, trace }
+    pub(crate) fn new(pack: DatapackArtifact, trace: TraceMap) -> Self {
+        let footprint = ArtifactFootprintReport::new(&pack, &trace);
+        Self {
+            pack,
+            trace,
+            footprint,
+        }
     }
 
     /// Returns the deterministic in-memory datapack.
@@ -213,5 +226,11 @@ impl EmissionOutput {
     #[must_use]
     pub const fn trace(&self) -> &TraceMap {
         &self.trace
+    }
+
+    /// Returns exact cached metrics for the completed emitted artifact.
+    #[must_use]
+    pub const fn footprint(&self) -> &ArtifactFootprintReport {
+        &self.footprint
     }
 }

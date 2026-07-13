@@ -5,10 +5,10 @@ use crate::entity::EntityId;
 use crate::source::{OriginId, SourceContext};
 
 use super::{
-    CallableRef, CommandKind, CommandNode, DataCommand, DataSource, ExternalCallableRef,
-    FunctionTagEntryKind, FunctionTagId, FunctionTagMerge, FunctionTagResourceId,
-    InternalCallableRef, MAX_COMMAND_DEPTH, MAX_NBT_DEPTH, McFunctionId, MinecraftProgram,
-    NbtValue, NbtValueRef, PackPath, ReturnCommand, UnsafeRawCommand,
+    CallableRef, CommandKind, CommandNode, Condition, DataCommand, DataSource, ExecuteModifierKind,
+    ExternalCallableRef, FunctionTagEntryKind, FunctionTagId, FunctionTagMerge,
+    FunctionTagResourceId, InternalCallableRef, MAX_COMMAND_DEPTH, MAX_NBT_DEPTH, McFunctionId,
+    MinecraftProgram, NbtValue, NbtValueRef, PackPath, ReturnCommand, UnsafeRawCommand,
 };
 
 #[derive(Default)]
@@ -281,13 +281,32 @@ fn verify_command_references(
                 verify_external_alias(target, symbols, location, command.origin(), verifier);
             }
         },
-        CommandKind::Execute(execute) => verify_command_references(
-            execute.run(),
-            program,
-            symbols,
-            "nested execute command",
-            verifier,
-        ),
+        CommandKind::Execute(execute) => {
+            for (index, modifier) in execute.modifiers().as_slice().iter().enumerate() {
+                match modifier.kind() {
+                    ExecuteModifierKind::If(condition) | ExecuteModifierKind::Unless(condition) => {
+                        verify_condition_references(
+                            condition,
+                            program,
+                            &format!("{location} execute modifier {index}"),
+                            modifier.origin(),
+                            verifier,
+                        );
+                    }
+                    ExecuteModifierKind::As(_)
+                    | ExecuteModifierKind::At(_)
+                    | ExecuteModifierKind::In(_)
+                    | ExecuteModifierKind::Store(_, _) => {}
+                }
+            }
+            verify_command_references(
+                execute.run(),
+                program,
+                symbols,
+                "nested execute command",
+                verifier,
+            );
+        }
         CommandKind::Return(ReturnCommand::Run(nested)) => verify_command_references(
             nested,
             program,
@@ -299,6 +318,28 @@ fn verify_command_references(
         | CommandKind::Data(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Raw(_) => {}
+    }
+}
+
+fn verify_condition_references(
+    condition: &Condition,
+    program: &MinecraftProgram,
+    location: &str,
+    origin: OriginId,
+    verifier: &mut Verifier,
+) {
+    match condition {
+        Condition::Function(function) => verify_internal_callable(
+            InternalCallableRef::Function(*function),
+            program,
+            location,
+            origin,
+            verifier,
+        ),
+        Condition::ScoreMatches(_, _)
+        | Condition::ScoreCompare(_, _, _)
+        | Condition::DataExists(_)
+        | Condition::EntityExists(_) => {}
     }
 }
 
@@ -525,10 +566,11 @@ fn verify_origin(
 mod tests {
     use crate::entity::{EntityId, EntityVec};
     use crate::ir::minecraft::{
-        CallableRef, CommandKind, CommandNode, ExecuteCommand, ExecuteModifiers, FunctionBody,
-        FunctionCall, FunctionResourceId, FunctionTag, FunctionTagEntry, FunctionTagMerge,
-        FunctionTagResourceId, InternalCallableRef, McFunction, McFunctionId, MinecraftProgram,
-        MinecraftProgramBuilder, RawCommandError, UnsafeRawCommand,
+        CallableRef, CommandKind, CommandNode, Condition, ExecuteCommand, ExecuteModifier,
+        ExecuteModifierKind, ExecuteModifiers, FunctionBody, FunctionCall, FunctionResourceId,
+        FunctionTag, FunctionTagEntry, FunctionTagMerge, FunctionTagResourceId,
+        InternalCallableRef, McFunction, McFunctionId, MinecraftProgram, MinecraftProgramBuilder,
+        RawCommandError, ReturnCommand, UnsafeRawCommand,
     };
     use crate::source::{OriginId, SourceContext};
     use crate::target::JavaEditionTarget;
@@ -605,6 +647,31 @@ mod tests {
             OriginId::UNKNOWN,
         )
         .unwrap();
+        let diagnostics =
+            verify_program(&program_with(command), &SourceContext::new()).unwrap_err();
+        assert!(diagnostics.contains_code("minecraft.invalid-internal-reference"));
+    }
+
+    #[test]
+    fn broken_internal_function_condition_is_reported_fallibly() {
+        let invalid = <McFunctionId as EntityId>::from_index(99);
+        let modifier = ExecuteModifier::new(
+            ExecuteModifierKind::Unless(Condition::Function(invalid)),
+            OriginId::UNKNOWN,
+        );
+        let command = CommandNode::new(
+            CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(modifier, vec![]),
+                CommandNode::new(
+                    CommandKind::Return(ReturnCommand::Value(1)),
+                    OriginId::UNKNOWN,
+                )
+                .unwrap(),
+            )),
+            OriginId::UNKNOWN,
+        )
+        .unwrap();
+
         let diagnostics =
             verify_program(&program_with(command), &SourceContext::new()).unwrap_err();
         assert!(diagnostics.contains_code("minecraft.invalid-internal-reference"));

@@ -94,7 +94,19 @@ impl<'a> DebugDumper<'a> {
     /// Renders all allocated entities, marking invalid references and detachment.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut output = String::new();
+        let mut output = CappedDebugOutput::unbounded();
+        self.render_into(&mut output);
+        output.finish().text
+    }
+
+    /// Renders a deterministic UTF-8 prefix without first retaining the complete dump.
+    pub(crate) fn render_bounded(&self, byte_limit: usize) -> BoundedDebugRender {
+        let mut output = CappedDebugOutput::bounded(byte_limit);
+        self.render_into(&mut output);
+        output.finish()
+    }
+
+    fn render_into(&self, output: &mut CappedDebugOutput) {
         for (function, declaration) in self.program.functions() {
             let _ = writeln!(
                 output,
@@ -106,21 +118,43 @@ impl<'a> DebugDumper<'a> {
                 output.push_str("  <undefined>\n");
                 continue;
             };
-            let attached_blocks = body.block_order();
-            let attached_instructions = attached_blocks
-                .iter()
-                .filter_map(|block| body.block(*block))
-                .flat_map(|block| block.instructions.iter().copied())
-                .collect::<Vec<_>>();
-            let _ = writeln!(output, "  entry: {}", debug_block(body, body.entry));
+            let layout = body.block_order();
+            let mut attached_blocks = vec![false; body.blocks.len()];
+            let mut attached_instructions = vec![false; body.instructions.len()];
+            for block in layout {
+                if let Some(attached) = usize::try_from(block.index())
+                    .ok()
+                    .and_then(|index| attached_blocks.get_mut(index))
+                {
+                    *attached = true;
+                }
+                if let Some(data) = body.block(*block) {
+                    for instruction in &data.instructions {
+                        if let Some(attached) = usize::try_from(instruction.index())
+                            .ok()
+                            .and_then(|index| attached_instructions.get_mut(index))
+                        {
+                            *attached = true;
+                        }
+                    }
+                }
+            }
+            output.push_str("  entry: ");
+            write_debug_block(output, body, body.entry);
+            output.push('\n');
             output.push_str("  layout:");
-            for block in attached_blocks {
-                let _ = write!(output, " {}", debug_block(body, *block));
+            for block in layout {
+                output.push(' ');
+                write_debug_block(output, body, *block);
             }
             output.push('\n');
             output.push_str("  allocated blocks:\n");
             for (block, data) in body.blocks.iter() {
-                let detached = if attached_blocks.contains(&block) {
+                let detached = if attached_blocks
+                    .get(usize::try_from(block.index()).unwrap_or(usize::MAX))
+                    .copied()
+                    .unwrap_or(false)
+                {
                     ""
                 } else {
                     " <detached>"
@@ -138,26 +172,29 @@ impl<'a> DebugDumper<'a> {
             }
             output.push_str("  allocated instructions:\n");
             for (instruction, data) in body.instructions.iter() {
-                let detached = if attached_instructions.contains(&instruction) {
+                let detached = if attached_instructions
+                    .get(usize::try_from(instruction.index()).unwrap_or(usize::MAX))
+                    .copied()
+                    .unwrap_or(false)
+                {
                     ""
                 } else {
                     " <detached>"
                 };
-                let operands = data
-                    .operands
-                    .iter()
-                    .map(|value| debug_value(body, *value))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let _ = writeln!(
+                let _ = write!(
                     output,
-                    "    !inst{}{} {:?} ({operands}) -> {:?} origin={:?}",
+                    "    !inst{}{} {:?} (",
                     instruction.index(),
                     detached,
                     data.op,
-                    data.results,
-                    data.origin
                 );
+                for (index, operand) in data.operands.iter().copied().enumerate() {
+                    if index != 0 {
+                        output.push_str(", ");
+                    }
+                    write_debug_value(output, body, operand);
+                }
+                let _ = writeln!(output, ") -> {:?} origin={:?}", data.results, data.origin);
             }
             output.push_str("  allocated values:\n");
             for (value, data) in body.values.iter() {
@@ -170,7 +207,88 @@ impl<'a> DebugDumper<'a> {
                 );
             }
         }
-        output
+    }
+}
+
+/// Internal result used to construct public, typed optimizer failure snapshots.
+pub(crate) struct BoundedDebugRender {
+    pub(crate) text: String,
+    pub(crate) total_bytes: u64,
+    pub(crate) total_bytes_saturated: bool,
+}
+
+struct CappedDebugOutput {
+    text: String,
+    byte_limit: usize,
+    total_bytes: u64,
+    total_bytes_saturated: bool,
+    retention_closed: bool,
+}
+
+impl CappedDebugOutput {
+    fn unbounded() -> Self {
+        Self {
+            text: String::new(),
+            byte_limit: usize::MAX,
+            total_bytes: 0,
+            total_bytes_saturated: false,
+            retention_closed: false,
+        }
+    }
+
+    fn bounded(byte_limit: usize) -> Self {
+        Self {
+            text: String::with_capacity(byte_limit.min(4_096)),
+            byte_limit,
+            total_bytes: 0,
+            total_bytes_saturated: false,
+            retention_closed: false,
+        }
+    }
+
+    fn push_str(&mut self, value: &str) {
+        let _ = self.write_str(value);
+    }
+
+    fn push(&mut self, value: char) {
+        let mut encoded = [0_u8; 4];
+        self.push_str(value.encode_utf8(&mut encoded));
+    }
+
+    fn finish(self) -> BoundedDebugRender {
+        BoundedDebugRender {
+            text: self.text,
+            total_bytes: self.total_bytes,
+            total_bytes_saturated: self.total_bytes_saturated,
+        }
+    }
+}
+
+impl fmt::Write for CappedDebugOutput {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if let Some(total) = u64::try_from(value.len())
+            .ok()
+            .and_then(|length| self.total_bytes.checked_add(length))
+        {
+            self.total_bytes = total;
+        } else {
+            self.total_bytes = u64::MAX;
+            self.total_bytes_saturated = true;
+        }
+
+        if self.retention_closed {
+            return Ok(());
+        }
+        let available = self.byte_limit.saturating_sub(self.text.len());
+        let mut end = available.min(value.len());
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.text.push_str(&value[..end]);
+        if end != value.len() {
+            self.retention_closed = true;
+        }
+        Ok(())
     }
 }
 
@@ -336,18 +454,91 @@ fn render_values(output: &mut String, values: &[ValueId]) {
     }
 }
 
-fn debug_block(body: &FunctionBody, block: super::BlockId) -> String {
+fn write_debug_block(output: &mut CappedDebugOutput, body: &FunctionBody, block: super::BlockId) {
     if body.block(block).is_some() {
-        format!("^bb{}", block.index())
+        let _ = write!(output, "^bb{}", block.index());
     } else {
-        format!("<invalid-block ^bb{}>", block.index())
+        let _ = write!(output, "<invalid-block ^bb{}>", block.index());
     }
 }
 
-fn debug_value(body: &FunctionBody, value: ValueId) -> String {
+fn write_debug_value(output: &mut CappedDebugOutput, body: &FunctionBody, value: ValueId) {
     if body.value(value).is_some() {
-        format!("%v{}", value.index())
+        let _ = write!(output, "%v{}", value.index());
     } else {
-        format!("<invalid-value %v{}>", value.index())
+        let _ = write!(output, "<invalid-value %v{}>", value.index());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::EntityId;
+    use crate::ir::core::{BlockId, FunctionBuilder, InstId, Terminator, ValueDef};
+    use crate::source::OriginId;
+
+    #[test]
+    fn bounded_dump_is_prefix_exact_for_dangling_ids() {
+        let sources = SourceContext::new();
+        let mut program = CoreProgram::new();
+        let function = program
+            .declare_function(Some("malformed_π_🦀"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
+        let value = builder.i32_constant(1, OriginId::UNKNOWN).unwrap();
+        let ValueDef::InstResult { instruction, .. } =
+            builder.body().value(value).unwrap().definition()
+        else {
+            panic!("constant must be an instruction result");
+        };
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        program
+            .define_function(function, builder.finish().unwrap())
+            .unwrap();
+
+        let mut body = program.take_function_body(function).unwrap();
+        let entry = body.entry;
+        body.entry = BlockId::from_index(u32::MAX);
+        body.block_order.push(BlockId::from_index(u32::MAX - 1));
+        body.block_mut(entry)
+            .unwrap()
+            .instructions
+            .push(InstId::from_index(u32::MAX));
+        body.instruction_mut(instruction)
+            .unwrap()
+            .operands
+            .push(ValueId::from_index(u32::MAX));
+        program.restore_function_body(function, body);
+
+        let complete = DebugDumper::new(&program).render();
+        assert!(complete.contains("<invalid-block"));
+        assert!(complete.contains("<invalid-value"));
+        for cap in 0..=complete.len() {
+            let bounded = DebugDumper::new(&program).render_bounded(cap);
+            let mut expected_end = cap;
+            while !complete.is_char_boundary(expected_end) {
+                expected_end -= 1;
+            }
+            assert_eq!(bounded.text, complete[..expected_end]);
+            assert_eq!(bounded.total_bytes, u64::try_from(complete.len()).unwrap());
+            assert!(!bounded.total_bytes_saturated);
+        }
+    }
+
+    #[test]
+    fn capped_writer_saturates_total_byte_metadata() {
+        let mut output = CappedDebugOutput::bounded(1);
+        output.total_bytes = u64::MAX - 1;
+        output.push_str("abc");
+        let rendered = output.finish();
+
+        assert_eq!(rendered.text, "a");
+        assert_eq!(rendered.total_bytes, u64::MAX);
+        assert!(rendered.total_bytes_saturated);
     }
 }

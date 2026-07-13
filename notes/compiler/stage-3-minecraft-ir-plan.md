@@ -317,9 +317,9 @@ explicit.
 
 Stage 3 exposes the target defaults and classifies direct fork shapes, but has no
 configured sequence/fork budget because it cannot yet prove a whole root's sequence
-length or selector cardinality. Layout, bounded work, and configurable scheduling
-budgets enter with their first consumer in Stage 9. The emitter never changes
-gamerules.
+length or selector cardinality. Configurable hard-limit assumptions enter with Stage
+5's cost analysis; layout across ticks and soft scheduling budgets enter with their
+first consumer in Stage 9. The emitter never changes gamerules.
 
 The exact metadata is:
 

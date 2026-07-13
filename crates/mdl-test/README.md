@@ -63,6 +63,25 @@ MDL_JAVA=/path/to/java25 \
 cargo test -p mdl-test --test minecraft_ir -- --ignored --nocapture
 ```
 
+The focused command-limit differential test checks the exact sequence and fork
+boundaries, including the accepted zero-valued gamerules:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test command_limits -- --ignored --nocapture
+```
+
+The Core-lowering conformance test runs both the byte-stable Minecraft `None`
+reference policy and the pruned Minecraft `Baseline` policy through the same
+observable CFG/call/loop fixture:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test core_lowering -- --ignored --nocapture
+```
+
 It installs generic path/byte entries before startup, rejects unsafe paths before
 writing, checks attributable pack-loading/function-parsing logs from a checkpoint,
 and preserves the generated pack, world, logs, and compiler trace on failure. No

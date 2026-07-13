@@ -1,6 +1,8 @@
 use crate::source::OriginId;
 
-use super::{CommandNode, DimensionId, FiniteF64, ScoreRange, ScoreRef, Selector, StoragePath};
+use super::{
+    CommandNode, DimensionId, FiniteF64, McFunctionId, ScoreRange, ScoreRef, Selector, StoragePath,
+};
 
 /// One ordered `execute` command and its nested command.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,6 +129,8 @@ pub enum Condition {
     DataExists(StoragePath),
     /// Test whether a selector resolves to at least one entity without forking.
     EntityExists(Selector),
+    /// Run one internal function and match when at least one invocation returns nonzero.
+    Function(McFunctionId),
 }
 
 /// One native `execute if score` comparison operator.

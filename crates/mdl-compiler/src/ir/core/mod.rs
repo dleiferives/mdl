@@ -8,7 +8,6 @@
 mod analysis;
 mod builder;
 mod edit;
-mod pass;
 mod print;
 mod verify;
 
@@ -22,9 +21,13 @@ pub use analysis::{
     ControlFlowGraph, Dominance, DominatorTree, PlacementIndex, Reachability, UseIndex, UseSite,
 };
 pub use builder::{BuildError, FunctionBuilder};
-pub use edit::{EditError, FunctionEditor};
-pub use pass::{FailureBundle, FunctionPass, PassError, PassRunner};
+pub use edit::{EditError, FunctionEditor, ValueReplacement};
+pub(crate) use edit::{
+    JumpFusionApplicationStatistics, JumpFusionFactStatistics, JumpFusionPreparation,
+};
 pub use print::{CanonicalPrinter, DebugDumper, PrintError};
+#[cfg(test)]
+pub(crate) use verify::{reset_verifier_counters, verifier_counters};
 pub use verify::{verify_function, verify_program};
 
 pub use crate::diagnostic::{Diagnostic, Diagnostics};
@@ -53,6 +56,33 @@ pub enum CoreType {
     Bool,
     /// A signed 32-bit integer with operation-defined overflow semantics.
     I32,
+}
+
+/// A closed, typed constant representable directly in Core.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TypedCoreConstant {
+    /// A Boolean constant.
+    Bool(bool),
+    /// A signed 32-bit integer constant.
+    I32(i32),
+}
+
+impl TypedCoreConstant {
+    /// Returns the Core type produced by this constant.
+    #[must_use]
+    pub const fn ty(self) -> CoreType {
+        match self {
+            Self::Bool(_) => CoreType::Bool,
+            Self::I32(_) => CoreType::I32,
+        }
+    }
+
+    pub(crate) const fn op(self) -> CoreOp {
+        match self {
+            Self::Bool(value) => CoreOp::BoolConstant(value),
+            Self::I32(value) => CoreOp::I32Constant(value),
+        }
+    }
 }
 
 impl fmt::Display for CoreType {
@@ -110,6 +140,24 @@ pub enum Speculation {
     Always,
     /// Evaluation must remain in its original control dependence.
     Never,
+}
+
+/// Whether equal structural instances of an operation produce equal results.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResultEquivalence {
+    /// Operation payload, operands, and complete result types determine its results.
+    Structural,
+    /// Structural identity is insufficient to prove equal results.
+    Opaque,
+}
+
+/// Whether a Core operation permits canonical operand reordering.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OperandSymmetry {
+    /// Operand positions have distinct semantics or there are fewer than two.
+    Ordered,
+    /// Exactly two operands may be exchanged without changing semantics.
+    CommutativePair,
 }
 
 /// One closed Core operation.
@@ -171,6 +219,49 @@ impl CoreOp {
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
             | Self::BoolNot => Speculation::Always,
+        }
+    }
+
+    /// Returns whether complete structural equality proves equal results.
+    #[must_use]
+    pub const fn result_equivalence(&self) -> ResultEquivalence {
+        match self {
+            Self::Call(_) => ResultEquivalence::Opaque,
+            Self::BoolConstant(_)
+            | Self::I32Constant(_)
+            | Self::I32AddWrapping
+            | Self::I32AddOverflowing
+            | Self::I32Compare(_)
+            | Self::BoolNot => ResultEquivalence::Structural,
+        }
+    }
+
+    /// Returns whether an unused instance can be removed without changing
+    /// observable behavior or introducing a new trap/divergence behavior.
+    #[must_use]
+    pub const fn is_trivially_discardable(&self) -> bool {
+        matches!(self.effects(), EffectClass::Pure)
+            && matches!(self.speculation(), Speculation::Always)
+    }
+
+    /// Returns the operation's exact operand-symmetry contract.
+    #[must_use]
+    pub const fn operand_symmetry(&self) -> OperandSymmetry {
+        match self {
+            Self::I32AddWrapping | Self::I32AddOverflowing => OperandSymmetry::CommutativePair,
+            Self::I32Compare(I32Predicate::Eq | I32Predicate::Ne) => {
+                OperandSymmetry::CommutativePair
+            }
+            Self::BoolConstant(_)
+            | Self::I32Constant(_)
+            | Self::I32Compare(
+                I32Predicate::SignedLt
+                | I32Predicate::SignedLe
+                | I32Predicate::SignedGt
+                | I32Predicate::SignedGe,
+            )
+            | Self::BoolNot
+            | Self::Call(_) => OperandSymmetry::Ordered,
         }
     }
 
@@ -686,6 +777,12 @@ impl FunctionBody {
         self.values.get(value).copied()
     }
 
+    /// Iterates over every allocated SSA value in stable identity order.
+    #[must_use]
+    pub fn values(&self) -> impl ExactSizeIterator<Item = (ValueId, ValueData)> + '_ {
+        self.values.iter().map(|(value, data)| (value, *data))
+    }
+
     /// Returns allocated and attached block counts.
     #[must_use]
     pub fn block_counts(&self) -> EntityCounts {
@@ -710,6 +807,29 @@ impl FunctionBody {
         }
     }
 
+    /// Returns allocated-versus-attached SSA value counts.
+    #[must_use]
+    pub fn value_counts(&self) -> EntityCounts {
+        let attached = self
+            .block_order
+            .iter()
+            .filter_map(|block| self.blocks.get(*block))
+            .map(|block| {
+                block.parameters.len()
+                    + block
+                        .instructions
+                        .iter()
+                        .filter_map(|instruction| self.instructions.get(*instruction))
+                        .map(|instruction| instruction.results.len())
+                        .sum::<usize>()
+            })
+            .sum();
+        EntityCounts {
+            allocated: self.values.len(),
+            attached,
+        }
+    }
+
     pub(crate) fn block_mut(&mut self, block: BlockId) -> Option<&mut BlockData> {
         self.blocks.get_mut(block)
     }
@@ -730,7 +850,10 @@ pub struct EntityCounts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreOp, CoreProgram, CoreType, EffectClass, OriginId, Speculation};
+    use super::{
+        CoreOp, CoreProgram, CoreType, EffectClass, I32Predicate, OperandSymmetry, OriginId,
+        ResultEquivalence, Speculation, TypedCoreConstant,
+    };
 
     #[test]
     fn core_types_are_compact_values() {
@@ -743,6 +866,24 @@ mod tests {
     fn operations_centralize_effect_and_speculation_contracts() {
         assert_eq!(CoreOp::I32AddWrapping.effects(), EffectClass::Pure);
         assert_eq!(CoreOp::I32AddWrapping.speculation(), Speculation::Always);
+        assert_eq!(
+            CoreOp::I32AddWrapping.result_equivalence(),
+            ResultEquivalence::Structural
+        );
+        assert!(CoreOp::I32AddWrapping.is_trivially_discardable());
+        assert_eq!(
+            CoreOp::I32AddWrapping.operand_symmetry(),
+            OperandSymmetry::CommutativePair
+        );
+        assert_eq!(
+            CoreOp::I32Compare(I32Predicate::Eq).operand_symmetry(),
+            OperandSymmetry::CommutativePair
+        );
+        assert_eq!(
+            CoreOp::I32Compare(I32Predicate::SignedLt).operand_symmetry(),
+            OperandSymmetry::Ordered
+        );
+        assert_eq!(TypedCoreConstant::I32(3).ty(), CoreType::I32);
 
         let mut program = CoreProgram::new();
         let callee = program
@@ -755,6 +896,11 @@ mod tests {
             .unwrap();
         assert_eq!(CoreOp::Call(callee).effects(), EffectClass::Unknown);
         assert_eq!(CoreOp::Call(callee).speculation(), Speculation::Never);
+        assert_eq!(
+            CoreOp::Call(callee).result_equivalence(),
+            ResultEquivalence::Opaque
+        );
+        assert!(!CoreOp::Call(callee).is_trivially_discardable());
     }
 
     #[test]

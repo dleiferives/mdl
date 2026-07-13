@@ -9,11 +9,11 @@ use mdl_compiler::ir::minecraft::{
     DataModifyMode, DataSource, DimensionId, ExecuteCommand, ExecuteModifier, ExecuteModifierKind,
     ExecuteModifiers, ExternalCallableRef, ExternalTagRequirement, FakeScoreHolder, FiniteF64,
     FunctionCall, FunctionResourceId, FunctionTagEntry, FunctionTagMerge, FunctionTagResourceId,
-    InternalCallableRef, MinecraftProgramBuilder, NbtKey, NbtPath, NbtPathKey, NbtPathSegment,
-    NbtValue, NonNegativeI32, ObjectiveName, ReturnCommand, ScoreCommand, ScoreComparison,
-    ScoreHolders, ScoreOperation, ScoreRange, ScoreRef, ScoreSelection, SingleScoreHolder,
-    StorageId, StorageNumericType, StoragePath, StoreChannel, StoreDestination, UnboundedSelector,
-    UnsafeRawCommand,
+    InternalCallableRef, McFunctionId, MinecraftProgramBuilder, NbtKey, NbtPath, NbtPathKey,
+    NbtPathSegment, NbtValue, NonNegativeI32, ObjectiveName, ReturnCommand, ScoreCommand,
+    ScoreComparison, ScoreHolders, ScoreOperation, ScoreRange, ScoreRef, ScoreSelection,
+    SingleScoreHolder, StorageId, StorageNumericType, StoragePath, StoreChannel, StoreDestination,
+    UnboundedSelector, UnsafeRawCommand,
 };
 use mdl_compiler::source::{Origin, OriginId, SourceContext};
 use mdl_compiler::target::JavaEditionTarget;
@@ -21,6 +21,17 @@ use mdl_test::{ServerConfig, ServerSandbox, TestServer};
 
 const DONE_MARKER: &str = "MDL_STAGE3_DONE";
 const LIMIT_PREFIX: &str = "data modify storage mdl:state \"utf16_limit\" set value \"";
+
+#[derive(Clone, Copy)]
+struct FunctionFixtures {
+    leaf: McFunctionId,
+    return_value: McFunctionId,
+    return_fail: McFunctionId,
+    return_run: McFunctionId,
+    return_zero: McFunctionId,
+    return_data_success: McFunctionId,
+    return_data_fail: McFunctionId,
+}
 
 #[test]
 #[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
@@ -75,22 +86,35 @@ fn run_conformance() -> Result<(), String> {
 }
 
 fn exercise_pack(server: &mut TestServer) -> Result<(), String> {
+    let spec = JavaEditionTarget::V26_2.spec();
+    expect_gamerule(
+        server,
+        "minecraft:max_command_sequence_length",
+        spec.default_max_command_sequence(),
+    )?;
+    expect_gamerule(
+        server,
+        "minecraft:max_command_forks",
+        spec.default_max_command_forks(),
+    )?;
     server
         .command("forceload add 0 0")
         .map_err(|error| error.to_string())?;
     server
-        .command("kill @e")
-        .map_err(|error| error.to_string())?;
-    server
-        .command("summon armor_stand 0 100 0")
+        .command("summon minecraft:armor_stand 0 5 0 {NoGravity:1b,Marker:1b}")
         .map_err(|error| error.to_string())?;
     server
         .wait_for_command_log("Summoned new Armor Stand")
         .map_err(|error| error.to_string())?;
-    expect_marker(server, "execute if entity @e run say MDL_ENTITY_READY")?;
+    server
+        .command("schedule function mdl:driver 20t")
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log("MDL_ENTITY_REGISTERED")
+        .map_err(|error| error.to_string())?;
     let checkpoint = server.log_checkpoint();
     server
-        .command("function mdl:run")
+        .command("execute in minecraft:overworld positioned 0 5 0 run function mdl:run")
         .map_err(|error| error.to_string())?;
     server
         .wait_for_command_log(DONE_MARKER)
@@ -140,7 +164,84 @@ fn exercise_pack(server: &mut TestServer) -> Result<(), String> {
             "} run say MDL_STORAGE_EXACT"
         ),
     )?;
+    expect_stage4_semantics(server)
+}
+
+fn expect_stage4_semantics(server: &mut TestServer) -> Result<(), String> {
+    for (holder, expected) in [
+        ("#if_function_positive", 1),
+        ("#if_function_zero", 0),
+        ("#if_function_failed", 0),
+        ("#return_data_result", 1),
+        ("#return_data_fail_success", 0),
+        ("#boundary_assign_min", i32::MIN),
+        ("#boundary_assign_max", i32::MAX),
+        ("#boundary_add_max", i32::MIN),
+        ("#boundary_add_min", i32::MAX),
+        ("#boundary_sub_min", i32::MAX),
+        ("#boundary_sub_max", i32::MIN),
+        ("#boundary_swap_min", i32::MAX),
+        ("#boundary_swap_max", i32::MIN),
+        ("#missing_target_assign_success", 1),
+        ("#missing_target_add_success", 1),
+        ("#missing_target_sub_success", 1),
+        ("#missing_target_swap_success", 1),
+        ("#missing_source_assign_success", 1),
+        ("#missing_source_add_success", 1),
+        ("#missing_source_sub_success", 1),
+        ("#missing_source_swap_success", 1),
+        ("#missing_source_assign_target", 0),
+        ("#missing_source_add_target", 9),
+        ("#missing_source_sub_target", 9),
+        ("#missing_source_swap_target", 0),
+        ("#compare_equal_min", 1),
+        ("#compare_equal_max", 1),
+        ("#compare_not_equal", 1),
+        ("#compare_less_true", 1),
+        ("#compare_less_false", 1),
+        ("#compare_less_equal_min", 1),
+        ("#compare_less_equal_max", 1),
+        ("#compare_greater_true", 1),
+        ("#compare_greater_false", 1),
+        ("#compare_greater_equal_min", 1),
+        ("#compare_greater_equal_max", 1),
+    ] {
+        expect_score(server, holder, expected)?;
+    }
+    expect_marker(
+        server,
+        "execute if data storage mdl:state {return_data_success:1} run say MDL_RETURN_DATA_EXACT",
+    )?;
+    for (holder, expected) in [
+        ("#missing_target_assign", 1),
+        ("#missing_target_add", 1),
+        ("#missing_target_sub", -1),
+        ("#missing_target_swap", 1),
+        ("#missing_source_assign", 0),
+        ("#missing_source_add", 0),
+        ("#missing_source_sub", 0),
+        ("#missing_source_swap", 9),
+    ] {
+        expect_score(server, holder, expected)?;
+    }
     Ok(())
+}
+
+fn expect_gamerule(server: &mut TestServer, name: &str, expected: u32) -> Result<(), String> {
+    server
+        .command(&format!("gamerule {name}"))
+        .map_err(|error| error.to_string())?;
+    let canonical_name = name.rsplit_once(':').map_or(name, |(_, name)| name);
+    let line = server
+        .wait_for_command_log(canonical_name)
+        .map_err(|error| error.to_string())?;
+    if line.contains(&expected.to_string()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "expected gamerule {name} to be {expected}, got {line:?}"
+        ))
+    }
 }
 
 fn expect_score(server: &mut TestServer, holder: &str, expected: i32) -> Result<(), String> {
@@ -189,9 +290,13 @@ fn build_pack() -> Result<(EmissionOutput, String), String> {
     let return_value = declare(&mut builder, "mdl:return_value", origin)?;
     let return_fail = declare(&mut builder, "mdl:return_fail", origin)?;
     let return_run = declare(&mut builder, "mdl:return_run", origin)?;
+    let return_zero = declare(&mut builder, "mdl:return_zero", origin)?;
+    let return_data_success = declare(&mut builder, "mdl:return_data_success", origin)?;
+    let return_data_fail = declare(&mut builder, "mdl:return_data_fail", origin)?;
     let empty = declare(&mut builder, "mdl:empty", origin)?;
     let utf16_limit = declare(&mut builder, "mdl:utf16_limit", origin)?;
     let run = declare(&mut builder, "mdl:run", origin)?;
+    let driver = declare(&mut builder, "mdl:driver", origin)?;
 
     let load_tag = declare_tag(&mut builder, "minecraft:load", origin)?;
     let tick_tag = declare_tag(&mut builder, "minecraft:tick", origin)?;
@@ -205,6 +310,37 @@ fn build_pack() -> Result<(EmissionOutput, String), String> {
             CommandKind::Score(ScoreCommand::ObjectiveAddDummy {
                 objective: objective(),
             }),
+            origin,
+        )?],
+    )?;
+    define(
+        &mut builder,
+        return_zero,
+        vec![node(CommandKind::Return(ReturnCommand::Value(0)), origin)?],
+    )?;
+    define(
+        &mut builder,
+        return_data_success,
+        vec![node(
+            CommandKind::Return(ReturnCommand::run(data_modify(
+                "return_data_success",
+                DataModifyMode::Set,
+                DataSource::Value(NbtValue::int(1)),
+                nested_origin,
+            )?)),
+            origin,
+        )?],
+    )?;
+    define(
+        &mut builder,
+        return_data_fail,
+        vec![node(
+            CommandKind::Return(ReturnCommand::run(data_modify(
+                "return_data_fail",
+                DataModifyMode::Set,
+                DataSource::From(storage("missing_return_data_source")),
+                nested_origin,
+            )?)),
             origin,
         )?],
     )?;
@@ -247,14 +383,24 @@ fn build_pack() -> Result<(EmissionOutput, String), String> {
         &mut builder,
         run,
         run_commands(
-            leaf,
-            return_value,
-            return_fail,
-            return_run,
+            FunctionFixtures {
+                leaf,
+                return_value,
+                return_fail,
+                return_run,
+                return_zero,
+                return_data_success,
+                return_data_fail,
+            },
             nested_tag,
             origin,
             nested_origin,
         )?,
+    )?;
+    define(
+        &mut builder,
+        driver,
+        vec![raw("say MDL_ENTITY_REGISTERED", origin)?],
     )?;
 
     define_tag(
@@ -376,10 +522,7 @@ fn validate_trace(
 
 #[allow(clippy::too_many_lines)]
 fn run_commands(
-    leaf: mdl_compiler::ir::minecraft::McFunctionId,
-    return_value: mdl_compiler::ir::minecraft::McFunctionId,
-    return_fail: mdl_compiler::ir::minecraft::McFunctionId,
-    return_run: mdl_compiler::ir::minecraft::McFunctionId,
+    functions: FunctionFixtures,
     nested_tag: mdl_compiler::ir::minecraft::FunctionTagId,
     origin: OriginId,
     nested_origin: OriginId,
@@ -514,25 +657,24 @@ fn run_commands(
         score_add("#contexts", 1, nested_origin)?,
         origin,
     )?);
-
-    commands.push(call(InternalCallableRef::Function(leaf), origin)?);
+    commands.push(call(InternalCallableRef::Function(functions.leaf), origin)?);
     commands.push(call(InternalCallableRef::Tag(nested_tag), origin)?);
     commands.push(store_score_call(
         StoreChannel::Result,
         "#return_value",
-        return_value,
+        functions.return_value,
         origin,
     )?);
     commands.push(store_score_call(
         StoreChannel::Success,
         "#return_success",
-        return_fail,
+        functions.return_fail,
         origin,
     )?);
     commands.push(store_score_call(
         StoreChannel::Result,
         "#return_run",
-        return_run,
+        functions.return_run,
         origin,
     )?);
     for (key, numeric_type) in [
@@ -574,7 +716,276 @@ fn run_commands(
         )?,
         origin,
     )?);
+    commands.extend(stage4_semantic_commands(functions, origin, nested_origin)?);
     commands.push(raw(&format!("say {DONE_MARKER}"), origin)?);
+    Ok(commands)
+}
+
+fn stage4_semantic_commands(
+    functions: FunctionFixtures,
+    origin: OriginId,
+    nested_origin: OriginId,
+) -> Result<Vec<CommandNode>, String> {
+    let mut commands = stage4_setup_commands(origin)?;
+    commands.extend(function_semantic_commands(
+        functions,
+        origin,
+        nested_origin,
+    )?);
+    commands.extend(boundary_operation_commands(origin)?);
+    commands.extend(absent_holder_commands(origin)?);
+    commands.extend(boundary_comparison_commands(origin, nested_origin)?);
+    Ok(commands)
+}
+
+fn stage4_setup_commands(origin: OriginId) -> Result<Vec<CommandNode>, String> {
+    [
+        ("#if_function_positive", 0),
+        ("#if_function_zero", 0),
+        ("#if_function_failed", 0),
+        ("#i32_min", i32::MIN),
+        ("#i32_max", i32::MAX),
+        ("#one", 1),
+        ("#negative_one", -1),
+        ("#boundary_assign_min", 0),
+        ("#boundary_assign_max", 0),
+        ("#boundary_add_max", i32::MAX),
+        ("#boundary_add_min", i32::MIN),
+        ("#boundary_sub_min", i32::MIN),
+        ("#boundary_sub_max", i32::MAX),
+        ("#boundary_swap_min", i32::MIN),
+        ("#boundary_swap_max", i32::MAX),
+        ("#missing_source_assign_target", 9),
+        ("#missing_source_add_target", 9),
+        ("#missing_source_sub_target", 9),
+        ("#missing_source_swap_target", 9),
+        ("#compare_equal_min", 0),
+        ("#compare_equal_max", 0),
+        ("#compare_not_equal", 0),
+        ("#compare_less_true", 0),
+        ("#compare_less_false", 0),
+        ("#compare_less_equal_min", 0),
+        ("#compare_less_equal_max", 0),
+        ("#compare_greater_true", 0),
+        ("#compare_greater_false", 0),
+        ("#compare_greater_equal_min", 0),
+        ("#compare_greater_equal_max", 0),
+    ]
+    .into_iter()
+    .map(|(holder, value)| score_set(holder, value, origin))
+    .collect()
+}
+
+fn function_semantic_commands(
+    functions: FunctionFixtures,
+    origin: OriginId,
+    nested_origin: OriginId,
+) -> Result<Vec<CommandNode>, String> {
+    let mut commands = vec![];
+    for (counter, function) in [
+        ("#if_function_positive", functions.return_value),
+        ("#if_function_zero", functions.return_zero),
+        ("#if_function_failed", functions.return_data_fail),
+    ] {
+        commands.push(conditional(
+            ExecuteModifierKind::If(Condition::Function(function)),
+            score_add(counter, 1, nested_origin)?,
+            origin,
+        )?);
+    }
+    commands.push(store_score_call(
+        StoreChannel::Result,
+        "#return_data_result",
+        functions.return_data_success,
+        origin,
+    )?);
+    commands.push(store_score_call(
+        StoreChannel::Success,
+        "#return_data_fail_success",
+        functions.return_data_fail,
+        origin,
+    )?);
+    Ok(commands)
+}
+
+fn boundary_operation_commands(origin: OriginId) -> Result<Vec<CommandNode>, String> {
+    [
+        ("#boundary_assign_min", ScoreOperation::Assign, "#i32_min"),
+        ("#boundary_assign_max", ScoreOperation::Assign, "#i32_max"),
+        ("#boundary_add_max", ScoreOperation::Add, "#one"),
+        ("#boundary_add_min", ScoreOperation::Add, "#negative_one"),
+        ("#boundary_sub_min", ScoreOperation::Subtract, "#one"),
+        (
+            "#boundary_sub_max",
+            ScoreOperation::Subtract,
+            "#negative_one",
+        ),
+        (
+            "#boundary_swap_min",
+            ScoreOperation::Swap,
+            "#boundary_swap_max",
+        ),
+    ]
+    .into_iter()
+    .map(|(target, operation, source)| score_operation(target, operation, source, origin))
+    .collect()
+}
+
+fn absent_holder_commands(origin: OriginId) -> Result<Vec<CommandNode>, String> {
+    let mut commands = vec![];
+    for (success, target, operation, source) in [
+        (
+            "#missing_target_assign_success",
+            "#missing_target_assign",
+            ScoreOperation::Assign,
+            "#one",
+        ),
+        (
+            "#missing_target_add_success",
+            "#missing_target_add",
+            ScoreOperation::Add,
+            "#one",
+        ),
+        (
+            "#missing_target_sub_success",
+            "#missing_target_sub",
+            ScoreOperation::Subtract,
+            "#one",
+        ),
+        (
+            "#missing_target_swap_success",
+            "#missing_target_swap",
+            ScoreOperation::Swap,
+            "#one",
+        ),
+        (
+            "#missing_source_assign_success",
+            "#missing_source_assign_target",
+            ScoreOperation::Assign,
+            "#missing_source_assign",
+        ),
+        (
+            "#missing_source_add_success",
+            "#missing_source_add_target",
+            ScoreOperation::Add,
+            "#missing_source_add",
+        ),
+        (
+            "#missing_source_sub_success",
+            "#missing_source_sub_target",
+            ScoreOperation::Subtract,
+            "#missing_source_sub",
+        ),
+        (
+            "#missing_source_swap_success",
+            "#missing_source_swap_target",
+            ScoreOperation::Swap,
+            "#missing_source_swap",
+        ),
+    ] {
+        commands.push(store_score_operation_success(
+            success, target, operation, source, origin,
+        )?);
+    }
+    Ok(commands)
+}
+
+fn boundary_comparison_commands(
+    origin: OriginId,
+    nested_origin: OriginId,
+) -> Result<Vec<CommandNode>, String> {
+    let mut commands = vec![];
+    for (counter, positive, left, comparison, right) in [
+        (
+            "#compare_equal_min",
+            true,
+            "#i32_min",
+            ScoreComparison::Equal,
+            "#i32_min",
+        ),
+        (
+            "#compare_equal_max",
+            true,
+            "#i32_max",
+            ScoreComparison::Equal,
+            "#i32_max",
+        ),
+        (
+            "#compare_not_equal",
+            false,
+            "#i32_min",
+            ScoreComparison::Equal,
+            "#i32_max",
+        ),
+        (
+            "#compare_less_true",
+            true,
+            "#i32_min",
+            ScoreComparison::LessThan,
+            "#i32_max",
+        ),
+        (
+            "#compare_less_false",
+            false,
+            "#i32_max",
+            ScoreComparison::LessThan,
+            "#i32_min",
+        ),
+        (
+            "#compare_less_equal_min",
+            true,
+            "#i32_min",
+            ScoreComparison::LessOrEqual,
+            "#i32_min",
+        ),
+        (
+            "#compare_less_equal_max",
+            true,
+            "#i32_max",
+            ScoreComparison::LessOrEqual,
+            "#i32_max",
+        ),
+        (
+            "#compare_greater_true",
+            true,
+            "#i32_max",
+            ScoreComparison::GreaterThan,
+            "#i32_min",
+        ),
+        (
+            "#compare_greater_false",
+            false,
+            "#i32_min",
+            ScoreComparison::GreaterThan,
+            "#i32_max",
+        ),
+        (
+            "#compare_greater_equal_min",
+            true,
+            "#i32_min",
+            ScoreComparison::GreaterOrEqual,
+            "#i32_min",
+        ),
+        (
+            "#compare_greater_equal_max",
+            true,
+            "#i32_max",
+            ScoreComparison::GreaterOrEqual,
+            "#i32_max",
+        ),
+    ] {
+        let condition = Condition::ScoreCompare(score(left), comparison, score(right));
+        let modifier = if positive {
+            ExecuteModifierKind::If(condition)
+        } else {
+            ExecuteModifierKind::Unless(condition)
+        };
+        commands.push(conditional(
+            modifier,
+            score_add(counter, 1, nested_origin)?,
+            origin,
+        )?);
+    }
     Ok(commands)
 }
 
@@ -776,6 +1187,22 @@ fn score_remove(holder: &str, amount: i32, origin: OriginId) -> Result<CommandNo
     )
 }
 
+fn score_operation(
+    target: &str,
+    operation: ScoreOperation,
+    source: &str,
+    origin: OriginId,
+) -> Result<CommandNode, String> {
+    node(
+        CommandKind::Score(ScoreCommand::PlayersOperation {
+            target: selection(target),
+            op: operation,
+            source: selection(source),
+        }),
+        origin,
+    )
+}
+
 fn data_modify(
     path: &str,
     mode: DataModifyMode,
@@ -840,6 +1267,23 @@ fn store_score_call(
             StoreDestination::Score(score(holder)),
         )],
         call(InternalCallableRef::Function(target), origin)?,
+        origin,
+    )
+}
+
+fn store_score_operation_success(
+    success: &str,
+    target: &str,
+    operation: ScoreOperation,
+    source: &str,
+    origin: OriginId,
+) -> Result<CommandNode, String> {
+    execute(
+        vec![ExecuteModifierKind::Store(
+            StoreChannel::Success,
+            StoreDestination::Score(score(success)),
+        )],
+        score_operation(target, operation, source, origin)?,
         origin,
     )
 }

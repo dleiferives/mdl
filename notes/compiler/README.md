@@ -31,5 +31,8 @@ both physical policies, and both policies pass the official Java 26.2 server. St
 5F's sparse liveness and conservative coalescing tranche is also complete and gated:
 bounded all-or-nothing analyses, exact access contracts, sparse scale fixtures,
 independent home-content verification, emitted-command differentials, and the updated
-official-server regressions pass. Stage 5G's closed target recipes and conservative
-selection are next.
+official-server regressions pass. Stage 5G's closed target-recipe accounting,
+explicit block placement, placement-aware resources, independent verifier,
+constructed-command reconciliation, exact decision reporting, and official-server
+`None`/`Baseline` differential are complete and gated. Stage 5H's report API,
+measurements, final generated/corruption audit, and handoff are next.

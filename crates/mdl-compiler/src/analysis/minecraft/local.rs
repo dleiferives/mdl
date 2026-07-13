@@ -56,6 +56,13 @@ fn classify_step(command: &CommandKind) -> Option<CommandStepCost> {
     }
 }
 
+/// Classifies one already-constructed command with the same local algebra used by
+/// whole-target analysis. Lowering uses this only to reconcile closed recipe output;
+/// candidate selection never runs whole-program analysis.
+pub(crate) fn classify_constructed_command(command: &CommandKind) -> Option<CommandStepCost> {
+    classify_step(command)
+}
+
 fn simple_step(counts: CommandStepCounts, outcomes: Vec<CommandOutcome>) -> CommandStepCost {
     CommandStepCost::new(counts, CountBound::exact(0), outcomes, vec![], None)
 }

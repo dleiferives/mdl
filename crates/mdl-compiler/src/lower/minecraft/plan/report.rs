@@ -13,8 +13,11 @@ use crate::lower::minecraft::{
 };
 
 use super::{
-    EdgeTransfer, FunctionLayout, HomeId, HomeRole, InstructionPlan, LoweringPlan,
+    BranchArm, EdgeTransfer, FunctionLayout, HomeId, HomeRole, InstructionPlan, LoweringPlan,
     PlannedFunctionId, PlannedFunctionRole, ScalarResultPlacement,
+};
+use crate::lower::minecraft::placement::{
+    BlockPlacement, BranchArmRecipe, BranchRecipe, GeneratedCompletionContract,
 };
 
 /// Frozen, complete lowering decisions retained after the mutable planner is dropped.
@@ -35,6 +38,7 @@ pub(crate) struct LoweringReport {
     homes: Box<[HomeReport]>,
     target_functions: Box<[TargetFunctionReport]>,
     functions: Box<[FunctionReport]>,
+    control: ControlStatisticsReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,12 +65,21 @@ struct FunctionReport {
     entry_block: BlockId,
     entry_resource: FunctionResourceId,
     blocks: Box<[(BlockId, PlannedFunctionId, FunctionResourceId)]>,
+    placements: Box<[(BlockId, BlockPlacement)]>,
+    branch_recipes: Box<[(BlockId, BranchRecipe)]>,
     values: Box<[(ValueId, HomeId)]>,
     temporary: Option<(HomeId, FakeScoreHolder)>,
     edge_temporaries: Box<[EdgeTemporaryReport]>,
     instructions: Box<[InstructionReport]>,
     edges: Box<[(BlockId, EdgeTransfer)]>,
     coalescing: Option<super::FunctionCoalescingPlan>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ControlStatisticsReport {
+    branch_arms: u64,
+    selected_recipes: u64,
+    consumed_blocks: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +124,12 @@ impl LoweringReport {
             .map(|(function, layout)| FunctionReport::from_layout(plan, function, layout))
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let statistics = plan.control_statistics;
+        let control = ControlStatisticsReport {
+            branch_arms: statistics.branch_arms_visited(),
+            selected_recipes: statistics.candidates_selected(),
+            consumed_blocks: statistics.blocks_consumed(),
+        };
         Self {
             optimization_level: plan.optimization_level,
             target: plan.target,
@@ -123,6 +142,7 @@ impl LoweringReport {
             homes,
             target_functions,
             functions,
+            control,
         }
     }
 
@@ -139,6 +159,16 @@ impl LoweringReport {
         )
         .unwrap();
         dump_optimization_level(&mut output, self.optimization_level);
+        if self.optimization_level != MinecraftOptimizationLevel::None {
+            writeln!(
+                output,
+                "control branch-arms={} selected={} consumed={}",
+                self.control.branch_arms,
+                self.control.selected_recipes,
+                self.control.consumed_blocks
+            )
+            .unwrap();
+        }
         writeln!(
             output,
             "execution activation={:?} command-limits={:?}",
@@ -257,6 +287,14 @@ fn dump_function_report(
         writeln!(output, "  value {} -> {}", value.index(), home.index()).unwrap();
     }
     if optimization_level != MinecraftOptimizationLevel::None {
+        for (block, placement) in &report.placements {
+            writeln!(output, "  placement block={} {placement:?}", block.index()).unwrap();
+        }
+        for (block, recipe) in &report.branch_recipes {
+            for arm in [BranchArm::Then, BranchArm::Else] {
+                dump_branch_recipe(output, *block, arm, recipe.arm(arm));
+            }
+        }
         for temporary in &report.edge_temporaries {
             dump_edge_temporary(output, temporary);
         }
@@ -267,6 +305,81 @@ fn dump_function_report(
     for (block, transfer) in &report.edges {
         dump_transfer(output, *block, transfer);
     }
+}
+
+fn dump_branch_recipe(
+    output: &mut String,
+    block: BlockId,
+    arm: BranchArm,
+    recipe: BranchArmRecipe,
+) {
+    match recipe {
+        BranchArmRecipe::Materialized { reason } => {
+            writeln!(
+                output,
+                "  control block={} arm={arm:?} recipe=ReturnDispatcher reason={reason:?}",
+                block.index()
+            )
+            .unwrap();
+        }
+        BranchArmRecipe::InlineZeroAbiTerminalCall(recipe) => {
+            let origins = recipe.origins();
+            writeln!(
+                output,
+                "  control block={} arm={arm:?} recipe=InlineZeroAbiTerminalCall consumed={} call={} callee={} advantage={:?} completion={:?} origins=[{:?},{:?},{:?}]",
+                block.index(),
+                recipe.consumed_block().index(),
+                recipe.call_instruction().index(),
+                recipe.callee().index(),
+                recipe.advantage(),
+                GeneratedCompletionContract::ExactlyOneOnNormalCompletion,
+                origins.branch(),
+                origins.call(),
+                origins.terminal_return(),
+            )
+            .unwrap();
+            dump_recipe_cost(
+                output,
+                "baseline",
+                recipe
+                    .baseline_cost()
+                    .expect("verified closed baseline recipe cost remains representable"),
+            );
+            dump_recipe_cost(
+                output,
+                "selected",
+                recipe
+                    .selected_cost()
+                    .expect("verified closed selected recipe cost remains representable"),
+            );
+        }
+    }
+}
+
+fn dump_recipe_cost(
+    output: &mut String,
+    label: &str,
+    cost: crate::lower::minecraft::recipe::ControlRecipeCost,
+) {
+    let then_path = cost.path(BranchArm::Then);
+    let else_path = cost.path(BranchArm::Else);
+    let structure = cost.structured_size();
+    writeln!(
+        output,
+        "    cost {label} kind={:?} arm={:?} impact={:?} then={:?}/chain={:?} else={:?}/chain={:?} structure=[functions={},helpers={},commands={},nodes={}]",
+        cost.kind(),
+        cost.terminal_arm(),
+        cost.whole_graph_impact(),
+        then_path.counts(),
+        then_path.maximum_chain_expansion(),
+        else_path.counts(),
+        else_path.maximum_chain_expansion(),
+        structure.functions(),
+        structure.helpers(),
+        structure.top_level_commands(),
+        structure.command_nodes(),
+    )
+    .unwrap();
 }
 
 fn dump_optimization_level(output: &mut String, level: MinecraftOptimizationLevel) {
@@ -296,6 +409,10 @@ fn dump_edge_temporary(output: &mut String, temporary: &EdgeTemporaryReport) {
 }
 
 impl FunctionReport {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the report projection copies one dense verified layout into a single immutable audit record"
+    )]
     fn from_layout(plan: &LoweringPlan, function: FunctionId, layout: &FunctionLayout) -> Self {
         let entry_function =
             layout.block_functions[usize::try_from(layout.abi.entry_block.index())
@@ -330,6 +447,27 @@ impl FunctionReport {
                     let block = BlockId::from_index(u32::try_from(block).ok()?);
                     let planned = (*planned)?;
                     Some((block, planned, resource(plan, planned)))
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            placements: layout
+                .block_placements
+                .iter()
+                .enumerate()
+                .filter_map(|(block, placement)| {
+                    Some((
+                        BlockId::from_index(u32::try_from(block).ok()?),
+                        (*placement)?,
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            branch_recipes: layout
+                .branch_recipes
+                .iter()
+                .enumerate()
+                .filter_map(|(block, recipe)| {
+                    Some((BlockId::from_index(u32::try_from(block).ok()?), (*recipe)?))
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),

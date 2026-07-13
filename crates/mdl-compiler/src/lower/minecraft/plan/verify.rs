@@ -15,6 +15,13 @@ use super::{
     LoweringPlan, MinecraftOptimizationLevel, PlannedFunctionId, PlannedFunctionRole,
     ScalarResultPlacement,
 };
+use crate::lower::minecraft::placement::{
+    BlockPlacement, BranchArmRecipe, ControlRecipeStatistics, InlineZeroAbiTerminalCall,
+    RecipeDecisionReason,
+};
+use crate::lower::minecraft::recipe::{
+    ControlRecipeCost, ControlRecipeKind, RecipePreference, WholeGraphImpact, compare_recipe_costs,
+};
 use crate::lower::minecraft::{GeneratedNames, LoweringOptions};
 
 const MAX_STRUCTURAL_FINDINGS: usize = 64;
@@ -41,6 +48,13 @@ struct PlanVerifier<'a> {
     token_values: Vec<Option<HomeId>>,
     token_epochs: Vec<u32>,
     token_epoch: u32,
+    generated_exact_one_contract_valid: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExpectedBranchArmDecision {
+    Materialized(RecipeDecisionReason),
+    InlineZeroAbiTerminalCall,
 }
 
 impl<'a> PlanVerifier<'a> {
@@ -73,11 +87,15 @@ impl<'a> PlanVerifier<'a> {
             token_values: vec![None; plan.homes.len()],
             token_epochs: vec![0; plan.homes.len()],
             token_epoch: 0,
+            generated_exact_one_contract_valid: generated_exact_one_contract_is_structural(
+                core, plan,
+            ),
         }
     }
 
     fn verify_program(&mut self) {
         self.verify_program_shape();
+        self.verify_control_statistics();
         self.verify_home_records();
         self.verify_resource_uniqueness();
         self.verify_scaffolding();
@@ -101,6 +119,61 @@ impl<'a> PlanVerifier<'a> {
             self.verify_function(function, declaration, body, minimum);
         }
         self.verify_final_ownership();
+    }
+
+    fn verify_control_statistics(&mut self) {
+        let mut branch_arms = 0_u64;
+        let mut selected = 0_u64;
+        let mut consumed = 0_u64;
+        let mut overflowed = false;
+
+        for (_, layout) in self.plan.functions.iter() {
+            for recipe in layout.branch_recipes.iter().flatten().copied() {
+                match branch_arms.checked_add(2) {
+                    Some(next) => branch_arms = next,
+                    None => overflowed = true,
+                }
+                for arm in [BranchArm::Then, BranchArm::Else] {
+                    if matches!(
+                        recipe.arm(arm),
+                        BranchArmRecipe::InlineZeroAbiTerminalCall(_)
+                    ) {
+                        match selected.checked_add(1) {
+                            Some(next) => selected = next,
+                            None => overflowed = true,
+                        }
+                    }
+                }
+            }
+            for placement in layout.block_placements.iter().flatten() {
+                if matches!(placement, BlockPlacement::Consumed { .. }) {
+                    match consumed.checked_add(1) {
+                        Some(next) => consumed = next,
+                        None => overflowed = true,
+                    }
+                }
+            }
+        }
+
+        if overflowed {
+            self.report(
+                "lower.plan.control-statistics-overflow",
+                "control placement/recipe statistics exceed their exact counter domain",
+                OriginId::UNKNOWN,
+            );
+            return;
+        }
+        let recounted = ControlRecipeStatistics::from_counts(branch_arms, selected, consumed);
+        if self.plan.control_statistics != recounted {
+            self.report(
+                "lower.plan.control-statistics",
+                format!(
+                    "recorded control statistics {:?} do not match independently recounted {:?}",
+                    self.plan.control_statistics, recounted
+                ),
+                OriginId::UNKNOWN,
+            );
+        }
     }
 
     fn verify_program_shape(&mut self) {
@@ -322,6 +395,16 @@ impl<'a> PlanVerifier<'a> {
         minimum: &FunctionMinimumDemand,
     ) {
         let checks = [
+            (
+                "block-placements",
+                layout.block_placements.len(),
+                body.block_counts().allocated,
+            ),
+            (
+                "branch-recipes",
+                layout.branch_recipes.len(),
+                body.block_counts().allocated,
+            ),
             (
                 "block-functions",
                 layout.block_functions.len(),
@@ -902,6 +985,8 @@ impl<'a> PlanVerifier<'a> {
         layout: &FunctionLayout,
         minimum: &FunctionMinimumDemand,
     ) {
+        let incoming_counts = incoming_edge_occurrence_counts(body, minimum);
+        let consumer_counts = recipe_consumer_counts(layout);
         for index in 0..body.block_counts().allocated {
             let Some(block) = dense_id::<BlockId>(index) else {
                 self.report(
@@ -912,36 +997,115 @@ impl<'a> PlanVerifier<'a> {
                 break;
             };
             let reachable = minimum.is_block_reachable(block).unwrap_or(false);
+            let placement = slot(&layout.block_placements, block);
             let mapped = slot(&layout.block_functions, block);
-            if reachable != mapped.is_some() {
+            if reachable != placement.is_some() {
                 self.report(
-                    "lower.plan.block-coverage",
-                    format!("resource coverage for {function:?} {block:?} is incorrect"),
+                    "lower.plan.placement-coverage",
+                    format!("placement coverage for {function:?} {block:?} is incorrect"),
                     OriginId::UNKNOWN,
                 );
             }
             let block_data = body.block(block);
             let origin = block_data.map_or(OriginId::UNKNOWN, crate::ir::core::BlockData::origin);
-            if let Some(planned) = mapped {
-                if let Some(resource) = self
-                    .naming_options
-                    .as_ref()
-                    .map(|options| options.generated_names().block_function(function, block))
-                {
-                    self.reference_function(
-                        planned,
-                        PlannedFunctionRole::Block { function, block },
-                        origin,
-                        &resource,
-                    );
+            let consumers = consumer_counts.get(index).copied().unwrap_or_default();
+            match placement {
+                Some(BlockPlacement::Materialized) => {
+                    if consumers != 0 {
+                        self.report(
+                            "lower.plan.materialized-consumer",
+                            format!(
+                                "materialized {function:?} {block:?} has {consumers} recipe consumers"
+                            ),
+                            origin,
+                        );
+                    }
+                    if let Some(planned) = mapped {
+                        if let Some(resource) = self.naming_options.as_ref().map(|options| {
+                            options.generated_names().block_function(function, block)
+                        }) {
+                            self.reference_function(
+                                planned,
+                                PlannedFunctionRole::Block { function, block },
+                                origin,
+                                &resource,
+                            );
+                        }
+                    } else {
+                        self.report(
+                            "lower.plan.materialized-resource",
+                            format!("materialized {function:?} {block:?} has no resource"),
+                            origin,
+                        );
+                    }
                 }
+                Some(BlockPlacement::Consumed {
+                    source,
+                    arm,
+                    recipe,
+                }) => {
+                    if block == body.entry() {
+                        self.report(
+                            "lower.plan.consumed-entry",
+                            format!("entry {function:?} {block:?} is consumed"),
+                            origin,
+                        );
+                    }
+                    if mapped.is_some() {
+                        self.report(
+                            "lower.plan.consumed-resource",
+                            format!("consumed {function:?} {block:?} retains a resource"),
+                            origin,
+                        );
+                    }
+                    if consumers != 1 {
+                        self.report(
+                            "lower.plan.consumed-owner-count",
+                            format!(
+                                "consumed {function:?} {block:?} has {consumers} recipe consumers"
+                            ),
+                            origin,
+                        );
+                    }
+                    let owner_matches = slot(&layout.branch_recipes, source)
+                        .map(|branch| branch.arm(arm))
+                        .is_some_and(|owner| {
+                            owner.kind() == recipe
+                                && owner
+                                    .inline_zero_abi_terminal_call()
+                                    .is_some_and(|inline| inline.consumed_block() == block)
+                        });
+                    if !owner_matches {
+                        self.report(
+                            "lower.plan.consumed-owner",
+                            format!(
+                                "consumed {function:?} {block:?} disagrees with owner {source:?} {arm:?}"
+                            ),
+                            origin,
+                        );
+                    }
+                }
+                None if mapped.is_some() => self.report(
+                    "lower.plan.unplaced-resource",
+                    format!("unplaced {function:?} {block:?} retains a resource"),
+                    origin,
+                ),
+                None => {}
             }
             let transfer = slot_ref(&layout.edge_transfers, block);
+            let branch_recipe = slot(&layout.branch_recipes, block);
             if !reachable {
                 if transfer.is_some() {
                     self.report(
                         "lower.plan.detached-transfer",
                         format!("unreachable {function:?} {block:?} owns a transfer"),
+                        origin,
+                    );
+                }
+                if branch_recipe.is_some() {
+                    self.report(
+                        "lower.plan.detached-recipe",
+                        format!("unreachable {function:?} {block:?} owns a branch recipe"),
                         origin,
                     );
                 }
@@ -959,6 +1123,13 @@ impl<'a> PlanVerifier<'a> {
             let terminator_origin = terminator.map_or(origin, crate::ir::core::Terminator::origin);
             match (terminator.map(crate::ir::core::Terminator::kind), transfer) {
                 (Some(TerminatorKind::Jump(target)), Some(EdgeTransfer::Jump { steps })) => {
+                    if branch_recipe.is_some() {
+                        self.report(
+                            "lower.plan.recipe-shape",
+                            format!("jump {function:?} {block:?} owns a branch recipe"),
+                            terminator_origin,
+                        );
+                    }
                     self.verify_transfer(
                         function,
                         body,
@@ -980,6 +1151,14 @@ impl<'a> PlanVerifier<'a> {
                         else_edge,
                     }),
                 ) => {
+                    let Some(branch_recipe) = branch_recipe else {
+                        self.report(
+                            "lower.plan.recipe-shape",
+                            format!("branch {function:?} {block:?} has no recipe"),
+                            terminator_origin,
+                        );
+                        continue;
+                    };
                     self.verify_condition_home(function, *condition, layout, origin);
                     self.verify_branch_transfer(
                         function,
@@ -1001,8 +1180,41 @@ impl<'a> PlanVerifier<'a> {
                         layout,
                         terminator_origin,
                     );
+                    self.verify_branch_recipe(
+                        function,
+                        declaration,
+                        body,
+                        block,
+                        BranchArm::Then,
+                        then_target,
+                        then_edge,
+                        branch_recipe.arm(BranchArm::Then),
+                        layout,
+                        &incoming_counts,
+                        terminator_origin,
+                    );
+                    self.verify_branch_recipe(
+                        function,
+                        declaration,
+                        body,
+                        block,
+                        BranchArm::Else,
+                        else_target,
+                        else_edge,
+                        branch_recipe.arm(BranchArm::Else),
+                        layout,
+                        &incoming_counts,
+                        terminator_origin,
+                    );
                 }
                 (Some(TerminatorKind::Return(values)), None) => {
+                    if branch_recipe.is_some() {
+                        self.report(
+                            "lower.plan.recipe-shape",
+                            format!("return {function:?} {block:?} owns a branch recipe"),
+                            terminator_origin,
+                        );
+                    }
                     self.verify_return(
                         function,
                         declaration,
@@ -1012,13 +1224,372 @@ impl<'a> PlanVerifier<'a> {
                         terminator_origin,
                     );
                 }
-                (Some(TerminatorKind::Unreachable), None) => {}
+                (Some(TerminatorKind::Unreachable), None) => self.report(
+                    "lower.plan.reachable-unreachable",
+                    format!("reachable {function:?} {block:?} is `unreachable`"),
+                    terminator_origin,
+                ),
                 _ => self.report(
                     "lower.plan.transfer-shape",
                     format!("transfer shape for {function:?} {block:?} disagrees with Core"),
                     origin,
                 ),
             }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "independent recipe verification keeps Core shape, physical transfer, placement, and predicted cost explicit"
+    )]
+    fn verify_branch_recipe(
+        &mut self,
+        function: FunctionId,
+        declaration: &crate::ir::core::Function,
+        body: &crate::ir::core::FunctionBody,
+        source: BlockId,
+        arm: BranchArm,
+        target: &BlockTarget,
+        transfer: &BranchTransfer,
+        recipe: BranchArmRecipe,
+        layout: &FunctionLayout,
+        incoming_counts: &[usize],
+        branch_origin: OriginId,
+    ) {
+        let expected = self.expected_branch_arm_decision(
+            function,
+            declaration,
+            body,
+            arm,
+            target,
+            transfer,
+            incoming_counts,
+        );
+        match recipe {
+            BranchArmRecipe::Materialized { reason } => {
+                if expected != ExpectedBranchArmDecision::Materialized(reason) {
+                    self.report(
+                        "lower.plan.recipe-decision",
+                        format!(
+                            "materialized branch {function:?} {source:?} {arm:?} records {reason:?}, independently expected {expected:?}"
+                        ),
+                        branch_origin,
+                    );
+                }
+                if !matches!(
+                    slot(&layout.block_placements, target.block()),
+                    Some(BlockPlacement::Materialized)
+                ) {
+                    self.report(
+                        "lower.plan.materialized-arm-target",
+                        format!(
+                            "materialized branch arm {function:?} {source:?} {arm:?} targets an unmaterialized block"
+                        ),
+                        branch_origin,
+                    );
+                }
+            }
+            BranchArmRecipe::InlineZeroAbiTerminalCall(recipe) => {
+                if expected != ExpectedBranchArmDecision::InlineZeroAbiTerminalCall {
+                    self.report(
+                        "lower.plan.recipe-decision",
+                        format!(
+                            "selected branch {function:?} {source:?} {arm:?} independently expected {expected:?}"
+                        ),
+                        branch_origin,
+                    );
+                }
+                self.verify_inline_zero_abi_terminal_call(
+                    function,
+                    declaration,
+                    body,
+                    source,
+                    arm,
+                    target,
+                    transfer,
+                    recipe,
+                    layout,
+                    incoming_counts,
+                    branch_origin,
+                );
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "independent selection rederivation keeps semantic shape, physical transfer, and cost inputs explicit"
+    )]
+    fn expected_branch_arm_decision(
+        &self,
+        function: FunctionId,
+        declaration: &crate::ir::core::Function,
+        body: &crate::ir::core::FunctionBody,
+        arm: BranchArm,
+        target: &BlockTarget,
+        transfer: &BranchTransfer,
+        incoming_counts: &[usize],
+    ) -> ExpectedBranchArmDecision {
+        let retain = ExpectedBranchArmDecision::Materialized;
+        if self.plan.optimization_level == MinecraftOptimizationLevel::None {
+            return retain(RecipeDecisionReason::OptimizationDisabled);
+        }
+        if target.block() == body.entry() {
+            return retain(RecipeDecisionReason::DestinationIsEntry);
+        }
+        let incoming = usize::try_from(target.block().index())
+            .ok()
+            .and_then(|index| incoming_counts.get(index))
+            .copied()
+            .unwrap_or_default();
+        if incoming != 1 {
+            return retain(RecipeDecisionReason::IncomingEdgeOccurrenceCount { actual: incoming });
+        }
+        if !transfer.steps().is_empty() || transfer.helper().is_some() {
+            return retain(RecipeDecisionReason::EdgeTransferNotEmpty);
+        }
+        let Some(block) = body.block(target.block()) else {
+            return retain(RecipeDecisionReason::InstructionIsNotCall);
+        };
+        if !block.parameters().is_empty() {
+            return retain(RecipeDecisionReason::DestinationHasParameters);
+        }
+        if block.instructions().len() != 1 {
+            return retain(RecipeDecisionReason::InstructionCountNotOne {
+                actual: block.instructions().len(),
+            });
+        }
+        let instruction = block.instructions()[0];
+        let Some(call) = body.instruction(instruction) else {
+            return retain(RecipeDecisionReason::InstructionIsNotCall);
+        };
+        let CoreOp::Call(callee) = call.op() else {
+            return retain(RecipeDecisionReason::InstructionIsNotCall);
+        };
+        if !call.operands().is_empty() || !call.results().is_empty() {
+            return retain(RecipeDecisionReason::CallHasSemanticArgumentsOrResults);
+        }
+        if !matches!(
+            self.plan.instruction_plan(function, instruction),
+            Some(InstructionPlan::Call {
+                arguments,
+                result_destinations,
+            }) if arguments.is_empty() && result_destinations.is_empty()
+        ) {
+            return retain(RecipeDecisionReason::CallHasPhysicalArgumentsOrResults);
+        }
+        let Some(callee) = self.core.function(*callee) else {
+            return retain(RecipeDecisionReason::NormalCompletionNotProven);
+        };
+        if !callee.parameters().is_empty() || !callee.results().is_empty() {
+            return retain(RecipeDecisionReason::CalleeHasParametersOrResults);
+        }
+        if !declaration.results().is_empty() {
+            return retain(RecipeDecisionReason::CallerHasResults);
+        }
+        if !matches!(
+            block
+                .terminator()
+                .map(crate::ir::core::Terminator::kind),
+            Some(TerminatorKind::Return(values)) if values.is_empty()
+        ) {
+            return retain(RecipeDecisionReason::TerminalReturnIsNotEmpty);
+        }
+        if callee.body().is_none() {
+            return retain(RecipeDecisionReason::NormalCompletionNotProven);
+        }
+
+        let baseline = match ControlRecipeCost::return_dispatcher(arm) {
+            Ok(cost) => cost,
+            Err(error) => return retain(RecipeDecisionReason::AccountingUnavailable(error)),
+        };
+        let candidate = match ControlRecipeCost::inline_zero_abi_terminal_call(
+            arm,
+            WholeGraphImpact::unique_terminal_arm_contraction(),
+        ) {
+            Ok(cost) => cost,
+            Err(error) => return retain(RecipeDecisionReason::AccountingUnavailable(error)),
+        };
+        match compare_recipe_costs(baseline, candidate) {
+            Ok(RecipePreference::SelectCandidate(_)) => {
+                ExpectedBranchArmDecision::InlineZeroAbiTerminalCall
+            }
+            Ok(RecipePreference::RetainBaseline(reason)) => {
+                retain(RecipeDecisionReason::CostRetained(reason))
+            }
+            Err(error) => retain(RecipeDecisionReason::AccountingUnavailable(error)),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one exhaustive verifier rederives the complete first closed recipe without trusting selector facts"
+    )]
+    fn verify_inline_zero_abi_terminal_call(
+        &mut self,
+        function: FunctionId,
+        declaration: &crate::ir::core::Function,
+        body: &crate::ir::core::FunctionBody,
+        source: BlockId,
+        arm: BranchArm,
+        target: &BlockTarget,
+        transfer: &BranchTransfer,
+        recipe: InlineZeroAbiTerminalCall,
+        layout: &FunctionLayout,
+        incoming_counts: &[usize],
+        branch_origin: OriginId,
+    ) {
+        let consumed = recipe.consumed_block();
+        if self.plan.optimization_level != MinecraftOptimizationLevel::Baseline
+            || recipe.terminal_arm() != arm
+            || consumed != target.block()
+            || consumed == body.entry()
+            || !target.arguments().is_empty()
+            || !transfer.steps().is_empty()
+            || transfer.helper().is_some()
+            || slot(&layout.block_placements, consumed)
+                != Some(BlockPlacement::Consumed {
+                    source,
+                    arm,
+                    recipe: ControlRecipeKind::InlineZeroAbiTerminalCall,
+                })
+        {
+            self.report(
+                "lower.plan.inline-terminal-shape",
+                format!(
+                    "inline terminal recipe for {function:?} {source:?} {arm:?} has invalid placement or edge shape"
+                ),
+                branch_origin,
+            );
+        }
+        let incoming = usize::try_from(consumed.index())
+            .ok()
+            .and_then(|index| incoming_counts.get(index))
+            .copied()
+            .unwrap_or_default();
+        if incoming != 1 {
+            self.report(
+                "lower.plan.inline-terminal-incoming",
+                format!("inline terminal {function:?} {consumed:?} has {incoming} incoming edges"),
+                branch_origin,
+            );
+        }
+
+        let Some(block) = body.block(consumed) else {
+            self.report(
+                "lower.plan.inline-terminal-block",
+                format!("inline terminal {function:?} {consumed:?} is absent"),
+                branch_origin,
+            );
+            return;
+        };
+        if !block.parameters().is_empty()
+            || block.instructions() != [recipe.call_instruction()]
+            || !matches!(
+                block.terminator().map(crate::ir::core::Terminator::kind),
+                Some(TerminatorKind::Return(values)) if values.is_empty()
+            )
+            || !declaration.results().is_empty()
+        {
+            self.report(
+                "lower.plan.inline-terminal-body",
+                format!(
+                    "inline terminal {function:?} {consumed:?} is not one call plus empty return"
+                ),
+                block.origin(),
+            );
+            return;
+        }
+        let Some(call) = body.instruction(recipe.call_instruction()) else {
+            self.report(
+                "lower.plan.inline-terminal-call",
+                format!(
+                    "inline terminal call {:?} is absent",
+                    recipe.call_instruction()
+                ),
+                block.origin(),
+            );
+            return;
+        };
+        let CoreOp::Call(callee) = call.op() else {
+            self.report(
+                "lower.plan.inline-terminal-call",
+                format!(
+                    "inline terminal instruction {:?} is not a call",
+                    recipe.call_instruction()
+                ),
+                call.origin(),
+            );
+            return;
+        };
+        if *callee != recipe.callee()
+            || !call.operands().is_empty()
+            || !call.results().is_empty()
+            || !matches!(
+                self.plan.instruction_plan(function, recipe.call_instruction()),
+                Some(InstructionPlan::Call { arguments, result_destinations })
+                    if arguments.is_empty() && result_destinations.is_empty()
+            )
+        {
+            self.report(
+                "lower.plan.inline-terminal-call",
+                format!(
+                    "inline terminal call {:?} has invalid semantic or physical ABI",
+                    recipe.call_instruction()
+                ),
+                call.origin(),
+            );
+        }
+        let callee_valid = self.core.function(*callee).is_some_and(|declaration| {
+            declaration.parameters().is_empty()
+                && declaration.results().is_empty()
+                && declaration.body().is_some_and(|callee_body| {
+                    matches!(
+                        self.plan.block_placement(*callee, callee_body.entry()),
+                        Some(BlockPlacement::Materialized)
+                    )
+                })
+        });
+        if !callee_valid || !self.generated_exact_one_contract_valid {
+            self.report(
+                "lower.plan.inline-terminal-completion",
+                format!("inline terminal callee {callee:?} lacks the generated exact-one completion contract"),
+                call.origin(),
+            );
+        }
+        let origins = recipe.origins();
+        let return_origin = block
+            .terminator()
+            .map_or(OriginId::UNKNOWN, crate::ir::core::Terminator::origin);
+        if origins.branch() != branch_origin
+            || origins.call() != call.origin()
+            || origins.terminal_return() != return_origin
+        {
+            self.report(
+                "lower.plan.inline-terminal-origins",
+                format!("inline terminal {function:?} {consumed:?} has stale origins"),
+                branch_origin,
+            );
+        }
+
+        let recounted_baseline = ControlRecipeCost::return_dispatcher(arm);
+        let recounted_selected = ControlRecipeCost::inline_zero_abi_terminal_call(
+            arm,
+            WholeGraphImpact::unique_terminal_arm_contraction(),
+        );
+        let preference = recounted_baseline.and_then(|baseline| {
+            recounted_selected.and_then(|selected| compare_recipe_costs(baseline, selected))
+        });
+        if recounted_baseline != recipe.baseline_cost()
+            || recounted_selected != recipe.selected_cost()
+            || preference != Ok(RecipePreference::SelectCandidate(recipe.advantage()))
+        {
+            self.report(
+                "lower.plan.inline-terminal-cost",
+                format!("inline terminal {function:?} {consumed:?} has stale predicted cost"),
+                branch_origin,
+            );
         }
     }
 
@@ -1481,6 +2052,48 @@ impl<'a> PlanVerifier<'a> {
     }
 }
 
+/// Rederives the fixed-emitter completion theorem without trusting recipe payloads.
+///
+/// Materialized block instructions never emit an early native return. A finite block
+/// completion therefore ends either in explicit `return 1` for a Core return or in
+/// `return run` propagation to another verified generated block/recipe target. Any
+/// infinite propagation does not complete, so every normal finite completion has
+/// success `1` and result `1`. Reachable `unreachable` blocks invalidate the theorem.
+fn generated_exact_one_contract_is_structural(core: &CoreProgram, plan: &LoweringPlan) -> bool {
+    core.functions().all(|(function, declaration)| {
+        let Some(body) = declaration.body() else {
+            return false;
+        };
+        let Some(layout) = plan.functions.get(function) else {
+            return false;
+        };
+        if !matches!(
+            slot(&layout.block_placements, body.entry()),
+            Some(BlockPlacement::Materialized)
+        ) {
+            return false;
+        }
+        layout
+            .block_placements
+            .iter()
+            .enumerate()
+            .filter_map(|(index, placement)| placement.map(|placement| (index, placement)))
+            .all(|(index, placement)| {
+                if !matches!(placement, BlockPlacement::Materialized) {
+                    return true;
+                }
+                let Ok(index) = u32::try_from(index) else {
+                    return false;
+                };
+                body.block(BlockId::from_index(index))
+                    .and_then(crate::ir::core::BlockData::terminator)
+                    .is_some_and(|terminator| {
+                        !matches!(terminator.kind(), TerminatorKind::Unreachable)
+                    })
+            })
+    })
+}
+
 fn verifier_scalar_result_types(operation: &CoreOp) -> Option<&'static [CoreType]> {
     const BOOL: &[CoreType] = &[CoreType::Bool];
     const I32: &[CoreType] = &[CoreType::I32];
@@ -1500,6 +2113,55 @@ fn minimum_demand_diagnostics(error: MinimumDemandError) -> Diagnostics {
         OriginId::UNKNOWN,
     )])
     .expect("one minimum-demand finding always forms diagnostics")
+}
+
+fn incoming_edge_occurrence_counts(
+    body: &crate::ir::core::FunctionBody,
+    minimum: &FunctionMinimumDemand,
+) -> Vec<usize> {
+    let mut counts = vec![0_usize; body.block_counts().allocated];
+    for source in body.block_order().iter().copied() {
+        if !minimum.is_block_reachable(source).unwrap_or(false) {
+            continue;
+        }
+        let Some(terminator) = body
+            .block(source)
+            .and_then(crate::ir::core::BlockData::terminator)
+        else {
+            continue;
+        };
+        terminator.kind().for_each_successor(|target| {
+            if let Some(count) = usize::try_from(target.block().index())
+                .ok()
+                .and_then(|index| counts.get_mut(index))
+            {
+                *count = count
+                    .checked_add(1)
+                    .expect("an in-memory semantic edge inventory fits the host index domain");
+            }
+        });
+    }
+    counts
+}
+
+fn recipe_consumer_counts(layout: &FunctionLayout) -> Vec<usize> {
+    let mut counts = vec![0_usize; layout.block_placements.len()];
+    for recipe in layout.branch_recipes.iter().flatten().copied() {
+        for arm in [BranchArm::Then, BranchArm::Else] {
+            let Some(inline) = recipe.arm(arm).inline_zero_abi_terminal_call() else {
+                continue;
+            };
+            if let Some(count) = usize::try_from(inline.consumed_block().index())
+                .ok()
+                .and_then(|index| counts.get_mut(index))
+            {
+                *count = count
+                    .checked_add(1)
+                    .expect("an in-memory recipe inventory fits the host index domain");
+            }
+        }
+    }
+    counts
 }
 
 fn slot<I: EntityId, T: Copy>(slots: &[Option<T>], id: I) -> Option<T> {
@@ -1616,10 +2278,17 @@ mod tests {
     use crate::lower::minecraft::assignment::HomeAssignment;
     use crate::lower::minecraft::demand::{RuntimeDemand, RuntimeDemandLimits};
     use crate::lower::minecraft::edge_transfer::EdgeTransferPlan;
-    use crate::lower::minecraft::plan::assemble::assemble_candidate;
+    use crate::lower::minecraft::placement::{
+        BlockPlacement, BranchRecipe, ControlRecipePlan, ControlRecipeStatistics,
+        RecipeDecisionReason,
+    };
+    use crate::lower::minecraft::plan::assemble::{
+        assemble_candidate, assemble_selected_candidate,
+    };
     use crate::lower::minecraft::plan::{
         EdgeTransfer, HomeRole, InstructionPlan, LoweringPlan, PlannedFunctionId,
     };
+    use crate::lower::minecraft::recipe::ControlRecipeKind;
     use crate::lower::minecraft::resources::ResourceInventory;
     use crate::lower::minecraft::{LoweringOptions, MinecraftOptimizationLevel};
     use crate::source::{OriginId, SourceContext};
@@ -1661,6 +2330,34 @@ mod tests {
         };
         let resources = ResourceInventory::new(core, &inventory, &transfers, &options).unwrap();
         let plan = assemble_candidate(core, &options, &assignment, &transfers, &resources).unwrap();
+        verify_plan(core, &plan).unwrap();
+        plan
+    }
+
+    fn selected_baseline_candidate(core: &CoreProgram) -> LoweringPlan {
+        let level = MinecraftOptimizationLevel::Baseline;
+        let options = options(level);
+        let inventory = SemanticInventory::new(core).unwrap();
+        let demand =
+            RuntimeDemand::for_level(core, &inventory, level, RuntimeDemandLimits::derived())
+                .unwrap();
+        let assignment =
+            HomeAssignment::for_baseline_derived_liveness(core, &inventory, &demand).unwrap();
+        let transfers = EdgeTransferPlan::for_baseline(core, &inventory, &assignment).unwrap();
+        let control =
+            ControlRecipePlan::new(core, &inventory, &assignment, &transfers, level).unwrap();
+        let resources =
+            ResourceInventory::for_control_plan(core, &inventory, &transfers, &control, &options)
+                .unwrap();
+        let plan = assemble_selected_candidate(
+            core,
+            &options,
+            &assignment,
+            &transfers,
+            &control,
+            &resources,
+        )
+        .unwrap();
         verify_plan(core, &plan).unwrap();
         plan
     }
@@ -1760,6 +2457,40 @@ mod tests {
         assert!(moved.helper.take().is_some());
 
         assert_invalid(&core, &plan, "lower.plan.helper-correspondence");
+    }
+
+    #[test]
+    fn rejects_a_corrupted_baseline_recipe_rejection_reason() {
+        let (core, function, entry) = moved_branch_program();
+        let mut plan = selected_baseline_candidate(&core);
+        plan.functions.get_mut(function).unwrap().branch_recipes[index(entry)] = Some(
+            BranchRecipe::all_materialized(RecipeDecisionReason::OptimizationDisabled),
+        );
+
+        assert_invalid(&core, &plan, "lower.plan.recipe-decision");
+    }
+
+    #[test]
+    fn rejects_corrupted_control_recipe_statistics() {
+        let (core, _, _) = moved_branch_program();
+        let mut plan = selected_baseline_candidate(&core);
+        plan.control_statistics = ControlRecipeStatistics::default();
+
+        assert_invalid(&core, &plan, "lower.plan.control-statistics");
+    }
+
+    #[test]
+    fn rejects_a_corrupted_selected_recipe_owner() {
+        let (core, function, source, consumed) = selected_terminal_call_program();
+        let mut plan = selected_baseline_candidate(&core);
+        plan.functions.get_mut(function).unwrap().block_placements[index(consumed)] =
+            Some(BlockPlacement::Consumed {
+                source,
+                arm: super::BranchArm::Else,
+                recipe: ControlRecipeKind::InlineZeroAbiTerminalCall,
+            });
+
+        assert_invalid(&core, &plan, "lower.plan.inline-terminal-shape");
     }
 
     #[test]
@@ -2019,6 +2750,84 @@ mod tests {
         core.define_function(function, builder.finish().unwrap())
             .unwrap();
         (core, function, entry)
+    }
+
+    fn selected_terminal_call_program() -> (CoreProgram, FunctionId, BlockId, BlockId) {
+        let sources = SourceContext::new();
+        let mut core = CoreProgram::new();
+        let callee = core
+            .declare_function(Some("leaf"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let function = core
+            .declare_function(
+                Some("dispatcher"),
+                vec![CoreType::Bool],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+
+        let mut callee_builder = FunctionBuilder::new(&core, &sources, callee).unwrap();
+        let condition = callee_builder
+            .bool_constant(true, OriginId::UNKNOWN)
+            .unwrap();
+        let callee_then = callee_builder.create_block(OriginId::UNKNOWN).unwrap();
+        let callee_else = callee_builder.create_block(OriginId::UNKNOWN).unwrap();
+        callee_builder
+            .terminate(Terminator::new(
+                TerminatorKind::Branch {
+                    condition,
+                    then_target: BlockTarget::new(callee_then, vec![]),
+                    else_target: BlockTarget::new(callee_else, vec![]),
+                },
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        for block in [callee_then, callee_else] {
+            callee_builder.switch_to_block(block).unwrap();
+            callee_builder
+                .terminate(Terminator::new(
+                    TerminatorKind::Return(vec![]),
+                    OriginId::UNKNOWN,
+                ))
+                .unwrap();
+        }
+        core.define_function(callee, callee_builder.finish().unwrap())
+            .unwrap();
+
+        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
+        let source = builder.entry_block();
+        let condition = block_values(&builder, source)[0];
+        let consumed = builder.create_block(OriginId::UNKNOWN).unwrap();
+        let other = builder.create_block(OriginId::UNKNOWN).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Branch {
+                    condition,
+                    then_target: BlockTarget::new(consumed, vec![]),
+                    else_target: BlockTarget::new(other, vec![]),
+                },
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        builder.switch_to_block(consumed).unwrap();
+        builder.call(callee, vec![], OriginId::UNKNOWN).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        builder.switch_to_block(other).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        core.define_function(function, builder.finish().unwrap())
+            .unwrap();
+        (core, function, source, consumed)
     }
 
     fn defining_instruction(core: &CoreProgram, function: FunctionId, value: ValueId) -> InstId {

@@ -11,6 +11,7 @@ use super::super::assignment::{
 use super::super::edge_transfer::{
     BlockTransfer, EdgeTemporaryKind, EdgeTransferPlan, FunctionEdgeTransferPlan, TransferLocation,
 };
+use super::super::placement::{ControlRecipePlan, FunctionControlRecipePlan};
 use super::super::resources::{FunctionResourceInventory, ResourceInventory};
 use super::super::{LoweringOptions, MinecraftOptimizationLevel};
 use super::{
@@ -68,6 +69,27 @@ impl LoweringPlan {
         clippy::needless_pass_by_value,
         reason = "publication consumes one-shot immutable phase results at the final ownership boundary"
     )]
+    pub(crate) fn from_selected_parts(
+        core: &CoreProgram,
+        options: &LoweringOptions,
+        assignment: HomeAssignment,
+        transfers: EdgeTransferPlan,
+        control: ControlRecipePlan,
+        resources: ResourceInventory,
+    ) -> Result<Self, PlanFinishError> {
+        let candidate = assemble_selected_candidate(
+            core,
+            options,
+            &assignment,
+            &transfers,
+            &control,
+            &resources,
+        )?;
+        verify_plan(core, &candidate).map_err(PlanFinishError::Invalid)?;
+        Ok(candidate)
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_parts(
         core: &CoreProgram,
         options: &LoweringOptions,
@@ -75,20 +97,30 @@ impl LoweringPlan {
         transfers: EdgeTransferPlan,
         resources: ResourceInventory,
     ) -> Result<Self, PlanFinishError> {
-        let candidate = assemble_candidate(core, options, &assignment, &transfers, &resources)?;
-        verify_plan(core, &candidate).map_err(PlanFinishError::Invalid)?;
-        Ok(candidate)
+        validate_legacy_phase_headers(core, options, &assignment, &transfers, &resources)?;
+        let inventory = super::super::analysis::SemanticInventory::new(core)
+            .map_err(|_| invalid_control_without_function())?;
+        let control = ControlRecipePlan::new(
+            core,
+            &inventory,
+            &assignment,
+            &transfers,
+            options.optimization_level(),
+        )
+        .map_err(|_| invalid_control_without_function())?;
+        Self::from_selected_parts(core, options, assignment, transfers, control, resources)
     }
 }
 
-pub(super) fn assemble_candidate(
+pub(super) fn assemble_selected_candidate(
     core: &CoreProgram,
     options: &LoweringOptions,
     assignment: &HomeAssignment,
     transfers: &EdgeTransferPlan,
+    control: &ControlRecipePlan,
     resources: &ResourceInventory,
 ) -> Result<LoweringPlan, PlanBuildError> {
-    validate_phase_headers(core, options, assignment, transfers, resources)?;
+    validate_phase_headers(core, options, assignment, transfers, control, resources)?;
     validate_home_capacity(required_home_count(core, assignment, transfers)?)?;
 
     let target_functions = flatten_resources(resources)?;
@@ -104,6 +136,9 @@ pub(super) fn assemble_candidate(
         let transfer = transfers
             .function(function)
             .ok_or_else(|| invalid_transfers(function))?;
+        let function_control = control
+            .function(function)
+            .ok_or_else(|| invalid_control(function))?;
         let function_resources = resources
             .function(function)
             .ok_or_else(|| invalid_resources(function))?;
@@ -142,6 +177,8 @@ pub(super) fn assemble_candidate(
             parameter_types: declaration.parameters().into(),
             result_types: declaration.results().into(),
             abi,
+            block_placements: checked_placement_slots(function, body, function_control)?.into(),
+            branch_recipes: checked_branch_recipe_slots(function, body, function_control)?.into(),
             block_functions: function_resources.block_slots().into(),
             value_homes,
             parallel_copy_temp: local_homes.legacy_edge_temporary,
@@ -175,10 +212,34 @@ pub(super) fn assemble_candidate(
         homes,
         target_functions,
         functions,
+        control_statistics: control.statistics(),
     })
 }
 
-fn validate_phase_headers(
+#[cfg(test)]
+pub(super) fn assemble_candidate(
+    core: &CoreProgram,
+    options: &LoweringOptions,
+    assignment: &HomeAssignment,
+    transfers: &EdgeTransferPlan,
+    resources: &ResourceInventory,
+) -> Result<LoweringPlan, PlanBuildError> {
+    validate_legacy_phase_headers(core, options, assignment, transfers, resources)?;
+    let inventory = super::super::analysis::SemanticInventory::new(core)
+        .map_err(|_| invalid_control_without_function())?;
+    let control = ControlRecipePlan::new(
+        core,
+        &inventory,
+        assignment,
+        transfers,
+        options.optimization_level(),
+    )
+    .map_err(|_| invalid_control_without_function())?;
+    assemble_selected_candidate(core, options, assignment, transfers, &control, resources)
+}
+
+#[cfg(test)]
+fn validate_legacy_phase_headers(
     core: &CoreProgram,
     options: &LoweringOptions,
     assignment: &HomeAssignment,
@@ -202,6 +263,59 @@ fn validate_phase_headers(
     validate_phase_function_count(PlanInputPhase::Assignment, core.len(), assignment.len())?;
     validate_phase_function_count(PlanInputPhase::Transfers, core.len(), transfers.len())?;
     validate_phase_function_count(PlanInputPhase::Resources, core.len(), resources.len())
+}
+
+fn validate_phase_headers(
+    core: &CoreProgram,
+    options: &LoweringOptions,
+    assignment: &HomeAssignment,
+    transfers: &EdgeTransferPlan,
+    control: &ControlRecipePlan,
+    resources: &ResourceInventory,
+) -> Result<(), PlanBuildError> {
+    let expected_level = options.optimization_level();
+    for (phase, actual_level) in [
+        (PlanInputPhase::Assignment, assignment.level()),
+        (PlanInputPhase::Transfers, transfers.level()),
+        (PlanInputPhase::ControlRecipes, control.level()),
+        (PlanInputPhase::Resources, resources.level()),
+    ] {
+        if actual_level != expected_level {
+            return Err(PlanBuildError::OptimizationLevelMismatch {
+                phase,
+                expected: expected_level,
+                actual: actual_level,
+            });
+        }
+    }
+    validate_phase_function_count(PlanInputPhase::Assignment, core.len(), assignment.len())?;
+    validate_phase_function_count(PlanInputPhase::Transfers, core.len(), transfers.len())?;
+    validate_phase_function_count(PlanInputPhase::ControlRecipes, core.len(), control.len())?;
+    validate_phase_function_count(PlanInputPhase::Resources, core.len(), resources.len())
+}
+
+fn checked_placement_slots<'a>(
+    function: FunctionId,
+    body: &crate::ir::core::FunctionBody,
+    control: &'a FunctionControlRecipePlan,
+) -> Result<&'a [Option<super::super::placement::BlockPlacement>], PlanBuildError> {
+    if control.placement_slots().len() == body.block_counts().allocated {
+        Ok(control.placement_slots())
+    } else {
+        Err(invalid_control(function))
+    }
+}
+
+fn checked_branch_recipe_slots<'a>(
+    function: FunctionId,
+    body: &crate::ir::core::FunctionBody,
+    control: &'a FunctionControlRecipePlan,
+) -> Result<&'a [Option<super::super::placement::BranchRecipe>], PlanBuildError> {
+    if control.branch_recipe_slots().len() == body.block_counts().allocated {
+        Ok(control.branch_recipe_slots())
+    } else {
+        Err(invalid_control(function))
+    }
 }
 
 fn validate_phase_function_count(
@@ -806,6 +920,21 @@ const fn invalid_transfers(function: FunctionId) -> PlanBuildError {
     PlanBuildError::InvalidPhaseInput {
         phase: PlanInputPhase::Transfers,
         function: Some(function),
+    }
+}
+
+const fn invalid_control(function: FunctionId) -> PlanBuildError {
+    PlanBuildError::InvalidPhaseInput {
+        phase: PlanInputPhase::ControlRecipes,
+        function: Some(function),
+    }
+}
+
+#[cfg(test)]
+const fn invalid_control_without_function() -> PlanBuildError {
+    PlanBuildError::InvalidPhaseInput {
+        phase: PlanInputPhase::ControlRecipes,
+        function: None,
     }
 }
 

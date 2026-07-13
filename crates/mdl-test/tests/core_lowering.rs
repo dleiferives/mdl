@@ -3,14 +3,15 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use mdl_compiler::datapack::{EmissionOptions, emit_datapack};
+use mdl_compiler::datapack::{DatapackArtifact, EmissionOptions, emit_datapack};
 use mdl_compiler::ir::core::{
     BlockId, BlockTarget, CanonicalPrinter, CoreProgram, CoreType, FunctionBuilder, FunctionId,
     I32Predicate, Terminator, TerminatorKind, ValueId,
 };
 use mdl_compiler::ir::minecraft::{MinecraftDebugDumper, ObjectiveName, PackNamespace};
 use mdl_compiler::lower::minecraft::{
-    LoweredFunction, LoweringOptions, MinecraftOptimizationLevel, RegisterSlot, lower_to_minecraft,
+    LoweredFunction, LoweringOptions, LoweringOutput, MinecraftOptimizationLevel, RegisterSlot,
+    lower_to_minecraft,
 };
 use mdl_compiler::source::{Origin, OriginId, SourceContext};
 use mdl_compiler::target::JavaEditionTarget;
@@ -40,6 +41,108 @@ fn baseline_core_lowering_runs_on_vanilla_26_2() {
     if let Err(error) = run_conformance(MinecraftOptimizationLevel::Baseline, "stage5-baseline") {
         panic!("{error}");
     }
+}
+
+#[test]
+#[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
+fn baseline_terminal_call_recipe_matches_none_on_vanilla_26_2() {
+    if let Err(error) = run_terminal_call_recipe_differential() {
+        panic!("{error}");
+    }
+}
+
+fn run_terminal_call_recipe_differential() -> Result<(), String> {
+    let server_jar = env::var_os("MDL_SERVER_JAR")
+        .map(PathBuf::from)
+        .ok_or_else(|| "set MDL_SERVER_JAR to the official Minecraft 26.2 server JAR".to_owned())?;
+    let java = env::var_os("MDL_JAVA").map_or_else(|| PathBuf::from("java"), PathBuf::from);
+    let config = ServerConfig::new(java, server_jar);
+    let mut sources = SourceContext::new();
+    let origin = sources
+        .add_origin(Origin::Unknown)
+        .map_err(|error| error.to_string())?;
+    let fixture = build_terminal_call_recipe_fixture(&sources, origin);
+    let none_options = lowering_options_for("mdl_stage5g_none", "mdl5g.none")?
+        .with_optimization_level(MinecraftOptimizationLevel::None);
+    let baseline_options = lowering_options_for("mdl_stage5g_baseline", "mdl5g.base")?
+        .with_optimization_level(MinecraftOptimizationLevel::Baseline);
+    let none = lower_to_minecraft(&fixture.core, &sources, &none_options)
+        .map_err(|error| error.to_string())?;
+    let baseline = lower_to_minecraft(&fixture.core, &sources, &baseline_options)
+        .map_err(|error| error.to_string())?;
+    let none_emission = emit_datapack(
+        none.program(),
+        &sources,
+        &EmissionOptions::new("MDL Stage 5G reference terminal-call recipe"),
+    )
+    .map_err(|error| error.to_string())?;
+    let baseline_emission = emit_datapack(
+        baseline.program(),
+        &sources,
+        &EmissionOptions::new("MDL Stage 5G selected terminal-call recipe"),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_terminal_call_recipe_shape(
+        &none,
+        none_emission.pack(),
+        &baseline,
+        baseline_emission.pack(),
+        &fixture,
+    )?;
+
+    let preserve_success = env::var_os("MDL_KEEP_TEST_DIR").is_some();
+    let sandbox = ServerSandbox::create(preserve_success).map_err(|error| error.to_string())?;
+    sandbox
+        .install_datapack(
+            "mdl_stage5g_none",
+            none_emission
+                .pack()
+                .files()
+                .iter()
+                .map(|file| (file.path().as_str(), file.bytes())),
+        )
+        .map_err(|error| error.to_string())?;
+    sandbox
+        .install_datapack(
+            "mdl_stage5g_baseline",
+            baseline_emission
+                .pack()
+                .files()
+                .iter()
+                .map(|file| (file.path().as_str(), file.bytes())),
+        )
+        .map_err(|error| error.to_string())?;
+    write_artifact_dumps(
+        &sandbox,
+        &fixture.core,
+        &sources,
+        &none.dump_lowering(),
+        &MinecraftDebugDumper::program(none.program()),
+        &trace_dump(none_emission.trace()),
+        "stage5g-none",
+    )?;
+    write_artifact_dumps(
+        &sandbox,
+        &fixture.core,
+        &sources,
+        &baseline.dump_lowering(),
+        &MinecraftDebugDumper::program(baseline.program()),
+        &trace_dump(baseline_emission.trace()),
+        "stage5g-baseline",
+    )?;
+
+    let mut server = sandbox.start(&config).map_err(|error| error.to_string())?;
+    let root = server.root().to_path_buf();
+    let result =
+        exercise_terminal_call_recipe_differential(&mut server, &none, &baseline, &fixture);
+    if let Err(error) = result {
+        server.preserve_sandbox();
+        return Err(format!(
+            "{error}\nStage 5G differential sandbox preserved at {}",
+            root.display()
+        ));
+    }
+    server.shutdown().map_err(|error| error.to_string())
 }
 
 fn run_conformance(level: MinecraftOptimizationLevel, label: &str) -> Result<(), String> {
@@ -111,6 +214,262 @@ fn run_conformance(level: MinecraftOptimizationLevel, label: &str) -> Result<(),
         ));
     }
     server.shutdown().map_err(|error| error.to_string())
+}
+
+struct TerminalCallRecipeFixture {
+    core: CoreProgram,
+    producer: FunctionId,
+    terminal: FunctionId,
+    dispatcher: FunctionId,
+}
+
+fn build_terminal_call_recipe_fixture(
+    sources: &SourceContext,
+    origin: OriginId,
+) -> TerminalCallRecipeFixture {
+    let mut core = CoreProgram::new();
+    let producer = declare_function(
+        &mut core,
+        "stage5g_effect_producer",
+        vec![],
+        vec![CoreType::I32],
+        origin,
+    );
+    let terminal = declare_function(&mut core, "stage5g_terminal_callee", vec![], vec![], origin);
+    let dispatcher = declare_function(
+        &mut core,
+        "stage5g_dispatcher",
+        vec![CoreType::Bool],
+        vec![],
+        origin,
+    );
+
+    let mut producer_builder = FunctionBuilder::new(&core, sources, producer).unwrap();
+    let effect = producer_builder.i32_constant(73, origin).unwrap();
+    producer_builder
+        .terminate(Terminator::new(
+            TerminatorKind::Return(vec![effect]),
+            origin,
+        ))
+        .unwrap();
+    core.define_function(producer, producer_builder.finish().unwrap())
+        .unwrap();
+
+    let mut terminal_builder = FunctionBuilder::new(&core, sources, terminal).unwrap();
+    terminal_builder.call(producer, vec![], origin).unwrap();
+    terminal_builder
+        .terminate(Terminator::new(TerminatorKind::Return(vec![]), origin))
+        .unwrap();
+    core.define_function(terminal, terminal_builder.finish().unwrap())
+        .unwrap();
+
+    let mut dispatcher_builder = FunctionBuilder::new(&core, sources, dispatcher).unwrap();
+    let entry = dispatcher_builder.entry_block();
+    let condition = parameter(&dispatcher_builder, entry, 0);
+    let then_block = dispatcher_builder.create_block(origin).unwrap();
+    let else_block = dispatcher_builder.create_block(origin).unwrap();
+    dispatcher_builder
+        .terminate(Terminator::new(
+            TerminatorKind::Branch {
+                condition,
+                then_target: BlockTarget::new(then_block, vec![]),
+                else_target: BlockTarget::new(else_block, vec![]),
+            },
+            origin,
+        ))
+        .unwrap();
+    for block in [then_block, else_block] {
+        dispatcher_builder.switch_to_block(block).unwrap();
+        dispatcher_builder.call(terminal, vec![], origin).unwrap();
+        dispatcher_builder
+            .terminate(Terminator::new(TerminatorKind::Return(vec![]), origin))
+            .unwrap();
+    }
+    core.define_function(dispatcher, dispatcher_builder.finish().unwrap())
+        .unwrap();
+
+    TerminalCallRecipeFixture {
+        core,
+        producer,
+        terminal,
+        dispatcher,
+    }
+}
+
+fn assert_terminal_call_recipe_shape(
+    none: &LoweringOutput,
+    none_pack: &DatapackArtifact,
+    baseline: &LoweringOutput,
+    baseline_pack: &DatapackArtifact,
+    fixture: &TerminalCallRecipeFixture,
+) -> Result<(), String> {
+    let none_report = none.dump_lowering();
+    let baseline_report = baseline.dump_lowering();
+    if none_report.contains("recipe=InlineZeroAbiTerminalCall") {
+        return Err("the None lowering unexpectedly selected a control recipe".to_owned());
+    }
+    if !baseline_report.contains("control branch-arms=2 selected=2 consumed=2")
+        || baseline_report
+            .matches("recipe=InlineZeroAbiTerminalCall consumed=")
+            .count()
+            != 2
+        || baseline_report
+            .matches("completion=ExactlyOneOnNormalCompletion")
+            .count()
+            != 2
+    {
+        return Err(format!(
+            "the Baseline lowering did not select both terminal-call recipes:\n{baseline_report}"
+        ));
+    }
+
+    let none_terminal = lowered_entry_resource(none, fixture.terminal)?;
+    let baseline_terminal = lowered_entry_resource(baseline, fixture.terminal)?;
+    let none_entry = emitted_function(
+        none_pack,
+        &lowered_entry_resource(none, fixture.dispatcher)?,
+    )?;
+    let baseline_entry = emitted_function(
+        baseline_pack,
+        &lowered_entry_resource(baseline, fixture.dispatcher)?,
+    )?;
+    for block in [1, 2] {
+        let none_wrapper = lowered_block_resource(none, fixture.dispatcher, block)?;
+        let baseline_wrapper = lowered_block_resource(baseline, fixture.dispatcher, block)?;
+        let wrapper = emitted_function(none_pack, &none_wrapper)?;
+        if wrapper != format!("function {none_terminal}\nreturn 1\n") {
+            return Err(format!(
+                "the None arm wrapper {none_wrapper} had unexpected commands:\n{wrapper}"
+            ));
+        }
+        if baseline_pack
+            .file(&function_pack_path(&baseline_wrapper)?)
+            .is_some()
+        {
+            return Err(format!(
+                "the Baseline artifact retained consumed wrapper {baseline_wrapper}"
+            ));
+        }
+        if !none_entry.contains(&none_wrapper) {
+            return Err(format!(
+                "the None dispatcher did not target retained wrapper {none_wrapper}"
+            ));
+        }
+        if baseline_entry.contains(&baseline_wrapper) {
+            return Err(format!(
+                "the Baseline dispatcher still targeted consumed wrapper {baseline_wrapper}"
+            ));
+        }
+    }
+    if none_entry.contains(&none_terminal)
+        || baseline_entry.matches(&baseline_terminal).count() != 2
+        || baseline_entry.lines().count() != 2
+    {
+        return Err(format!(
+            "the selected dispatcher did not directly target its zero-ABI callee on both arms:\n{baseline_entry}"
+        ));
+    }
+    Ok(())
+}
+
+fn exercise_terminal_call_recipe_differential(
+    server: &mut TestServer,
+    none: &LoweringOutput,
+    baseline: &LoweringOutput,
+    fixture: &TerminalCallRecipeFixture,
+) -> Result<(), String> {
+    server
+        .command("data modify storage mdl_test:stage5g observations set value {}")
+        .map_err(|error| error.to_string())?;
+    for (label, output) in [("none", none), ("baseline", baseline)] {
+        for (path, condition) in [("false", 0), ("true", 1)] {
+            invoke_terminal_call_recipe(
+                server,
+                output,
+                fixture,
+                condition,
+                &format!("{label}_{path}"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn invoke_terminal_call_recipe(
+    server: &mut TestServer,
+    output: &LoweringOutput,
+    fixture: &TerminalCallRecipeFixture,
+    condition: i32,
+    observation: &str,
+) -> Result<(), String> {
+    let dispatcher = output
+        .map()
+        .function(fixture.dispatcher)
+        .ok_or_else(|| "missing Stage 5G dispatcher lowering map entry".to_owned())?;
+    let [(CoreType::Bool, condition_home)] = dispatcher.parameter_homes() else {
+        return Err("Stage 5G dispatcher did not retain its Boolean ABI".to_owned());
+    };
+    let producer = output
+        .map()
+        .function(fixture.producer)
+        .ok_or_else(|| "missing Stage 5G effect-producer lowering map entry".to_owned())?;
+    let [(CoreType::I32, effect_home)] = producer.result_homes() else {
+        return Err("Stage 5G effect producer did not retain its I32 result ABI".to_owned());
+    };
+    set_score(server, condition_home, condition)?;
+    set_score(server, effect_home, 0)?;
+    server
+        .command(&format!(
+            "execute store success storage mdl_test:stage5g observations.{observation}_success byte 1 store result storage mdl_test:stage5g observations.{observation}_result int 1 run function {}",
+            dispatcher.entry_resource()
+        ))
+        .map_err(|error| error.to_string())?;
+    expect_score(server, effect_home, 73)?;
+    let marker = format!("MDL_STAGE5G_{}", observation.to_ascii_uppercase());
+    expect_marker(
+        server,
+        &format!(
+            "execute if data storage mdl_test:stage5g observations{{{observation}_success:1b,{observation}_result:1}} run say {marker}"
+        ),
+        &marker,
+    )
+}
+
+fn lowered_entry_resource(output: &LoweringOutput, function: FunctionId) -> Result<String, String> {
+    output
+        .map()
+        .function(function)
+        .map(|function| function.entry_resource().to_string())
+        .ok_or_else(|| format!("missing lowering map entry for {function:?}"))
+}
+
+fn lowered_block_resource(
+    output: &LoweringOutput,
+    function: FunctionId,
+    block: usize,
+) -> Result<String, String> {
+    let entry = lowered_entry_resource(output, function)?;
+    entry
+        .strip_suffix("/b0")
+        .map(|prefix| format!("{prefix}/b{block}"))
+        .ok_or_else(|| format!("unexpected generated entry resource {entry}"))
+}
+
+fn emitted_function(pack: &DatapackArtifact, resource: &str) -> Result<String, String> {
+    let path = function_pack_path(resource)?;
+    let file = pack
+        .file(&path)
+        .ok_or_else(|| format!("missing emitted function {resource}"))?;
+    std::str::from_utf8(file.bytes())
+        .map(str::to_owned)
+        .map_err(|error| format!("emitted function {resource} was not UTF-8: {error}"))
+}
+
+fn function_pack_path(resource: &str) -> Result<String, String> {
+    let (namespace, path) = resource
+        .split_once(':')
+        .ok_or_else(|| format!("invalid function resource {resource}"))?;
+    Ok(format!("data/{namespace}/function/{path}.mcfunction"))
 }
 
 fn exercise_pack(
@@ -288,10 +647,14 @@ fn trace_dump(trace: &mdl_compiler::datapack::TraceMap) -> String {
 }
 
 fn lowering_options() -> Result<LoweringOptions, String> {
+    lowering_options_for("mdl", "mdl.reg")
+}
+
+fn lowering_options_for(namespace: &str, objective: &str) -> Result<LoweringOptions, String> {
     LoweringOptions::new(
         JavaEditionTarget::V26_2,
-        PackNamespace::new("mdl").map_err(|error| error.to_string())?,
-        ObjectiveName::new("mdl.reg").map_err(|error| error.to_string())?,
+        PackNamespace::new(namespace).map_err(|error| error.to_string())?,
+        ObjectiveName::new(objective).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())
 }

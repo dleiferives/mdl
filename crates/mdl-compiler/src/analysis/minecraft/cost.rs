@@ -419,7 +419,7 @@ pub struct CommandStepCounts {
 }
 
 impl CommandStepCounts {
-    pub(super) const fn new(
+    pub(crate) const fn new(
         sequence_operations: u64,
         execute_stages: u64,
         internal_function_invocations: u64,
@@ -433,7 +433,7 @@ impl CommandStepCounts {
         }
     }
 
-    pub(super) fn checked_add(self, other: Self) -> Option<Self> {
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
         Some(Self::new(
             self.sequence_operations
                 .checked_add(other.sequence_operations)?,

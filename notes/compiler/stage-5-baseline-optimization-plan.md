@@ -1,6 +1,6 @@
 # Stage 5: Baseline Optimization and Cost Instrumentation
 
-Status: **Reviewed revision 11 — Stages 5A–5F implemented and gated; Stage 5G next**
+Status: **Reviewed revision 12 — Stages 5A–5G implemented and gated; Stage 5H next**
 
 Execution checklist: [`stage-5-todo.md`](stage-5-todo.md)
 
@@ -20,8 +20,8 @@ verified Core
     -> runtime demand
     -> [Stage 5F] sparse liveness
     -> typed home assignment, conservative copy coalescing, and exact instruction plans
-    -> frozen edge transfers and all-block resources
-    -> [Stage 5G] target control recipes, placement, and physical effects
+    -> frozen edge transfers
+    -> [Stage 5G] target control recipes and placement-aware resources
     -> frozen verified lowering plan
     -> structured Minecraft IR
     -> explicit read-only local-cost/per-root-bound analysis
@@ -816,11 +816,12 @@ Stage 5F inserted the first real `LivenessResult` consumer between `RuntimeDeman
 Baseline `HomeAssignment`, which freezes conservative coalescing before transfers are
 derived once. The `None` path never computes liveness or coalescing.
 Stage 5G adds `ControlRecipePlan` and `BlockPlacement`, and makes
-`ResourceInventory` reflect that placement. It creates `PhysicalEffectSummary` only
-in 5G.4, when condition-stability analysis becomes its first real consumer, after
-homes and transfers freeze. Stage 5E neither computes placeholder liveness/effects nor
-consumes Core blocks: every reachable block remains materialized until Stage 5G has
-an actual recipe that can own it.
+`ResourceInventory` reflect that placement after homes and transfers freeze. The
+required terminal-call contraction does not consume condition stability, so
+`PhysicalEffectSummary` remains deferred with the optional repeated-condition recipe
+that would become its first real consumer. Stage 5E neither computes placeholder
+liveness/effects nor consumes Core blocks: every reachable block remains materialized
+until Stage 5G has an actual recipe that can own it.
 
 The verified `CoreProgram` remains the immutable semantic authority throughout these
 calls; phase records store IDs and derived facts rather than cloning operations,
@@ -1187,8 +1188,6 @@ Stage 5G introduces a closed private recipe enum, not a general target CFG:
 ControlRecipe =
     TailJump { target }
   | ReturnDispatcher { then_target, else_target }
-  | StableDualGuard { then_target, else_target, completion }
-  | SnapshottedGuards { snapshot, then_target, else_target, completion }
   | InlineTerminalArm { arm, command, other_target }
 ```
 
@@ -1203,8 +1202,8 @@ construction only after a fixture demonstrates the complete return/completion
 semantics and a cost advantage over that dispatcher. Merely proving stability is not
 evidence that dual guards are profitable.
 
-Every selected recipe must preserve Stage 4's explicit nonzero generated-function
-result. Vanilla functions that fall off the end have no result. Therefore a dual-guard
+Every selected recipe must preserve Stage 4's explicit generated-function success
+and result of exactly one. Vanilla functions that fall off the end have no result. Therefore a dual-guard
 or snapshot recipe needs an explicit completion `return` on the path whose guarded
 arm returns normally; that command and result behavior are part of legality and cost,
 not an emitter afterthought.
@@ -1213,7 +1212,7 @@ Stage 5G target placement is deliberately narrow:
 
 - straight-line fusion should normally happen in Core;
 - a uniquely reached trivial terminal arm may be consumed into its dispatcher;
-- shared, cyclic, multi-command, or externally addressable regions remain functions;
+- shared, cyclic, supported-ABI entry, or non-reducible regions remain functions;
 - joins are not duplicated; and
 - general trace layout, hot/cold placement, and region duplication remain Stage 11.
 
@@ -1222,7 +1221,7 @@ planned function or consumed by exactly one recipe. Stage 5G then rebuilds
 `ResourceInventory` after this decision; Stage 5E's earlier inventory deliberately
 materializes every reachable block.
 
-### Physical condition stability
+### Deferred physical condition stability
 
 Stable dual guards evaluate the same physical condition twice. Legality requires a
 transitive proof that executing the first selected arm cannot change anything read by
@@ -1238,9 +1237,11 @@ For the current normalized score condition this means:
 - execution context and fork behavior remain unchanged; and
 - any future unknown/raw target effect rejects the proof.
 
-Compute this as a private physical footprint fixed point over the semantic CFG and
-internal calls. Do not widen Stage 3's coarse public `CommandContract` into a
-whole-program interprocedural solver merely for this optimization.
+Do not compute this until a complete stable-dual-guard or snapshot fixture proves a
+benefit over the dispatcher. At that point, compute the smallest private physical
+footprint fixed point required by the recipe over the semantic CFG and internal
+calls. Do not widen Stage 3's coarse public `CommandContract` into a whole-program
+interprocedural solver merely for a future optimization.
 
 `PhysicalEffectSummary` is immutable and tied to the frozen home/transfer assignment.
 Its join is monotone set union over a finite physical universe. If its update/space
@@ -1529,11 +1530,12 @@ explicit lexicographic priority for genuinely comparable candidates, and otherwi
 retains the Stage 4 recipe. The baseline policy is:
 
 1. legality and target-limit safety;
-2. do not worsen any root's finite/unproven/unknown limit classification;
+2. require a typed local graph-contraction certificate proving that no root's
+   finite/unproven/unknown limit classification or metric can worsen;
 3. prefer a candidate whose exact local cost is no worse in every runtime dimension
    and strictly better in at least one;
-4. for remaining candidates with proven finite root bounds, lower worst-case sequence
-   work, then fewer function invocations and execute stages;
+4. do not run or approximate whole-root analysis during selection; a future
+   root-bound tier requires explicit reviewed inputs and remains outside Stage 5;
 5. use smaller exact pre-emission structured size (commands, functions, and helpers)
    only after runtime dimensions do not regress; and
 6. use a stable recipe ordinal only to break otherwise semantically/cost-identical
@@ -1721,9 +1723,10 @@ the target semantic authority.
   real fixtures;
 - first consume uniquely reached terminal arms that combine into one legal target
   command, including a measured zero-ABI tail-call fixture;
-- in 5G.4, compute `PhysicalEffectSummary` from frozen homes/transfers, derive
-  condition-stability proofs, and make every later stability-dependent recipe reject
-  an incomplete proof rather than feeding recipes back into coalescing;
+- in 5G.4, keep `PhysicalEffectSummary` and condition-stability analysis deferred
+  until a complete profitable stability-dependent recipe becomes their first real
+  consumer; that future analysis must use frozen homes/transfers and reject an
+  incomplete proof rather than feeding recipes back into coalescing;
 - add dual-guard or snapshot recipes only with a complete profitable fixture;
 - compare all constructed candidates through shared accounting and explain the result;
 - retain the baseline recipe when missing frequency/bound information makes a real
@@ -1803,9 +1806,9 @@ the target semantic authority.
 26. Optimized physical planning is a one-way immutable graph. Stage 5E owns inventory,
     legality, demand, instruction/home assignment, transfers, and all-reachable
     resources; Stage 5F adds real liveness before Baseline assignment and freezes
-    coalescing before deriving transfers; Stage 5G adds physical effects, recipes,
-    placement, and placement-aware resources. Recipes never iterate back into
-    coalescing.
+    coalescing before deriving transfers; Stage 5G adds recipes, placement, and
+    placement-aware resources. Physical effects land only with a consuming recipe.
+    Recipes never iterate back into coalescing.
 27. The complete local pass pipeline runs per function in stable order. Local passes
     may read immutable signatures but cannot initiate mutable whole-program analyses.
 28. Core dumps are diagnostic-only. Stage 5 adds no parser/serializer or replayable
@@ -1861,9 +1864,9 @@ upstream project.
 | Zig | AIR is dense and per-function. Its liveness result uses compact per-instruction tomb bits for common cases, a sparse side table for control/special cases, and temporary loop-analysis data that is not retained by backends. | Keep Core dense and analyses disposable; retain only consumer facts, use sparse exceptional storage, and drop loop/worklist scratch rather than creating permanent analysis state. |
 | GHC (Haskell) | Core passes have an explicit `CoreToDo` algebra and transform an owned `CoreProgram`/`ModGuts` value. Cmm dataflow separates lattice joins/facts from transfer and rewrite functions; occurrence analysis uses dependency SCCs for dead recursive groups; demand analysis represents cardinality as a powerset over zero, one, and many; CSE substitutes before reverse lookup. The native graph allocator computes liveness first, coalesces move-related registers only under those facts, and carries a canonical rename map into a later patch. Simplifier ticks are size-relative, while compact statistics and verbose traces are separate. | Use a closed owned pipeline, analysis-then-application APIs, fixed outcome/cardinality transfer cells, keep leaf DCE distinct from SCC-aware deletion, resolve planned values before CSE keying, use typed limits/bounded cleanup, and separate normal/detail reporting. Freeze deterministic semantic-to-physical names after liveness-qualified grouping. |
 | OCaml | Flambda inlining is decided at call sites using exposed simplification benefit, code growth, bounded depth/unrolling, and per-round reports. The native backend constructs hard interference and weighted copy preference separately, excludes interfering/different-class pairs from preferences, and accounts for simultaneous results. | Defer threshold-only inlining; first build truthful call/copy accounting, and keep coalescing candidates distinct from type/interference legality. |
-| MLIR | Canonicalization is bounded and best-effort; sparse dataflow separates executable-edge and value subscriptions; dataflow lattice joins must be monotone and report whether state changed; effects, speculation, structural equivalence, and commutativity are distinct contracts; `getSinglePredecessor` counts duplicate edges; consecutive function passes run function-by-function. Analyses are read-only values separate from transformations. One-Shot Bufferize asks operations which operands read/write and results may alias. | Lowering cannot require canonical form; incomplete optimistic SCCP cannot rewrite; exact successor occurrences matter; use a finite monotone feasibility lattice and enqueue dependents only on change; group the local pipeline per function; keep final target-cost instrumentation an explicit analysis; and make target recipe alias timing explicit. |
+| MLIR | Canonicalization is bounded and best-effort; `PatternRewriter` requires a successful match before mutation and leaves visitation/cost policy to the driver; sparse dataflow separates executable-edge and value subscriptions; dataflow lattice joins must be monotone and report whether state changed; effects, speculation, structural equivalence, and commutativity are distinct contracts; `getSinglePredecessor` counts duplicate edges; consecutive function passes run function-by-function. Analyses are read-only values separate from transformations. One-Shot Bufferize asks operations which operands read/write and results may alias. | Lowering cannot require canonical form; separate legality from recipe preference; do not import a generic scalar pattern-benefit score into Minecraft's multi-dimensional cost policy; incomplete optimistic SCCP cannot rewrite; exact successor occurrences matter; use a finite monotone feasibility lattice and enqueue dependents only on change; group the local pipeline per function; keep final target-cost instrumentation an explicit analysis; and make target recipe alias timing explicit. |
 | LLVM | SCCP solves constants/executable blocks before rewriting and resolves unknown executable facts; simple DCE uses a producer worklist; EarlyCSE uses an iterative dominator walk and scoped table; block merge moves structure while updating analyses. Its SCC iterator uses an internal visit stack and emits SCCs callee-first in reverse topological order. GlobalISel gives each lowering phase an explicit completion invariant and uses verification between serializable boundaries; instruction selection may fold through use-def chains but must leave no generic instruction behind. The pass manager distinguishes analyses from transforms and restricts outer-scope computation. Two-address lowering represents tied def/use explicitly; the register coalescer treats copies as a worklist over live intervals and has explicit compile-time cutoffs for repeatedly visited large intervals. | Give SCCP an all-or-nothing event solution, DCE/CSE their own algorithms and fallbacks, use prepared move-based fusion, keep cost analysis separate from lowering mutation, use explicit-stack callee-first SCC traversal for deep target call graphs, and publish each Minecraft physical phase only after its own closed invariant is complete. Represent safe target reuse explicitly and bound coalescing work rather than relying on elapsed time. |
-| Cranelift | Dominator-tree construction stores explicit DFS and path-evaluation worklists and computes postorder without host recursion. | Keep deep target-graph traversals iterative and drop their traversal stacks after the retained summaries are built. |
+| Cranelift | ISLE uses strongly typed closed lowering terms, permits overlapping legal rules, and separates which rewrites are correct from explicit priority/selection strategy; correctness must not depend on an unspecified specificity tie-break. Dominator-tree construction stores explicit DFS and path-evaluation worklists and computes postorder without host recursion. | Keep Stage 5 recipes closed and typed, prove every candidate legal independently of preference, use stable order only for true equality, and keep deep target-graph traversals iterative with disposable traversal stacks. |
 | GCC | SSA-CCP joins PHIs using executable edge objects, simple and aggressive DCE are separate, and CFG maintenance uses dedicated verified hooks. Its pass manager records ordered passes/properties but does not automatically regenerate every needed IR-side structure. | Give Core successor arms exact identity, keep leaf DCE conservative, route fusion through one checked editor owner, keep phase prerequisites explicit, and never imply a generic manager repairs stale facts. |
 | Binaryen | General IR and physical Stack IR exist for different consumers; coalescing, local CSE, block merging, deterministic output, fuzzing, and target cleanup are separate concerns. | Add no physical IR without a concrete recipe consumer; keep coalescing and target placement in the private plan and fuzz alternative pipelines. |
 | Swift | Mandatory canonical SIL transformations are distinct from optional SIL optimizations and lower-level LLVM work; its pass manager supports verify-all and selected before/after verification. | Keep verified Core legal without optimization, and make expensive per-pass checking explicit compiler instrumentation rather than semantics. |
@@ -1890,6 +1893,11 @@ upstream project.
   [`edge_transfer.rs`](../../crates/mdl-compiler/src/lower/minecraft/edge_transfer.rs),
   [`resources.rs`](../../crates/mdl-compiler/src/lower/minecraft/resources.rs), and
   [`plan/assemble.rs`](../../crates/mdl-compiler/src/lower/minecraft/plan/assemble.rs)
+- Stage 5G recipe accounting, explicit placement, and constructed-command
+  reconciliation:
+  [`recipe.rs`](../../crates/mdl-compiler/src/lower/minecraft/recipe.rs),
+  [`placement.rs`](../../crates/mdl-compiler/src/lower/minecraft/placement.rs), and
+  [`plan/reconcile.rs`](../../crates/mdl-compiler/src/lower/minecraft/plan/reconcile.rs)
 - Stage 5F liveness, coalescing, and independent symbolic validation:
   [`liveness.rs`](../../crates/mdl-compiler/src/lower/minecraft/liveness.rs),
   [`coalescing.rs`](../../crates/mdl-compiler/src/lower/minecraft/coalescing.rs), and
@@ -1949,9 +1957,11 @@ upstream project.
 - GHC native-code register liveness: <https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/CmmToAsm/Reg/Liveness.hs>
 - GHC graph-register coalescing and canonical renaming: <https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/CmmToAsm/Reg/Graph/Coalesce.hs>
 - OCaml Flambda optimization and inlining: <https://ocaml.org/manual/5.5/flambda.html>
+- OCaml Flambda call-site inlining decisions and typed rejection outcomes: <https://github.com/ocaml/ocaml/blob/trunk/middle_end/flambda/inlining_decision.ml>
 - OCaml native-code liveness: <https://github.com/ocaml/ocaml/blob/trunk/asmcomp/liveness.ml>
 - OCaml native-code interference construction: <https://github.com/ocaml/ocaml/blob/trunk/asmcomp/interf.ml>
 - MLIR pass infrastructure: <https://mlir.llvm.org/docs/PassManagement/>
+- MLIR pattern rewriting, legality-before-mutation, and driver-owned cost policy: <https://mlir.llvm.org/docs/PatternRewriter/>
 - MLIR side effects and speculation: <https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/>
 - MLIR pass validity/verifier convention: <https://mlir.llvm.org/getting_started/DeveloperGuide/>
 - MLIR testing guide: <https://mlir.llvm.org/getting_started/TestingGuide/>
@@ -1993,6 +2003,7 @@ upstream project.
 - regalloc2 current ION live-range construction: <https://github.com/bytecodealliance/regalloc2/blob/main/src/ion/liveranges.rs>
 - regalloc2 current ION range merging: <https://github.com/bytecodealliance/regalloc2/blob/main/src/ion/merge.rs>
 - Cranelift block-parameter SSA reference: <https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md>
+- Cranelift ISLE typed lowering, overlap, specificity, and explicit priority: <https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/isle/docs/language-reference.md>
 - Cranelift iterative dominator-tree construction: <https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/codegen/src/dominator_tree.rs>
 - Weighted pushdown systems for interprocedural path problems: <https://minds.wisconsin.edu/handle/1793/60338>
 - GCC pass-manager internals: <https://gcc.gnu.org/onlinedocs/gccint/Pass-manager.html>

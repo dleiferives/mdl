@@ -24,7 +24,11 @@ use super::demand::{DemandError, RuntimeDemand, RuntimeDemandLimits};
 use super::edge_transfer::{EdgeTransferError, EdgeTransferPlan};
 use super::emit::construct_program;
 use super::liveness::{LivenessError, LivenessLimits, LivenessResult};
-use super::plan::{LoweringPlan, LoweringReport, PlanBuildError, PlanFinishError, PlanTable};
+use super::placement::{ControlRecipePlan, ControlRecipePlanError};
+use super::plan::{
+    LoweringPlan, LoweringReport, PlanBuildError, PlanFinishError, PlanTable,
+    verify_constructed_control_recipes,
+};
 use super::resources::{ResourceInventory, ResourceInventoryError};
 use super::{LoweringOptions, LoweringOptionsError, MinecraftOptimizationLevel};
 
@@ -461,15 +465,31 @@ pub fn lower_to_minecraft(
     .map_err(|error| {
         LoweringFailure::before_plan(LoweringPhase::Planning, transfer_diagnostics(&error))
     })?;
+    let control = ControlRecipePlan::new(
+        core,
+        &inventory,
+        &assignment,
+        &transfers,
+        options.optimization_level(),
+    )
+    .map_err(|error| {
+        LoweringFailure::before_plan(LoweringPhase::Planning, control_diagnostics(&error))
+    })?;
     let resources =
-        ResourceInventory::new(core, &inventory, &transfers, options).map_err(|error| {
-            LoweringFailure::before_plan(LoweringPhase::Planning, resource_diagnostics(&error))
-        })?;
-    let plan = LoweringPlan::from_parts(core, options, assignment, transfers, resources).map_err(
-        |error| LoweringFailure::before_plan(LoweringPhase::Planning, finish_diagnostics(error)),
-    )?;
+        ResourceInventory::for_control_plan(core, &inventory, &transfers, &control, options)
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, resource_diagnostics(&error))
+            })?;
+    let plan =
+        LoweringPlan::from_selected_parts(core, options, assignment, transfers, control, resources)
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, finish_diagnostics(error))
+            })?;
     let report = plan.report();
     let program = construct_program(core, &plan).map_err(|diagnostics| {
+        LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
+    })?;
+    verify_constructed_control_recipes(core, &plan, &program).map_err(|diagnostics| {
         LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
     })?;
     verify_program(&program, sources).map_err(|diagnostics| {
@@ -527,6 +547,14 @@ fn transfer_diagnostics(error: &EdgeTransferError) -> Diagnostics {
     one_diagnostic(Diagnostic::new(
         "lower.edge-transfer-invariant",
         format!("Minecraft edge-transfer planning failed: {error:?}"),
+        OriginId::UNKNOWN,
+    ))
+}
+
+fn control_diagnostics(error: &ControlRecipePlanError) -> Diagnostics {
+    one_diagnostic(Diagnostic::new(
+        "lower.control-recipe-invariant",
+        format!("Minecraft control-recipe planning failed: {error:?}"),
         OriginId::UNKNOWN,
     ))
 }

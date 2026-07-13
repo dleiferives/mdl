@@ -217,14 +217,16 @@ partitioning work across ticks remains Stage 9.
 
 ## Stage 5: Baseline optimization and cost instrumentation
 
-Status: **Reviewed revision 11; Stages 5A–5F are implemented and gated; Stage 5G is
+Status: **Reviewed revision 12; Stages 5A–5G are implemented and gated; Stage 5H is
 next.** See
 [`stage-5-baseline-optimization-plan.md`](stage-5-baseline-optimization-plan.md) and
 [`stage-5-todo.md`](stage-5-todo.md).
 
 Add conventional, auditable optimizations before advanced search techniques. The
 closed baseline Core pipeline implements items 1–5, Stage 5F implements physical
-storage item 6, and Stage 5A implements accounting item 10; items 7–9 remain:
+storage item 6, Stage 5G implements items 7–8, and Stage 5A implements the
+deterministic accounting part of item 10. Item 9 remains deliberately deferred with
+the optional stability-dependent recipes; Stage 5H owns empirical completion:
 
 1. cheap closed Core canonicalization;
 2. sparse conditional constant propagation and branch folding;
@@ -232,9 +234,10 @@ storage item 6, and Stage 5A implements accounting item 10; items 7–9 remain:
 4. straight-line Core block fusion;
 5. local dominance-scoped common-subexpression elimination;
 6. dead physical-home pruning and conservative block-argument coalescing;
-7. physical condition-stability analysis;
-8. narrow target block placement and control recipes;
-9. costed Minecraft lowering selection with the Stage 4 dispatcher as fallback; and
+7. narrow target block placement and control recipes;
+8. costed Minecraft lowering selection with the Stage 4 dispatcher as fallback;
+9. consumer-driven physical condition-stability analysis when a repeated-condition
+   recipe demonstrates a complete win; and
 10. exact footprint, exact command-step/local-path cost, conservative per-root bound,
     and empirical measurement reports.
 
@@ -252,8 +255,9 @@ Minecraft planning proceeds one way through private immutable semantic inventory
 runtime demand, Baseline sparse liveness, home/instruction assignment, edge-transfer,
 and resource results. (`None` bypasses liveness and preserves the Stage 4 assignment.)
 Each phase borrows explicit prerequisites and the final plan consumes and independently
-verifies compatible parts. Stage 5G adds physical effects, recipes, and placement only
-when those facts have a consumer. Recipes never feed back into Stage 5 coalescing. This
+verifies compatible parts. Stage 5G adds recipes and placement; physical effects are
+added only when a stability-dependent recipe becomes their first real consumer.
+Recipes never feed back into Stage 5 coalescing. This
 is ordinary Rust dataflow, not a public physical IR or generic typestate framework.
 Physical homes remain typed and only same-type block-argument copies are coalesced; a
 separate symbolic home-content dataflow checker verifies the frozen assignment without
@@ -489,11 +493,12 @@ installation.
 ## Immediate implementation tranche
 
 Stages 1 through 4 have completed the first vertical slice. Stage 5A accounting, the
-Stage 5B–5D Core pipeline, the Stage 5E immutable physical planner, and Stage 5F sparse
-liveness/coalescing are also complete. The remaining engineering tranche is:
+Stage 5B–5D Core pipeline, the Stage 5E immutable physical planner, Stage 5F sparse
+liveness/coalescing, and Stage 5G target recipes are also complete. The remaining
+engineering tranche is:
 
 ```text
-target recipes + measured completion gates
+report API + measurements + completion gates
 ```
 
 The Stage 4 lowering remains the byte-stable differential oracle throughout this

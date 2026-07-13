@@ -1,4 +1,9 @@
-use mdl_compiler::datapack::{DatapackArtifact, EmissionOptions, emit_datapack};
+use mdl_compiler::analysis::minecraft::{
+    AnalysisArithmeticCaps, CountBound, CountUpperKind, ResolvedTargetExecutionRoot,
+    RootExecutionSummary, TargetExecutionAnalysisCompletion, TargetExecutionAnalysisLimits,
+    TargetExecutionCostReport,
+};
+use mdl_compiler::datapack::{DatapackArtifact, EmissionOptions, TraceMap, emit_datapack};
 use mdl_compiler::ir::core::{
     BlockId, BlockTarget, CoreProgram, CoreType, FunctionBuilder, FunctionId, Terminator,
     TerminatorKind, ValueId,
@@ -8,7 +13,7 @@ use mdl_compiler::lower::minecraft::{
     LoweringOptions, LoweringOutput, MinecraftOptimizationLevel, lower_to_minecraft,
 };
 use mdl_compiler::opt::core::{CoreOptimizationLevel, CoreOptimizationOptions, optimize_core};
-use mdl_compiler::source::{OriginId, SourceContext};
+use mdl_compiler::source::{Origin, OriginId, SourceContext};
 use mdl_compiler::target::JavaEditionTarget;
 
 #[test]
@@ -433,6 +438,648 @@ fn baseline_handles_twenty_thousand_values_across_many_functions_without_dense_o
             .count(),
         1
     );
+}
+
+#[test]
+fn baseline_contracts_a_unique_then_arm_terminal_call_through_the_real_target_pipeline() {
+    assert_terminal_call_contraction(TerminalCallArms::Then);
+}
+
+#[test]
+fn baseline_contracts_a_unique_else_arm_terminal_call_through_the_real_target_pipeline() {
+    assert_terminal_call_contraction(TerminalCallArms::Else);
+}
+
+#[test]
+fn baseline_contracts_both_independent_terminal_call_arms() {
+    assert_terminal_call_contraction(TerminalCallArms::Both);
+}
+
+#[test]
+fn baseline_reports_and_preserves_a_terminal_call_block_with_two_incoming_occurrences() {
+    let mut sources = SourceContext::new();
+    let fixture = terminal_call_fixture(&mut sources, TerminalCallArms::Shared);
+    let none = lower_to_minecraft(
+        &fixture.core,
+        &sources,
+        &baseline_options().with_optimization_level(MinecraftOptimizationLevel::None),
+    )
+    .unwrap();
+    let baseline = lower_to_minecraft(&fixture.core, &sources, &baseline_options()).unwrap();
+    let repeated = lower_to_minecraft(&fixture.core, &sources, &baseline_options()).unwrap();
+    let report = baseline.dump_lowering();
+
+    assert_eq!(report, repeated.dump_lowering());
+    assert!(report.contains("control branch-arms=2 selected=0 consumed=0"));
+    assert_eq!(
+        report
+            .matches("reason=IncomingEdgeOccurrenceCount { actual: 2 }")
+            .count(),
+        2
+    );
+    assert!(!report.contains("recipe=InlineZeroAbiTerminalCall consumed="));
+
+    let options = EmissionOptions::new("stage 5 shared terminal-call rejection");
+    let none_emission = emit_datapack(none.program(), &sources, &options).unwrap();
+    let baseline_emission = emit_datapack(baseline.program(), &sources, &options).unwrap();
+    let shared_resource = block_resource(&baseline, fixture.caller, 1);
+    assert_eq!(
+        emitted_resource(baseline_emission.pack(), &shared_resource),
+        format!(
+            "function {}\nreturn 1\n",
+            fixture.callee_resource(&baseline)
+        )
+    );
+    assert_eq!(none_emission.pack(), baseline_emission.pack());
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalCallArms {
+    Then,
+    Else,
+    Both,
+    Shared,
+}
+
+struct TerminalCallFixture {
+    core: CoreProgram,
+    callee: FunctionId,
+    caller: FunctionId,
+    consumed_blocks: Vec<usize>,
+    then_block: usize,
+    else_block: usize,
+    origins: TerminalCallOrigins,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalCallOrigins {
+    scalar: OriginId,
+    branch: OriginId,
+    then_call: OriginId,
+    then_return: OriginId,
+    else_call: OriginId,
+    else_return: OriginId,
+    callee_return: OriginId,
+}
+
+impl TerminalCallFixture {
+    fn callee_resource(&self, output: &LoweringOutput) -> String {
+        output
+            .map()
+            .function(self.callee)
+            .unwrap()
+            .entry_resource()
+            .to_string()
+    }
+
+    fn arm_origins(&self, block: usize) -> (OriginId, OriginId) {
+        if block == self.then_block {
+            (self.origins.then_call, self.origins.then_return)
+        } else if block == self.else_block {
+            (self.origins.else_call, self.origins.else_return)
+        } else {
+            panic!("block {block} is not a terminal-call fixture arm")
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end assertion keeps report, artifact, trace, and whole-target cost evidence for the same closed recipe fixture together"
+)]
+fn assert_terminal_call_contraction(arms: TerminalCallArms) {
+    let mut sources = SourceContext::new();
+    let fixture = terminal_call_fixture(&mut sources, arms);
+    let none = lower_to_minecraft(
+        &fixture.core,
+        &sources,
+        &baseline_options().with_optimization_level(MinecraftOptimizationLevel::None),
+    )
+    .unwrap();
+    let baseline = lower_to_minecraft(&fixture.core, &sources, &baseline_options()).unwrap();
+    let repeated = lower_to_minecraft(&fixture.core, &sources, &baseline_options()).unwrap();
+
+    let report = baseline.dump_lowering();
+    assert_eq!(report, repeated.dump_lowering());
+    assert!(report.contains(&format!(
+        "control branch-arms=2 selected={} consumed={}",
+        fixture.consumed_blocks.len(),
+        fixture.consumed_blocks.len()
+    )));
+    assert_eq!(
+        report
+            .matches("recipe=InlineZeroAbiTerminalCall consumed=")
+            .count(),
+        fixture.consumed_blocks.len()
+    );
+    assert_eq!(
+        report
+            .matches("impact=NonIncreasing(UniqueTerminalArmContraction)")
+            .count(),
+        fixture.consumed_blocks.len()
+    );
+    assert_eq!(
+        report
+            .matches("completion=ExactlyOneOnNormalCompletion")
+            .count(),
+        fixture.consumed_blocks.len()
+    );
+    assert_eq!(
+        report
+            .matches("cost baseline kind=ReturnDispatcher")
+            .count(),
+        fixture.consumed_blocks.len()
+    );
+    assert_eq!(
+        report
+            .matches("cost selected kind=InlineZeroAbiTerminalCall")
+            .count(),
+        fixture.consumed_blocks.len()
+    );
+    for block in &fixture.consumed_blocks {
+        let (call, terminal_return) = fixture.arm_origins(*block);
+        assert!(report.contains(&format!(
+            "origins=[{:?},{call:?},{terminal_return:?}]",
+            fixture.origins.branch
+        )));
+    }
+
+    let emission_options = EmissionOptions::new("stage 5 terminal-call contraction");
+    let none_emission = emit_datapack(none.program(), &sources, &emission_options).unwrap();
+    let baseline_emission = emit_datapack(baseline.program(), &sources, &emission_options).unwrap();
+    let repeated_emission = emit_datapack(repeated.program(), &sources, &emission_options).unwrap();
+    assert_eq!(baseline_emission.pack(), repeated_emission.pack());
+
+    let callee_resource = fixture.callee_resource(&baseline);
+    for block in &fixture.consumed_blocks {
+        let resource = block_resource(&none, fixture.caller, *block);
+        assert_eq!(
+            emitted_resource(none_emission.pack(), &resource),
+            format!("function {callee_resource}\nreturn 1\n")
+        );
+        let path = function_pack_path(&resource);
+        assert!(
+            baseline_emission.pack().file(&path).is_none(),
+            "consumed block resource {resource} remained in the Baseline artifact"
+        );
+    }
+
+    let none_entry = emitted_entry(none_emission.pack(), &none, fixture.caller);
+    let baseline_entry = emitted_entry(baseline_emission.pack(), &baseline, fixture.caller);
+    let then_resource =
+        selected_arm_resource(&baseline, &fixture, fixture.then_block, &callee_resource);
+    let else_resource =
+        selected_arm_resource(&baseline, &fixture, fixture.else_block, &callee_resource);
+    let scalar_lines = usize::from(arms == TerminalCallArms::Then) * 2;
+    assert_final_dispatcher(
+        &none_entry,
+        &block_resource(&none, fixture.caller, fixture.then_block),
+        &block_resource(&none, fixture.caller, fixture.else_block),
+        scalar_lines,
+    );
+    assert_final_dispatcher(
+        &baseline_entry,
+        &then_resource,
+        &else_resource,
+        scalar_lines,
+    );
+    if arms == TerminalCallArms::Then {
+        let scalar_prefix = baseline_entry.lines().take(2).collect::<Vec<_>>();
+        assert_eq!(scalar_prefix.len(), 2);
+        assert!(
+            scalar_prefix
+                .iter()
+                .all(|line| line.starts_with("scoreboard players "))
+        );
+        assert!(scalar_prefix[0].contains(" set "));
+        assert!(scalar_prefix[1].contains(" operation "));
+    }
+    assert_terminal_call_trace(
+        none_emission.trace(),
+        baseline_emission.trace(),
+        &none,
+        &baseline,
+        &fixture,
+        arms,
+    );
+
+    let none_paths = artifact_paths(none_emission.pack());
+    let baseline_paths = artifact_paths(baseline_emission.pack());
+    let removed_paths = none_paths
+        .iter()
+        .filter(|path| !baseline_paths.contains(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let expected_removed_paths = fixture
+        .consumed_blocks
+        .iter()
+        .map(|block| function_pack_path(&block_resource(&none, fixture.caller, *block)))
+        .collect::<Vec<_>>();
+    assert_eq!(removed_paths, expected_removed_paths);
+    assert!(baseline_paths.iter().all(|path| none_paths.contains(path)));
+
+    assert_target_cost_contraction(
+        &none,
+        &baseline,
+        fixture.callee,
+        fixture.caller,
+        fixture.consumed_blocks.len(),
+    );
+}
+
+fn terminal_call_fixture(
+    sources: &mut SourceContext,
+    arms: TerminalCallArms,
+) -> TerminalCallFixture {
+    let origins = terminal_call_origins(sources);
+    let mut core = CoreProgram::new();
+    let terminal = declare(&mut core, "terminal_callee", vec![], vec![]);
+    let dispatcher = declare(
+        &mut core,
+        "terminal_dispatcher",
+        vec![CoreType::Bool],
+        vec![],
+    );
+
+    let mut callee_builder = FunctionBuilder::new(&core, sources, terminal).unwrap();
+    callee_builder
+        .terminate(Terminator::new(
+            TerminatorKind::Return(vec![]),
+            origins.callee_return,
+        ))
+        .unwrap();
+    core.define_function(terminal, callee_builder.finish().unwrap())
+        .unwrap();
+
+    let mut builder = FunctionBuilder::new(&core, sources, dispatcher).unwrap();
+    let input_condition = entry_parameters(&builder)[0];
+    let condition = if arms == TerminalCallArms::Then {
+        builder.bool_not(input_condition, origins.scalar).unwrap()
+    } else {
+        input_condition
+    };
+    let then_block = builder.create_block(origins.then_call).unwrap();
+    let else_block = if arms == TerminalCallArms::Shared {
+        then_block
+    } else {
+        builder.create_block(origins.else_call).unwrap()
+    };
+    builder
+        .terminate(Terminator::new(
+            TerminatorKind::Branch {
+                condition,
+                then_target: BlockTarget::new(then_block, vec![]),
+                else_target: BlockTarget::new(else_block, vec![]),
+            },
+            origins.branch,
+        ))
+        .unwrap();
+
+    builder.switch_to_block(then_block).unwrap();
+    if matches!(
+        arms,
+        TerminalCallArms::Then | TerminalCallArms::Both | TerminalCallArms::Shared
+    ) {
+        builder.call(terminal, vec![], origins.then_call).unwrap();
+    }
+    builder
+        .terminate(Terminator::new(
+            TerminatorKind::Return(vec![]),
+            origins.then_return,
+        ))
+        .unwrap();
+
+    if else_block != then_block {
+        builder.switch_to_block(else_block).unwrap();
+        if matches!(arms, TerminalCallArms::Else | TerminalCallArms::Both) {
+            builder.call(terminal, vec![], origins.else_call).unwrap();
+        }
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                origins.else_return,
+            ))
+            .unwrap();
+    }
+    core.define_function(dispatcher, builder.finish().unwrap())
+        .unwrap();
+
+    let consumed_blocks = match arms {
+        TerminalCallArms::Then => vec![1],
+        TerminalCallArms::Else => vec![2],
+        TerminalCallArms::Both => vec![1, 2],
+        TerminalCallArms::Shared => vec![],
+    };
+    TerminalCallFixture {
+        core,
+        callee: terminal,
+        caller: dispatcher,
+        consumed_blocks,
+        then_block: 1,
+        else_block: usize::from(arms != TerminalCallArms::Shared) + 1,
+        origins,
+    }
+}
+
+fn terminal_call_origins(sources: &mut SourceContext) -> TerminalCallOrigins {
+    let file = sources.add_file("terminal-call.mdl", "sbtTrRe").unwrap();
+    let mut source_origin = |offset| {
+        let span = sources.span(file, offset, offset + 1).unwrap();
+        sources.add_origin(Origin::Source(span)).unwrap()
+    };
+    let origins = TerminalCallOrigins {
+        scalar: source_origin(0),
+        branch: source_origin(1),
+        then_call: source_origin(2),
+        then_return: source_origin(3),
+        else_call: source_origin(4),
+        else_return: source_origin(5),
+        callee_return: source_origin(6),
+    };
+    let ids = [
+        origins.scalar,
+        origins.branch,
+        origins.then_call,
+        origins.then_return,
+        origins.else_call,
+        origins.else_return,
+        origins.callee_return,
+    ];
+    assert!(ids.iter().all(|origin| *origin != OriginId::UNKNOWN));
+    for (index, origin) in ids.iter().enumerate() {
+        assert!(!ids[..index].contains(origin));
+    }
+    origins
+}
+
+fn selected_arm_resource(
+    output: &LoweringOutput,
+    fixture: &TerminalCallFixture,
+    block: usize,
+    callee_resource: &str,
+) -> String {
+    if fixture.consumed_blocks.contains(&block) {
+        callee_resource.to_owned()
+    } else {
+        block_resource(output, fixture.caller, block)
+    }
+}
+
+fn assert_final_dispatcher(
+    rendered: &str,
+    then_resource: &str,
+    else_resource: &str,
+    scalar_lines: usize,
+) {
+    let lines = rendered.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), scalar_lines + 2);
+    let [conditional, fallback] = &lines[scalar_lines..] else {
+        panic!("branch source did not end in exactly two dispatcher commands")
+    };
+    assert!(conditional.starts_with("execute if score "));
+    assert!(conditional.contains(" mdl.reg matches 1 run "));
+    assert!(conditional.ends_with(&format!("return run function {then_resource}")));
+    assert_eq!(fallback, &format!("return run function {else_resource}"));
+}
+
+fn assert_terminal_call_trace(
+    none_trace: &TraceMap,
+    baseline_trace: &TraceMap,
+    none: &LoweringOutput,
+    baseline: &LoweringOutput,
+    fixture: &TerminalCallFixture,
+    arms: TerminalCallArms,
+) {
+    let none_entry = none
+        .map()
+        .function(fixture.caller)
+        .unwrap()
+        .entry_resource()
+        .to_string();
+    let baseline_entry = baseline
+        .map()
+        .function(fixture.caller)
+        .unwrap()
+        .entry_resource()
+        .to_string();
+    let mut none_entry_origins = Vec::new();
+    let mut baseline_entry_origins = Vec::new();
+    if arms == TerminalCallArms::Then {
+        none_entry_origins.extend([fixture.origins.scalar; 2]);
+        baseline_entry_origins.extend([fixture.origins.scalar; 2]);
+    }
+    none_entry_origins.extend([fixture.origins.branch; 2]);
+    baseline_entry_origins.push(fixture.origins.branch);
+    baseline_entry_origins.push(if fixture.consumed_blocks.contains(&fixture.else_block) {
+        fixture.origins.else_call
+    } else {
+        fixture.origins.branch
+    });
+    assert_eq!(trace_origins(none_trace, &none_entry), none_entry_origins);
+    assert_eq!(
+        trace_origins(baseline_trace, &baseline_entry),
+        baseline_entry_origins
+    );
+
+    for block in &fixture.consumed_blocks {
+        let resource = block_resource(none, fixture.caller, *block);
+        let (call, terminal_return) = fixture.arm_origins(*block);
+        assert_eq!(
+            trace_origins(none_trace, &resource),
+            vec![call, terminal_return]
+        );
+        assert!(trace_origins(baseline_trace, &resource).is_empty());
+    }
+}
+
+fn trace_origins(trace: &TraceMap, resource: &str) -> Vec<OriginId> {
+    let resource = mdl_compiler::ir::minecraft::FunctionResourceId::parse(resource).unwrap();
+    trace
+        .records()
+        .filter(|record| record.function() == &resource)
+        .map(mdl_compiler::datapack::TraceRecord::origin)
+        .collect()
+}
+
+fn artifact_paths(pack: &DatapackArtifact) -> Vec<String> {
+    pack.files()
+        .iter()
+        .map(|file| file.path().as_str().to_owned())
+        .collect()
+}
+
+fn function_pack_path(resource: &str) -> String {
+    let (namespace, path) = resource
+        .split_once(':')
+        .unwrap_or_else(|| panic!("invalid generated function resource {resource}"));
+    format!("data/{namespace}/function/{path}.mcfunction")
+}
+
+fn assert_target_cost_contraction(
+    none: &LoweringOutput,
+    baseline: &LoweringOutput,
+    terminal: FunctionId,
+    dispatcher: FunctionId,
+    consumed_blocks: usize,
+) {
+    let limits = target_analysis_limits(none);
+    let none_cost = none.analyze_target_execution(limits).unwrap();
+    let baseline_cost = baseline.analyze_target_execution(limits).unwrap();
+    assert_eq!(
+        none_cost.completion(),
+        TargetExecutionAnalysisCompletion::Complete
+    );
+    assert_eq!(
+        baseline_cost.completion(),
+        TargetExecutionAnalysisCompletion::Complete
+    );
+    assert_census_contraction(&none_cost, &baseline_cost, consumed_blocks);
+    assert_eq!(none_cost.roots().len(), baseline_cost.roots().len());
+    for (label, function) in [("callee", terminal), ("caller", dispatcher)] {
+        assert_root_cost_nonincreasing(
+            label,
+            public_root(&none_cost, none, function),
+            public_root(&baseline_cost, baseline, function),
+        );
+    }
+    assert_root_cost_nonincreasing(
+        "load-tag",
+        non_function_root(&none_cost),
+        non_function_root(&baseline_cost),
+    );
+
+    let caller_before = public_root(&none_cost, none, dispatcher);
+    let caller_after = public_root(&baseline_cost, baseline, dispatcher);
+    assert!(
+        finite_upper(caller_after.sequence_operations())
+            < finite_upper(caller_before.sequence_operations())
+    );
+    assert!(
+        finite_upper(caller_after.internal_function_invocations())
+            < finite_upper(caller_before.internal_function_invocations())
+    );
+}
+
+fn target_analysis_limits(output: &LoweringOutput) -> TargetExecutionAnalysisLimits {
+    let assumptions = output
+        .map()
+        .execution_contract()
+        .command_limits()
+        .assumptions();
+    TargetExecutionAnalysisLimits::new(
+        AnalysisArithmeticCaps::minimum_for(assumptions),
+        100_000,
+        100_000,
+    )
+}
+
+fn assert_census_contraction(
+    none: &TargetExecutionCostReport,
+    baseline: &TargetExecutionCostReport,
+    consumed_blocks: usize,
+) {
+    let before = none.census();
+    let after = baseline.census();
+    assert_eq!(before.functions() - after.functions(), consumed_blocks);
+    assert_eq!(
+        before.top_level_commands() - after.top_level_commands(),
+        consumed_blocks * 2
+    );
+    assert_eq!(
+        before.command_nodes() - after.command_nodes(),
+        consumed_blocks * 2
+    );
+    assert_eq!(
+        before.function_calls() - after.function_calls(),
+        consumed_blocks
+    );
+    assert_eq!(
+        before.return_commands() - after.return_commands(),
+        consumed_blocks
+    );
+    assert_eq!(before.execute_stages(), after.execute_stages());
+    assert_eq!(before.score_commands(), after.score_commands());
+    assert_eq!(before.data_commands(), after.data_commands());
+    assert_eq!(before.raw_commands(), after.raw_commands());
+}
+
+fn public_root<'a>(
+    report: &'a TargetExecutionCostReport,
+    output: &LoweringOutput,
+    function: FunctionId,
+) -> &'a RootExecutionSummary {
+    let resource = output.map().function(function).unwrap().entry_resource();
+    let target = output
+        .program()
+        .functions()
+        .find_map(|(function, data)| (data.resource() == resource).then_some(function))
+        .unwrap_or_else(|| panic!("missing target entry resource {resource}"));
+    report
+        .roots()
+        .iter()
+        .find(|root| {
+            matches!(
+                root.root(),
+                ResolvedTargetExecutionRoot::Function(function) if *function == target
+            )
+        })
+        .unwrap_or_else(|| panic!("missing target-cost root for {resource}"))
+}
+
+fn non_function_root(report: &TargetExecutionCostReport) -> &RootExecutionSummary {
+    let mut roots = report
+        .roots()
+        .iter()
+        .filter(|root| !matches!(root.root(), ResolvedTargetExecutionRoot::Function(_)));
+    let root = roots.next().expect("missing generated load-tag cost root");
+    assert!(roots.next().is_none(), "multiple non-function cost roots");
+    root
+}
+
+fn assert_root_cost_nonincreasing(
+    root: &str,
+    before: &RootExecutionSummary,
+    after: &RootExecutionSummary,
+) {
+    for (metric, before, after) in [
+        (
+            "sequence",
+            before.sequence_operations(),
+            after.sequence_operations(),
+        ),
+        ("execute", before.execute_stages(), after.execute_stages()),
+        (
+            "calls",
+            before.internal_function_invocations(),
+            after.internal_function_invocations(),
+        ),
+        (
+            "score-nbt",
+            before.score_nbt_command_executions(),
+            after.score_nbt_command_executions(),
+        ),
+        (
+            "chain",
+            before.maximum_chain_expansion(),
+            after.maximum_chain_expansion(),
+        ),
+    ] {
+        assert!(
+            after.lower() <= before.lower(),
+            "{root} root {metric} lower bound regressed: {before:?} -> {after:?}"
+        );
+        assert!(
+            finite_upper(after) <= finite_upper(before),
+            "{root} root {metric} upper bound regressed: {before:?} -> {after:?}"
+        );
+    }
+}
+
+fn finite_upper(bound: CountBound) -> u64 {
+    match bound.upper().kind() {
+        CountUpperKind::Finite(upper) => upper,
+        other => panic!("expected a finite target-cost bound, found {other:?}"),
+    }
 }
 
 #[derive(Clone, Copy)]

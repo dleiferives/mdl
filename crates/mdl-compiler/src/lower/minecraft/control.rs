@@ -7,6 +7,7 @@ use crate::ir::minecraft::{
 use crate::source::OriginId;
 
 use super::construct::{FunctionLoweringCx, command, invariant_diagnostics};
+use super::placement::BranchArmRecipe;
 use super::plan::{BranchArm, BranchTransfer, EdgeTransfer, HomeId};
 use super::scalar::score_operation;
 
@@ -84,9 +85,25 @@ pub(crate) fn lower_branch(
 ) -> Result<(), Diagnostics> {
     context.require_type(condition, CoreType::Bool)?;
     let (then_edge, else_edge) = branch_transfers(context, function, source, origin)?;
-    let then_target = edge_target(context, function, then_destination, then_edge, origin)?;
-    let else_target = edge_target(context, function, else_destination, else_edge, origin)?;
-    let then_tail = tail_call_to_target(then_target, origin)?;
+    let (then_target, then_origin) = branch_target(
+        context,
+        function,
+        source,
+        BranchArm::Then,
+        then_destination,
+        then_edge,
+        origin,
+    )?;
+    let (else_target, else_origin) = branch_target(
+        context,
+        function,
+        source,
+        BranchArm::Else,
+        else_destination,
+        else_edge,
+        origin,
+    )?;
+    let then_tail = tail_call_to_target(then_target, then_origin)?;
     let conditional = command(
         CommandKind::Execute(ExecuteCommand::new(
             ExecuteModifiers::new(
@@ -104,7 +121,7 @@ pub(crate) fn lower_branch(
         origin,
     )?;
     context.push(conditional)?;
-    context.push(tail_call_to_target(else_target, origin)?)
+    context.push(tail_call_to_target(else_target, else_origin)?)
 }
 
 /// Defines one preplanned branch-edge helper as moves followed by a tail transfer.
@@ -179,6 +196,52 @@ fn edge_target(
             })?,
     };
     context.function(planned)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one branch-arm target keeps semantic ownership, transfer, selected recipe, and provenance explicit"
+)]
+fn branch_target(
+    context: &FunctionLoweringCx<'_, '_>,
+    function: FunctionId,
+    source: BlockId,
+    arm: BranchArm,
+    destination: BlockId,
+    edge: &BranchTransfer,
+    branch_origin: OriginId,
+) -> Result<(McFunctionId, OriginId), Diagnostics> {
+    let recipe = context
+        .plan()
+        .branch_arm_recipe(function, source, arm)
+        .ok_or_else(|| invariant_diagnostics("branch arm has no planned recipe", branch_origin))?;
+    match recipe {
+        BranchArmRecipe::Materialized { .. } => Ok((
+            edge_target(context, function, destination, edge, branch_origin)?,
+            branch_origin,
+        )),
+        BranchArmRecipe::InlineZeroAbiTerminalCall(recipe) => {
+            if recipe.consumed_block() != destination
+                || !edge.steps().is_empty()
+                || edge.helper().is_some()
+            {
+                return Err(invariant_diagnostics(
+                    "inline terminal branch target disagrees with its verified edge",
+                    branch_origin,
+                ));
+            }
+            let entry = context
+                .plan()
+                .function_entry(recipe.callee())
+                .ok_or_else(|| {
+                    invariant_diagnostics(
+                        "inline terminal callee has no planned entry",
+                        recipe.origins().call(),
+                    )
+                })?;
+            Ok((context.function(entry)?, recipe.origins().call()))
+        }
+    }
 }
 
 fn tail_call_to_block(

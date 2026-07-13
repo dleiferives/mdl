@@ -11,6 +11,7 @@ use crate::source::OriginId;
 
 use super::analysis::{CoreEdgeKind, SemanticInventory};
 use super::edge_transfer::EdgeTransferPlan;
+use super::placement::{BlockPlacement, ControlRecipePlan, FunctionControlRecipePlan};
 use super::plan::{BranchEdge, PlannedFunctionId, PlannedFunctionRole};
 use super::{GeneratedNames, LoweringOptions, MinecraftOptimizationLevel};
 
@@ -50,10 +51,36 @@ impl ResourceInventory {
     /// allocated block slots, semantic edges, and generated resources. Hash-table
     /// iteration never determines an ID or output order; hashing is used only for
     /// resource-name uniqueness membership.
+    #[cfg(test)]
     pub(crate) fn new(
         core: &CoreProgram,
         inventory: &SemanticInventory,
         transfers: &EdgeTransferPlan,
+        options: &LoweringOptions,
+    ) -> Result<Self, ResourceInventoryError> {
+        Self::build(core, inventory, transfers, None, options)
+    }
+
+    /// Rebuilds generated resources from the frozen control placement.
+    pub(crate) fn for_control_plan(
+        core: &CoreProgram,
+        inventory: &SemanticInventory,
+        transfers: &EdgeTransferPlan,
+        control: &ControlRecipePlan,
+        options: &LoweringOptions,
+    ) -> Result<Self, ResourceInventoryError> {
+        Self::build(core, inventory, transfers, Some(control), options)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "resource allocation is one deterministic identity pass over frozen placement and transfers"
+    )]
+    fn build(
+        core: &CoreProgram,
+        inventory: &SemanticInventory,
+        transfers: &EdgeTransferPlan,
+        control: Option<&ControlRecipePlan>,
         options: &LoweringOptions,
     ) -> Result<Self, ResourceInventoryError> {
         let level = options.optimization_level();
@@ -73,7 +100,20 @@ impl ResourceInventory {
             core.len(),
             transfers.len(),
         )?;
-        let required = required_resource_count(core, inventory, transfers)?;
+        if let Some(control) = control {
+            if !control.matches_level(level) {
+                return Err(ResourceInventoryError::OptimizationLevelMismatch {
+                    expected: level,
+                    actual: control.level(),
+                });
+            }
+            validate_prerequisite_function_count(
+                ResourcePrerequisite::ControlRecipePlan,
+                core.len(),
+                control.len(),
+            )?;
+        }
+        let required = required_resource_count(core, inventory, transfers, control)?;
         validate_resource_capacity(required)?;
 
         let mut builder = ResourceInventoryBuilder::new(options.generated_names());
@@ -92,10 +132,14 @@ impl ResourceInventory {
             let transfer = transfers
                 .function(function)
                 .ok_or(ResourceInventoryError::MissingTransferPlan { function })?;
+            let placement = control.and_then(|control| control.function(function));
             validate_edge_alignment(function, semantic.edges(), transfer.edges())?;
 
             let mut block_functions = vec![None; body.block_counts().allocated];
             for block in semantic.reachable_blocks().iter().copied() {
+                if !is_materialized(placement, function, block)? {
+                    continue;
+                }
                 let origin = body
                     .block(block)
                     .ok_or(ResourceInventoryError::InvalidBlock { function, block })?
@@ -114,6 +158,9 @@ impl ResourceInventory {
                     continue;
                 }
                 let source = edge.source();
+                if !is_materialized(placement, function, source)? {
+                    continue;
+                }
                 let origin = body
                     .block(source)
                     .ok_or(ResourceInventoryError::InvalidBlock {
@@ -160,7 +207,7 @@ impl ResourceInventory {
                 actual: result.planned_functions.len(),
             });
         }
-        result.validate(core, inventory, transfers, options)?;
+        result.validate(core, inventory, transfers, control, options)?;
         Ok(result)
     }
 
@@ -230,6 +277,7 @@ impl ResourceInventory {
         core: &CoreProgram,
         inventory: &SemanticInventory,
         transfers: &EdgeTransferPlan,
+        control: Option<&ControlRecipePlan>,
         options: &LoweringOptions,
     ) -> Result<(), ResourceInventoryError> {
         if !self.matches_level(options.optimization_level()) || !transfers.matches_level(self.level)
@@ -255,6 +303,13 @@ impl ResourceInventory {
             core.len(),
             transfers.len(),
         )?;
+        if let Some(control) = control {
+            validate_prerequisite_function_count(
+                ResourcePrerequisite::ControlRecipePlan,
+                core.len(),
+                control.len(),
+            )?;
+        }
 
         let names = options.generated_names();
         let mut resources = HashMap::with_capacity(self.planned_functions.len());
@@ -293,7 +348,16 @@ impl ResourceInventory {
             let transfer = transfers
                 .function(function)
                 .ok_or(ResourceInventoryError::MissingTransferPlan { function })?;
-            self.validate_function(function, body, semantic, transfer, names, &mut owners)?;
+            let placement = control.and_then(|control| control.function(function));
+            self.validate_function(
+                function,
+                body,
+                semantic,
+                transfer,
+                placement,
+                names,
+                &mut owners,
+            )?;
         }
 
         for (index, owners) in owners.into_iter().enumerate() {
@@ -309,33 +373,31 @@ impl ResourceInventory {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "local verification keeps each independently frozen prerequisite and the shared ownership table explicit"
+    )]
     fn validate_function(
         &self,
         function: FunctionId,
         body: &crate::ir::core::FunctionBody,
         semantic: &super::analysis::FunctionSemanticInventory,
         transfer: &super::edge_transfer::FunctionEdgeTransferPlan,
+        placement: Option<&FunctionControlRecipePlan>,
         names: GeneratedNames<'_>,
         owners: &mut [u8],
     ) -> Result<(), ResourceInventoryError> {
         let function_resources = self
             .function(function)
             .ok_or(ResourceInventoryError::MissingFunctionResources { function })?;
-        if function_resources.block_functions.len() != body.block_counts().allocated {
-            return Err(ResourceInventoryError::BlockSlotCountMismatch {
-                function,
-                expected: body.block_counts().allocated,
-                actual: function_resources.block_functions.len(),
-            });
-        }
+        validate_resource_slot_counts(
+            function,
+            body.block_counts().allocated,
+            transfer.edges().len(),
+            function_resources,
+            placement,
+        )?;
         validate_edge_alignment(function, semantic.edges(), transfer.edges())?;
-        if function_resources.branch_helpers.len() != transfer.edges().len() {
-            return Err(ResourceInventoryError::HelperSlotCountMismatch {
-                function,
-                expected: transfer.edges().len(),
-                actual: function_resources.branch_helpers.len(),
-            });
-        }
 
         for (block_index, planned) in function_resources
             .block_functions
@@ -344,7 +406,8 @@ impl ResourceInventory {
             .enumerate()
         {
             let block = indexed_block(block_index)?;
-            let expected = semantic.contains_block(block);
+            let expected =
+                semantic.contains_block(block) && is_materialized(placement, function, block)?;
             if expected != planned.is_some() {
                 return Err(ResourceInventoryError::BlockOwnershipMismatch { function, block });
             }
@@ -370,9 +433,13 @@ impl ResourceInventory {
             .enumerate()
         {
             let arm = match edge.kind() {
-                CoreEdgeKind::Jump => None,
                 CoreEdgeKind::Branch(_) if edge.is_empty() => None,
-                CoreEdgeKind::Branch(arm) => Some(arm),
+                CoreEdgeKind::Branch(arm)
+                    if is_materialized(placement, function, edge.source())? =>
+                {
+                    Some(arm)
+                }
+                CoreEdgeKind::Jump | CoreEdgeKind::Branch(_) => None,
             };
             if arm.is_some() != helper.is_some() {
                 return Err(ResourceInventoryError::HelperOwnershipMismatch {
@@ -450,6 +517,39 @@ impl ResourceInventory {
             .ok_or(ResourceInventoryError::OwnershipCountOverflow { planned })?;
         Ok(())
     }
+}
+
+fn validate_resource_slot_counts(
+    function: FunctionId,
+    block_slots: usize,
+    edge_slots: usize,
+    resources: &FunctionResourceInventory,
+    placement: Option<&FunctionControlRecipePlan>,
+) -> Result<(), ResourceInventoryError> {
+    if resources.block_functions.len() != block_slots {
+        return Err(ResourceInventoryError::BlockSlotCountMismatch {
+            function,
+            expected: block_slots,
+            actual: resources.block_functions.len(),
+        });
+    }
+    if let Some(placement) = placement {
+        if placement.placement_slots().len() != block_slots {
+            return Err(ResourceInventoryError::PlacementSlotCountMismatch {
+                function,
+                expected: block_slots,
+                actual: placement.placement_slots().len(),
+            });
+        }
+    }
+    if resources.branch_helpers.len() != edge_slots {
+        return Err(ResourceInventoryError::HelperSlotCountMismatch {
+            function,
+            expected: edge_slots,
+            actual: resources.branch_helpers.len(),
+        });
+    }
+    Ok(())
 }
 
 impl ResourceFunction {
@@ -540,6 +640,7 @@ fn required_resource_count(
     core: &CoreProgram,
     inventory: &SemanticInventory,
     transfers: &EdgeTransferPlan,
+    control: Option<&ControlRecipePlan>,
 ) -> Result<u64, ResourceInventoryError> {
     let mut required = SCAFFOLDING_RESOURCE_COUNT;
     for (function, declaration) in core.functions() {
@@ -552,15 +653,52 @@ fn required_resource_count(
         let transfer = transfers
             .function(function)
             .ok_or(ResourceInventoryError::MissingTransferPlan { function })?;
+        let placement = control.and_then(|control| control.function(function));
         validate_edge_alignment(function, semantic.edges(), transfer.edges())?;
-        let helpers = transfer
-            .edges()
-            .iter()
-            .filter(|edge| matches!(edge.kind(), CoreEdgeKind::Branch(_)) && !edge.is_empty())
-            .count();
-        required = checked_resource_count(required, semantic.reachable_blocks().len(), helpers)?;
+        let blocks =
+            semantic
+                .reachable_blocks()
+                .iter()
+                .copied()
+                .try_fold(0_usize, |count, block| {
+                    if is_materialized(placement, function, block)? {
+                        count
+                            .checked_add(1)
+                            .ok_or(ResourceInventoryError::CapacityOverflow)
+                    } else {
+                        Ok(count)
+                    }
+                })?;
+        let helpers = transfer.edges().iter().try_fold(0_usize, |count, edge| {
+            if matches!(edge.kind(), CoreEdgeKind::Branch(_))
+                && !edge.is_empty()
+                && is_materialized(placement, function, edge.source())?
+            {
+                count
+                    .checked_add(1)
+                    .ok_or(ResourceInventoryError::CapacityOverflow)
+            } else {
+                Ok(count)
+            }
+        })?;
+        required = checked_resource_count(required, blocks, helpers)?;
     }
     Ok(required)
+}
+
+fn is_materialized(
+    placement: Option<&FunctionControlRecipePlan>,
+    function: FunctionId,
+    block: BlockId,
+) -> Result<bool, ResourceInventoryError> {
+    match placement {
+        None => Ok(true),
+        Some(placement) => match placement.placement(block) {
+            Some(BlockPlacement::Materialized) => Ok(true),
+            Some(BlockPlacement::Consumed { .. }) => Ok(false),
+            None => Err(ResourceInventoryError::MissingBlockPlacement { function, block }),
+        },
+    }
 }
 
 fn checked_resource_count(
@@ -691,6 +829,7 @@ fn usize_to_u64(value: usize) -> Option<u64> {
 pub(crate) enum ResourcePrerequisite {
     SemanticInventory,
     EdgeTransferPlan,
+    ControlRecipePlan,
 }
 
 /// Typed failure while assigning generated function resources and ownership.
@@ -708,6 +847,10 @@ pub(crate) enum ResourceInventoryError {
     },
     MissingTransferPlan {
         function: FunctionId,
+    },
+    MissingBlockPlacement {
+        function: FunctionId,
+        block: BlockId,
     },
     MissingFunctionResources {
         function: FunctionId,
@@ -746,6 +889,11 @@ pub(crate) enum ResourceInventoryError {
         block: BlockId,
     },
     BlockSlotCountMismatch {
+        function: FunctionId,
+        expected: usize,
+        actual: usize,
+    },
+    PlacementSlotCountMismatch {
         function: FunctionId,
         expected: usize,
         actual: usize,
@@ -1195,7 +1343,7 @@ mod tests {
 
         assert_eq!(
             resources
-                .validate(&fixture.core, &inventory, &transfers, &options)
+                .validate(&fixture.core, &inventory, &transfers, None, &options)
                 .unwrap_err(),
             ResourceInventoryError::DuplicateResource {
                 first: load,

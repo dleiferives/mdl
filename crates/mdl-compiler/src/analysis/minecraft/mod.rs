@@ -18,6 +18,7 @@ pub use cost::{
     NoFiniteBoundReason, ResolvedTargetExecutionRoot, ReturnValueClass, RootEntryRegion,
     RootExecutionSummary, TargetExecutionRoot, UnknownCostReason,
 };
+pub(crate) use local::classify_constructed_command;
 pub use report::{
     CostRegionSummary, TargetExecutionAnalysisCompletion, TargetExecutionAnalysisFailure,
     TargetExecutionAnalysisLimitKind, TargetExecutionAnalysisLimits, TargetExecutionAnalysisPhase,

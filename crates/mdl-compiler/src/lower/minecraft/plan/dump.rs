@@ -272,6 +272,8 @@ mod tests {
             homes: EntityVec::new(),
             target_functions: EntityVec::new(),
             functions: EntityVec::new(),
+            control_statistics:
+                crate::lower::minecraft::placement::ControlRecipeStatistics::default(),
         }
     }
 }

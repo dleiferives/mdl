@@ -14,16 +14,21 @@ use crate::target::JavaEditionTarget;
 use super::LoweringOptions;
 pub(crate) use super::analysis::BranchArm;
 use super::coalescing::CoalescingFallbackReason;
+#[cfg(test)]
+use super::placement::RecipeDecisionReason;
+use super::placement::{BlockPlacement, BranchArmRecipe, BranchRecipe, ControlRecipeStatistics};
 use super::{CommandLimitAssumptions, GeneratedNames, MinecraftOptimizationLevel};
 
 mod assemble;
 #[cfg(test)]
 mod dump;
 mod minimum_demand;
+mod reconcile;
 mod report;
 mod symbolic;
 mod verify;
 
+pub(crate) use reconcile::verify_constructed_control_recipes;
 pub(crate) use report::LoweringReport;
 use verify::verify_plan;
 
@@ -283,6 +288,8 @@ pub(crate) struct FunctionLayout {
     parameter_types: Box<[CoreType]>,
     result_types: Box<[CoreType]>,
     abi: FunctionAbi,
+    block_placements: Box<[Option<BlockPlacement>]>,
+    branch_recipes: Box<[Option<BranchRecipe>]>,
     block_functions: Box<[Option<PlannedFunctionId>]>,
     value_homes: Box<[Option<HomeId>]>,
     parallel_copy_temp: Option<HomeId>,
@@ -358,6 +365,7 @@ pub(crate) struct LoweringPlan {
     homes: EntityVec<HomeId, Home>,
     target_functions: EntityVec<PlannedFunctionId, PlannedFunction>,
     functions: EntityVec<FunctionId, FunctionLayout>,
+    control_statistics: ControlRecipeStatistics,
 }
 
 impl LoweringPlan {
@@ -438,6 +446,41 @@ impl LoweringPlan {
             .and_then(|index| layout.block_functions.get(index))
             .copied()
             .flatten()
+    }
+
+    pub(crate) fn block_placement(
+        &self,
+        function: FunctionId,
+        block: BlockId,
+    ) -> Option<BlockPlacement> {
+        let layout = self.functions.get(function)?;
+        usize::try_from(block.index())
+            .ok()
+            .and_then(|index| layout.block_placements.get(index))
+            .copied()
+            .flatten()
+    }
+
+    pub(crate) fn branch_recipe(
+        &self,
+        function: FunctionId,
+        block: BlockId,
+    ) -> Option<BranchRecipe> {
+        let layout = self.functions.get(function)?;
+        usize::try_from(block.index())
+            .ok()
+            .and_then(|index| layout.branch_recipes.get(index))
+            .copied()
+            .flatten()
+    }
+
+    pub(crate) fn branch_arm_recipe(
+        &self,
+        function: FunctionId,
+        block: BlockId,
+        arm: BranchArm,
+    ) -> Option<BranchArmRecipe> {
+        Some(self.branch_recipe(function, block)?.arm(arm))
     }
 
     pub(crate) fn function_parameters(&self, function: FunctionId) -> Option<&[HomeId]> {
@@ -612,6 +655,7 @@ impl PlanBuilder {
                 role: ScaffoldingRole::InitTryCreate,
             })?;
         let mut functions = EntityVec::new();
+        let mut branch_arms_visited = 0_u64;
         for (function, layout) in self.functions.into_iter() {
             let abi = layout
                 .abi
@@ -621,12 +665,48 @@ impl PlanBuilder {
                 .into_iter()
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
+            let body = core
+                .function(function)
+                .and_then(crate::ir::core::Function::body)
+                .ok_or(PlanBuildError::MissingDefinition { function })?;
+            let function_analysis = analyses
+                .function(function)
+                .ok_or(PlanBuildError::MissingAnalysis { function })?;
+            let mut block_placements = vec![None; body.block_counts().allocated];
+            let mut branch_recipes = vec![None; body.block_counts().allocated];
+            for block in function_analysis.reachable_blocks().iter().copied() {
+                let index = usize::try_from(block.index())
+                    .map_err(|_| PlanBuildError::InvalidCoreEntity { function })?;
+                *block_placements
+                    .get_mut(index)
+                    .ok_or(PlanBuildError::InvalidCoreEntity { function })? =
+                    Some(BlockPlacement::Materialized);
+                if matches!(
+                    body.block(block)
+                        .and_then(crate::ir::core::BlockData::terminator)
+                        .map(crate::ir::core::Terminator::kind),
+                    Some(crate::ir::core::TerminatorKind::Branch { .. })
+                ) {
+                    branch_arms_visited = branch_arms_visited.checked_add(2).ok_or(
+                        PlanBuildError::CapacityOverflow {
+                            table: PlanTable::Functions,
+                        },
+                    )?;
+                    *branch_recipes
+                        .get_mut(index)
+                        .ok_or(PlanBuildError::InvalidCoreEntity { function })? = Some(
+                        BranchRecipe::all_materialized(RecipeDecisionReason::OptimizationDisabled),
+                    );
+                }
+            }
             let frozen_function = functions
                 .push(FunctionLayout {
                     diagnostic_name_hint: layout.diagnostic_name_hint,
                     parameter_types: layout.parameter_types,
                     result_types: layout.result_types,
                     abi,
+                    block_placements: block_placements.into_boxed_slice(),
+                    branch_recipes: branch_recipes.into_boxed_slice(),
                     block_functions: layout.block_functions.into_boxed_slice(),
                     value_homes: layout.value_homes.into_boxed_slice(),
                     parallel_copy_temp: layout.parallel_copy_temp,
@@ -655,6 +735,7 @@ impl PlanBuilder {
             homes: self.homes,
             target_functions: self.target_functions,
             functions,
+            control_statistics: ControlRecipeStatistics::from_counts(branch_arms_visited, 0, 0),
         };
         verify_plan(core, &plan).map_err(PlanFinishError::Invalid)?;
         Ok(plan)
@@ -775,6 +856,7 @@ pub(crate) enum PlanTable {
 pub(crate) enum PlanInputPhase {
     Assignment,
     Transfers,
+    ControlRecipes,
     Resources,
 }
 

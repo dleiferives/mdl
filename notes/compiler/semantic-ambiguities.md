@@ -601,3 +601,32 @@ If a future runtime facade accepts untyped scoreboard inputs, it must either val
 or normalize them before entry, or change the public contract and model the chosen
 coercion. It must not silently treat every nonzero score as `true` while retaining the
 current arithmetic-negation recipe.
+
+## A-017 — Addressability and stability of generated non-entry functions
+
+**Status:** explicit external-ABI boundary; Stage-5G policy decided.
+
+Minecraft datapacks have no private symbol visibility. An external datapack that
+guesses a compiler-generated `__mdl` resource name can physically invoke it, even
+though the compiler never published that resource. If every guessable generated
+function were treated as externally stable, no non-entry block could ever be consumed
+or renamed and target placement would be impossible.
+
+The supported lowering ABI therefore consists only of each Core entry resource and
+its typed parameter/result slots exposed by `LoweringMap`, together with the documented
+load-tag behavior. Every mapped Core entry remains materialized. Generated non-entry
+block and branch-helper resources are compiler-private implementation details: under
+`MinecraftOptimizationLevel::Baseline` they may disappear, be renamed, or be replaced
+by a closed control recipe. Calling one directly from outside the generated pack is a
+caller contract violation and carries no stability or Core-semantic guarantee. The
+`None` mode remains a byte-stable differential oracle, not an expanded public ABI.
+
+A future feature that exports internal labels or raw callable resources must represent
+that addressability explicitly, make the referenced block materialized, and update the
+lowering map and verifier together. Predictability of a generated name is not such an
+export. This follows the same principle as explicit symbol visibility in MLIR and
+linkage in LLVM: optimization permission comes from a declared boundary, not from an
+assumption that outside code will not discover a name.
+
+- MLIR symbol visibility: <https://mlir.llvm.org/docs/SymbolsAndSymbolTables/>
+- LLVM linkage and visibility: <https://llvm.org/docs/LangRef.html#linkage-types>

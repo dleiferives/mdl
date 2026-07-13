@@ -774,11 +774,11 @@ return run function <destination-block>
 
 Copy returned values into the owning function's distinct result homes in declaration
 order, then emit a successful native return. The semantic return values live in
-explicit ABI slots; the Minecraft function command's own integer outcome is
-initially an internal zero.
+explicit ABI slots; the Minecraft function command's own success and integer result
+are both the internal value one.
 
 ```mcfunction
-return 0
+return 1
 ```
 
 This uniform ABI supports zero, one, and multiple Core results. Later lowering may
@@ -940,8 +940,10 @@ For Stage 4:
   results;
 - the one compiler-reserved storage sentinel is backend initialization scaffolding,
   not a source-visible mutable-state feature;
-- the existing physical condition-mutation fixture remains the target-level proof
-  for why Stage 4 emits only the return dispatcher;
+- Stage 5G's first profitable terminal-call contraction does not repeat a condition,
+  so physical condition-stability analysis and its mutation fixture remain deferred
+  with the optional dual-guard/snapshot recipes; Stage 4 emits only the return
+  dispatcher;
 - a later stage must design a target-neutral import/intrinsic/effect boundary before
   source-level raw commands or mutable global state enter Core.
 

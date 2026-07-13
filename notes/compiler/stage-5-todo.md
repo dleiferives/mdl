@@ -1,6 +1,6 @@
 # Stage 5 Implementation Checklist
 
-Status: **In progress — Stages 5A–5F complete and gated; Stage 5G next**
+Status: **In progress — Stages 5A–5G complete and gated; Stage 5H next**
 
 Design authority:
 [`stage-5-baseline-optimization-plan.md`](stage-5-baseline-optimization-plan.md)
@@ -430,10 +430,10 @@ Framework design:
   Later phases borrow explicit prerequisites; short-lived local builders mutate only
   their result. Avoid generic typestate and phase records without consumers. Stage 5F
   inserts the first real `LivenessResult` between demand and assignment. Stage 5G adds
-  `ControlRecipePlan`, `BlockPlacement`, and placement-aware resource rebuilding; it
-  creates `PhysicalEffectSummary` in 5G.4, when condition-stability analysis becomes
-  its first real consumer, after homes/transfers freeze. Stage 5E materializes every
-  reachable block.
+  `ControlRecipePlan`, `BlockPlacement`, and placement-aware resource rebuilding after
+  homes/transfers freeze. A physical condition-stability result remains deferred with
+  the optional repeated-condition recipes that would consume it; Stage 5E materializes
+  every reachable block.
 
   Record the explicit `MinecraftOptimizationLevel` in every policy-sensitive phase
   result and reject cross-policy composition, including empty and fully demanded
@@ -677,50 +677,80 @@ Framework design:
 
 ## Stage 5G: Closed target recipes and conservative selection
 
-- [ ] **5G.1 — Add local recipe accounting and comparison.**
+- [x] **5G.1 — Add local recipe accounting and comparison.**
 
   Define closed recipe-local command fragments and cost summaries using the same
-  command-step algebra as final target analysis. Compare legality first, preserve
-  whole-graph bound classification, prefer strict multi-dimensional local dominance,
-  then finite root work and structured size. Retain Stage 4 when a real trade-off is
-  incomparable. Do not rerun whole-program cost analysis per candidate.
+  command-step algebra as final target analysis. Compare legality first and require a
+  typed local graph-contraction certificate proving that every whole-root metric and
+  bound classification is non-increasing. Prefer strict multi-dimensional local
+  dominance, then structured size only when runtime dimensions do not regress. Retain
+  Stage 4 when a real trade-off is incomparable, arithmetic is incomplete, or no such
+  certificate exists. Whole-target cost analysis remains an explicit post-lowering
+  consumer; do not run it or invent root frequencies/work during candidate selection.
 
-- [ ] **5G.2 — Add explicit block placement.**
+- [x] **5G.2 — Add explicit block placement.**
 
   Represent every reachable block as materialized or consumed by exactly one recipe.
-  Shared, cyclic, externally addressable, and multi-command regions stay
-  materialized. General trace layout, duplication, and hot/cold placement remain
-  Stage 11.
+  Shared, cyclic, supported-ABI entry, and regions not reducible to one closed recipe
+  command stay materialized. Minecraft has no symbol visibility: mapped Core entries
+  are the supported external ABI, while generated non-entry block/helper names are
+  unstable implementation details under `Baseline`. General trace layout,
+  duplication, and hot/cold placement remain Stage 11.
 
-- [ ] **5G.3 — Implement the first profitable terminal-arm recipe.**
+- [x] **5G.3 — Implement the first profitable terminal-arm recipe.**
 
   Consume a uniquely reached terminal arm only when its operations and terminator
   combine into one legal structured target command. Prove the zero-ABI call+return
   tail-call case first, including exact return success/result semantics, contributing
   origins, resource removal, predicted/recounted cost, and baseline fallback.
 
-- [ ] **5G.4 — Implement physical condition-stability analysis.**
+- [x] **5G.4 — Scope physical condition-stability analysis to a real consumer.**
 
-  Compute transitive physical read/write/context/fork footprints over CFG and internal
-  calls. Include instruction writes, edge transfers, call-result copies, loops that
-  revisit the source, and unknown/raw barriers. This analysis proves legality only;
-  it does not require emitting dual guards. Bind results to frozen home/transfer
-  assignments; limit exhaustion becomes `Unknown(AnalysisLimit)` and rejects every
-  stability-dependent recipe. Recipe selection cannot request re-coalescing.
+  Research and the implemented phase graph found that the required terminal-call
+  contraction never consumes condition stability, while 5G.5 makes every repeated-
+  condition recipe optional. Do not run or retain an unused whole-program fixed point.
+  Defer the result type with those recipes. When one has a complete winning fixture,
+  compute transitive physical read/write/context/fork footprints over CFG and internal
+  calls using frozen assigned-home and edge-temporary identities. Include instruction
+  writes, edge transfers, call-result copies, loops that revisit the source, and an
+  exhaustive future-operation unknown barrier. Limit exhaustion becomes
+  `Unknown(AnalysisLimit)` and rejects every stability-dependent recipe; recipe
+  selection cannot request re-coalescing or use partial negative facts.
 
-- [ ] **5G.5 — Admit further branch recipes only with a complete winning fixture.**
+- [x] **5G.5 — Admit further branch recipes only with a complete winning fixture.**
 
   Stable dual guard and snapshot recipes are optional experiments, not completion
-  requirements. Add one only if emitter, verifier, explicit nonzero completion,
+  requirements. Add one only if emitter, verifier, explicit exact-one completion,
   condition-mutation trap, local/final cost reconciliation, and a concrete advantage
-  over the return dispatcher all land together. Otherwise retain the dispatcher and
-  record the experiment as deferred.
+  over the return dispatcher all land together. That experiment also owns the first
+  narrow condition-stability analysis described in 5G.4. Otherwise retain the
+  dispatcher and record both recipe and analysis as deferred.
 
-- [ ] **5G.6 — Close the Stage 5G gate.**
+- [x] **5G.6 — Close the Stage 5G gate.**
 
   Add exact selected-decision/rejection-reason reports, mutation-trap tests, optimized
   versus Stage 4 differential execution, resource/trace goldens, unknown/fallback
   cases, and the existing official-server return/execute proof. Run all fast gates.
+
+  Completion evidence (2026-07-13): the closed `InlineZeroAbiTerminalCall` recipe
+  consumes only a uniquely reached, non-entry, empty-transfer, zero-ABI call-plus-
+  empty-return block. Selection first proves legality and a non-increasing graph
+  contraction, then uses exact path-sensitive command-step Pareto comparison. The
+  frozen plan owns placement, resources, decisions, costs, and contributing origins;
+  independent verification rederives every selected and rejected decision, resource
+  ownership, exact-one completion, and control statistic. Post-construction
+  reconciliation classifies the actual final commands with the shared target-cost
+  algebra and checks both Core-derived targets, origins, structure, and predicted
+  costs. Stable dual-guard/snapshot recipes and physical condition-stability analysis
+  remain explicitly deferred because no complete winning fixture consumes them.
+
+  Focused integration covers then, else, both arms, shared destinations, physical
+  transfers, ABI rejection, scalar prefixes, mutation/corruption traps, deterministic
+  reports, resources, artifacts, traces, and whole-target non-regression. One official
+  Java 26.2 startup installs distinct `None` and `Baseline` packs and proves both
+  Boolean paths preserve command success `1`, exact result `1`, and the nested
+  callee's observable result-slot effect. Formatting, workspace warnings-denied
+  Clippy, all fast tests, warnings-denied rustdoc, and diff checks pass.
 
 ## Stage 5H: Completion, measurements, and handoff
 

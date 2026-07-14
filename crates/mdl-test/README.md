@@ -132,6 +132,27 @@ The command-limit differential remains a separate gate and the authority for
 sequence and fork boundaries; the Core conformance test does not duplicate those
 limit probes.
 
+## Stage 6 source compiler
+
+The Stage 6 source gate compiles one checked scalar fixture under all four Core and
+Minecraft `None|Baseline` policy combinations. Fast tests compare HIR, maps, Core,
+reports, target IR, analysis, artifacts, traces, ABI data, failures, and provenance.
+The ignored test installs all four packs in one server startup and exercises calls,
+branches, mutable joins, Boolean operations, signed `Int32` extremes, `Void`, reload,
+and reinvocation through generated ABI mappings:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test source_compilation \
+  source_compilation_runs_all_four_policies_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+```
+
+The separate =mdl= crate owns the command-line/filesystem boundary. Its ignored
+server test spawns the real binary, installs the safely materialized directory, and
+invokes the ABI printed by that process.
+
 The ordinary server harness is the initial path because compiler tests need direct
 function and command invocation. Mojang's dedicated GameTest entry point remains a
 useful later layer for tick-sensitive block and entity tests with JUnit-like XML

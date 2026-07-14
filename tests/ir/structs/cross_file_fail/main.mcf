@@ -1,5 +1,0 @@
-namespace materials = "materials.mcf"
-struct Bed{
-       thread_count : Int
-       material : materials.Material
-};

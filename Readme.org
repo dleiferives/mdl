@@ -1,118 +1,96 @@
 #+title: Minecraft Datapack Language
 
-MDL is a typed compiler for Minecraft Java Edition datapacks. The current
-implementation is written in Rust and is being rebuilt in verified stages: a
-vanilla-server test harness and the typed Core SSA representation are complete.
-The target-aware Minecraft IR and datapack emitter are next.
+MDL is a typed compiler for Minecraft Java Edition datapacks, implemented in Rust.
+It currently compiles a bounded single-file scalar language through resolved typed
+HIR, verified Core SSA, Core optimization, structured Minecraft lowering, target
+cost analysis, and deterministic datapack emission. Generated packs are tested on
+the official vanilla Java 26.2 dedicated server; no client is required.
 
-** Examples
+* Quick start
 
-The basis of the language is on the use of calling functions with arguments to allow the manipulation of commands directly. This behaviour can be exploited to create a higher level language directly!
+Create =example.mdl=:
 
-Now what do I mean by this? One of the outcomes that is-- nearly-- impossible to achieve in normal Minecraft command blocks/ datapacks is the concatination of strings. However with function calls it becomes trivial.
-
-*** In minecraft datapack `mcfunction` code
-/Concatenate output/
-
-=cat_and_say.mcfunction=
-#+begin_src
-#inputs :
-# A : Some literal
-# B : Some other literal
-$data modify storage example:utils cat_output set value "$(A)$(B)"
-$say "$(A)$(B)"
-#+end_src
-
-And then the calling code
-
-/Call Code/
-
-=main.mcfunction=
-#+begin_src
-data modify storage example:main cat_and_say_args set value {A:"Hello,",B:" World!"}
-function example:cat_and_say with storage example:main cat_and_say_args
-#+end_src
-
-Which then will output =Hello, World!= and store it to =example:utils cat_output=
-*** In mdl
-In a direct translation this could be
-#+begin_src
-// utils.mcf
-data cat_output := "";
-
-fn cat_and_say(eff A: String, eff B: String) : Void {
-    utils.cat_output = "<A><B>";
-    $say "<A><B>";
-}
-// main.mcf
-namespace utils = "utils.mcf'
-utils/cat_and_say("Hello,"," World!");
-#+end_src
-
-Or using inlining
-#+begin_src
-namespace utils = {
-    data cat_output := "";
-};
-
-// Define an inline function with default values
-cat_and_say<data A: string = "Hello,", data B: String = " World!"> {
-    utils.cat_output = "<A><B>";
-    $say "<A><B>";
-}
-
-cat_and_say();
-// "Hello, World!"
-cat_and_say("Blocky"," Place...");
-// "Blocky, Place..."
-#+end_src
-
-Or just letting the macro system solve automatically.
-#+begin_src
-namespace utils = {
-    data cat_output := "";
-};
-
-data A := "Hello,";
-data B := " World!";
-utils.cat_output = "<A><B>";
-$say "<A><B>";
-
-#+end_src
-
-
-
-* Notes
-** Namespaces
-#+begin_src
-// a.mcf
-namespace a;
-namespace b = "b.mcf";
-data x := 10;
-
-// b.mcf
-namespace b;
-namespace a = "a.mcf";
-
-fn addx(data y: Int) : Int {
-    return y + a.x;
-}
-
-fn add2x(data y: Int) : Int{
-    return y + a.b.addx(y);
+#+begin_src text
+fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
+    var selected: Int32;
+    if (flag) {
+        selected = left;
+    } else {
+        selected = right;
+    }
+    return selected;
 }
 #+end_src
 
-Should ultimately result in
+Compile it with every CLI-exposed choice explicit:
 
-#+begin_src
-//b.mcf
-
-fn addx(data y : Int) : Int{
-    return y + a.x;
-}
-
-fn add2x(datay: Int) : Int{
-    return y + addx(y);
-}
+#+begin_src sh
+cargo run -p mdl -- compile example.mdl \
+  --output build/example-pack \
+  --core-opt baseline \
+  --minecraft-opt baseline \
+  --namespace example \
+  --register-objective mdl.example \
+  --description "MDL example"
 #+end_src
+
+The CLI refuses to overwrite a nonempty output directory. On success it prints each
+source function's generated entry resource and ordered typed scoreboard ABI homes.
+
+* Current source language
+
+The first complete language slice includes:
+
+- =Bool=, =Int32=, and =Void= function results (an omitted result annotation means
+  =Void=);
+- explicit positional parameter types and optional result annotations;
+- immutable =const= and mutable =var= locals;
+- forward calls and recursion at the frontend level;
+- =if=, =else if=, =else=, assignment, and =return=;
+- Boolean negation and typed equality/ordered comparisons; and
+- exact source diagnostics, definite assignment, and return-completeness checking.
+
+Arguments evaluate left to right. Types match exactly; there are no implicit
+conversions. The current Minecraft backend deliberately rejects recursive call
+graphs with a typed lowering error. Arithmetic, strings, lists, structs, loops,
+Minecraft context/entity APIs, raw commands, scheduling, and macros are not yet
+source features.
+
+The reviewed next contracts keep logical module identity separate from filenames
+and route typed Minecraft effects through Core before structured target lowering.
+See [[file:notes/compiler/stage-6-modules-plan.md][the module plan]] and
+[[file:notes/compiler/stage-6-effects-plan.md][the typed-effect plan]].
+
+* Verification
+
+Fast checks do not launch Java:
+
+#+begin_src sh
+cargo test --workspace
+#+end_src
+
+The source compiler's four-policy differential runs all combinations of Core
+=none|baseline= and Minecraft =none|baseline= in one official-server startup:
+
+#+begin_src sh
+MDL_SERVER_JAR=/path/to/minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test source_compilation \
+  source_compilation_runs_all_four_policies_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+#+end_src
+
+The CLI process-boundary proof compiles through the actual =mdl= binary, installs
+the materialized directory in the server harness, and invokes the printed ABI:
+
+#+begin_src sh
+MDL_SERVER_JAR=/path/to/minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl --test server \
+  cli_materialized_pack_runs_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+#+end_src
+
+Compiler architecture, pass proofs, semantic ambiguities, and the implementation
+roadmap live under [[file:notes/compiler/README.md][notes/compiler]]. Backend command
+research lives under [[file:notes/mcfunction/README.md][notes/mcfunction]].

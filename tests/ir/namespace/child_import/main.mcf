@@ -1,3 +1,0 @@
-namespace child = {
-namespace utils = "utils.mcf";
-};

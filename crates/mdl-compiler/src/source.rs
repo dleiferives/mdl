@@ -1,5 +1,6 @@
 //! Immutable source files and append-only provenance.
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
@@ -66,6 +67,41 @@ pub struct SourcePosition {
     pub line: u32,
     /// Zero-based byte offset from the start of the line.
     pub byte_column: u32,
+}
+
+/// One logical source line without its trailing LF or CRLF terminator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceLine<'a> {
+    file: FileId,
+    number: u32,
+    span: Span,
+    text: &'a str,
+}
+
+impl<'a> SourceLine<'a> {
+    /// Returns the file containing this line.
+    #[must_use]
+    pub const fn file(self) -> FileId {
+        self.file
+    }
+
+    /// Returns the zero-based line number.
+    #[must_use]
+    pub const fn number(self) -> u32 {
+        self.number
+    }
+
+    /// Returns the line's source span, excluding a trailing LF or CRLF terminator.
+    #[must_use]
+    pub const fn span(self) -> Span {
+        self.span
+    }
+
+    /// Returns the line text without a trailing LF or CRLF terminator.
+    #[must_use]
+    pub const fn text(self) -> &'a str {
+        self.text
+    }
 }
 
 /// One immutable source file.
@@ -199,6 +235,38 @@ impl SourceMap {
         Ok(Span { file, start, end })
     }
 
+    /// Returns the exact UTF-8 text covered by a validated span.
+    ///
+    /// This revalidates the span against this source map, so a span originating in a
+    /// different map cannot cause unchecked string indexing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the span's file or byte range is invalid in this map.
+    pub fn slice(&self, span: Span) -> Result<&str, SourceError> {
+        self.validate_span(span)?;
+        let source = self
+            .get(span.file)
+            .ok_or(SourceError::InvalidFile { file: span.file })?;
+        let start = usize::try_from(span.start).map_err(|_| SourceError::SpanOutOfBounds {
+            file: span.file,
+            end: span.end,
+            file_len: u32::try_from(source.text.len()).unwrap_or(u32::MAX),
+        })?;
+        let end = usize::try_from(span.end).map_err(|_| SourceError::SpanOutOfBounds {
+            file: span.file,
+            end: span.end,
+            file_len: u32::try_from(source.text.len()).unwrap_or(u32::MAX),
+        })?;
+        source
+            .text
+            .get(start..end)
+            .ok_or(SourceError::NotCharBoundary {
+                file: span.file,
+                offset: span.start,
+            })
+    }
+
     /// Resolves a validated byte offset to a zero-based line and byte column.
     ///
     /// An offset at the end of the file is valid. Offsets splitting a UTF-8 code
@@ -223,6 +291,50 @@ impl SourceMap {
         })?;
         let byte_column = offset - source.line_starts[line_index];
         Ok(SourcePosition { line, byte_column })
+    }
+
+    /// Returns the logical source line containing a validated byte offset.
+    ///
+    /// An offset at EOF is valid. In a file ending with LF, EOF belongs to the final
+    /// empty logical line. Returned text excludes an LF terminator and a directly
+    /// preceding CR when the file uses CRLF.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::resolve_position`].
+    pub fn line_at(&self, file: FileId, offset: u32) -> Result<SourceLine<'_>, SourceError> {
+        let position = self.resolve_position(file, offset)?;
+        let source = self.get(file).ok_or(SourceError::InvalidFile { file })?;
+        let line_index = usize::try_from(position.line).map_err(|_| SourceError::FileTooLarge {
+            byte_len: source.text.len(),
+        })?;
+        let start = source.line_starts[line_index];
+        let mut end = source.line_starts.get(line_index + 1).map_or_else(
+            || {
+                u32::try_from(source.text.len()).map_err(|_| SourceError::FileTooLarge {
+                    byte_len: source.text.len(),
+                })
+            },
+            |next_start| Ok(next_start.saturating_sub(1)),
+        )?;
+
+        if source.line_starts.get(line_index + 1).is_some() && end > start {
+            let before_lf = usize::try_from(end).map_err(|_| SourceError::FileTooLarge {
+                byte_len: source.text.len(),
+            })?;
+            if source.text.as_bytes().get(before_lf - 1) == Some(&b'\r') {
+                end -= 1;
+            }
+        }
+
+        let span = self.span(file, start, end)?;
+        let text = self.slice(span)?;
+        Ok(SourceLine {
+            file,
+            number: position.line,
+            span,
+            text,
+        })
     }
 
     fn validate_span(&self, span: Span) -> Result<(), SourceError> {
@@ -308,6 +420,45 @@ impl SourceContext {
     #[must_use]
     pub fn origin_count(&self) -> usize {
         self.origins.len()
+    }
+
+    /// Resolves provenance to its best direct source span.
+    ///
+    /// Direct source origins return their span. Call-site provenance prefers the
+    /// caller and falls back to the callee. Fused provenance chooses the first
+    /// resolvable input in stored order. Unknown or absent provenance returns `None`.
+    /// Resolution is iterative, expands every represented origin at most once, and
+    /// performs work linear in the represented origins and their stored references.
+    #[must_use]
+    pub fn resolve_origin_span(&self, origin: OriginId) -> Option<Span> {
+        match self.origin(origin)? {
+            Origin::Unknown => return None,
+            Origin::Source(span) => return Some(*span),
+            Origin::CallSite { .. } | Origin::Fused { .. } => {}
+        }
+
+        let mut pending = vec![origin];
+        let mut visited = HashSet::new();
+
+        while let Some(candidate) = pending.pop() {
+            if !visited.insert(candidate) {
+                continue;
+            }
+
+            match self.origin(candidate)? {
+                Origin::Unknown => {}
+                Origin::Source(span) => return Some(*span),
+                Origin::CallSite { callee, caller } => {
+                    pending.push(*callee);
+                    pending.push(*caller);
+                }
+                Origin::Fused { inputs, .. } => {
+                    pending.extend(inputs.iter().rev().copied());
+                }
+            }
+        }
+
+        None
     }
 
     /// Appends a validated provenance record without interning it.
@@ -476,7 +627,7 @@ impl Error for OriginError {
 mod tests {
     use super::{
         FileId, Origin, OriginError, OriginId, SourceContext, SourceError, SourceMap,
-        SourcePosition,
+        SourcePosition, Span,
     };
 
     #[test]
@@ -526,6 +677,43 @@ mod tests {
         );
         assert_eq!(
             sources.span(FileId(99), 0, 0),
+            Err(SourceError::InvalidFile { file: FileId(99) })
+        );
+    }
+
+    #[test]
+    fn slices_spans_and_finds_utf8_crlf_and_eof_lines() {
+        let mut sources = SourceMap::new();
+        let file = sources.add_file("unicode.mdl", "aé\r\nβ\n").unwrap();
+
+        let character = sources.span(file, 1, 3).unwrap();
+        assert_eq!(sources.slice(character).unwrap(), "é");
+
+        let first = sources.line_at(file, 1).unwrap();
+        assert_eq!(first.file(), file);
+        assert_eq!(first.number(), 0);
+        assert_eq!(first.span(), sources.span(file, 0, 3).unwrap());
+        assert_eq!(first.text(), "aé");
+        assert_eq!(sources.line_at(file, 4).unwrap(), first);
+
+        let second = sources.line_at(file, 5).unwrap();
+        assert_eq!(second.number(), 1);
+        assert_eq!(second.span(), sources.span(file, 5, 7).unwrap());
+        assert_eq!(second.text(), "β");
+
+        let eof = sources.line_at(file, 8).unwrap();
+        assert_eq!(eof.number(), 2);
+        assert_eq!(eof.span(), sources.span(file, 8, 8).unwrap());
+        assert_eq!(eof.text(), "");
+
+        let empty = sources.add_file("empty.mdl", "").unwrap();
+        assert_eq!(sources.line_at(empty, 0).unwrap().text(), "");
+        assert_eq!(
+            sources.slice(Span {
+                file: FileId(99),
+                start: 0,
+                end: 0,
+            }),
             Err(SourceError::InvalidFile { file: FileId(99) })
         );
     }
@@ -621,6 +809,107 @@ mod tests {
             Err(OriginError::InvalidReference { id: OriginId(4) })
         );
         assert_eq!(context.origin_count(), 4);
+    }
+
+    #[test]
+    fn resolves_composite_origins_in_documented_preference_order() {
+        let mut context = SourceContext::new();
+        let definition_file = context.add_file("callee.mdl", "callee").unwrap();
+        let invocation_file = context.add_file("caller.mdl", "caller").unwrap();
+        let definition_span = context.span(definition_file, 0, 6).unwrap();
+        let invocation_span = context.span(invocation_file, 0, 6).unwrap();
+        let definition_origin = context.add_origin(Origin::Source(definition_span)).unwrap();
+        let invocation_origin = context.add_origin(Origin::Source(invocation_span)).unwrap();
+        let call_site = context
+            .add_origin(Origin::CallSite {
+                callee: definition_origin,
+                caller: invocation_origin,
+            })
+            .unwrap();
+        let fallback_call_site = context
+            .add_origin(Origin::CallSite {
+                callee: definition_origin,
+                caller: OriginId::UNKNOWN,
+            })
+            .unwrap();
+        let fused = context
+            .add_origin(Origin::Fused {
+                inputs: vec![OriginId::UNKNOWN, definition_origin, invocation_origin],
+                reason: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            context.resolve_origin_span(definition_origin),
+            Some(definition_span)
+        );
+        assert_eq!(
+            context.resolve_origin_span(call_site),
+            Some(invocation_span)
+        );
+        assert_eq!(
+            context.resolve_origin_span(fallback_call_site),
+            Some(definition_span)
+        );
+        assert_eq!(context.resolve_origin_span(fused), Some(definition_span));
+        assert_eq!(context.resolve_origin_span(OriginId::UNKNOWN), None);
+        assert_eq!(context.resolve_origin_span(OriginId(999)), None);
+    }
+
+    #[test]
+    fn deeply_nested_origins_resolve_without_host_recursion() {
+        let mut context = SourceContext::new();
+        let file = context.add_file("deep.mdl", "source").unwrap();
+        let span = context.span(file, 0, 6).unwrap();
+        let source = context.add_origin(Origin::Source(span)).unwrap();
+        let mut nested = source;
+        for _ in 0..4_096 {
+            nested = context
+                .add_origin(Origin::CallSite {
+                    callee: nested,
+                    caller: OriginId::UNKNOWN,
+                })
+                .unwrap();
+        }
+
+        assert_eq!(context.resolve_origin_span(nested), Some(span));
+    }
+
+    #[test]
+    fn wide_shared_origin_dag_resolves_in_linear_work_and_preference_order() {
+        const WIDTH: usize = 20_000;
+
+        let mut context = SourceContext::new();
+        let preferred_file = context.add_file("preferred.mdl", "preferred").unwrap();
+        let alternate_file = context.add_file("alternate.mdl", "alternate").unwrap();
+        let preferred_span = context.span(preferred_file, 0, 9).unwrap();
+        let alternate_span = context.span(alternate_file, 0, 9).unwrap();
+        let alternate = context.add_origin(Origin::Source(alternate_span)).unwrap();
+
+        let mut shared_inputs = Vec::with_capacity(WIDTH);
+        for _ in 1..WIDTH {
+            shared_inputs.push(context.add_origin(Origin::Unknown).unwrap());
+        }
+        shared_inputs.push(context.add_origin(Origin::Source(preferred_span)).unwrap());
+
+        let shared = context
+            .add_origin(Origin::Fused {
+                inputs: shared_inputs.clone(),
+                reason: Some("shared wide subgraph".into()),
+            })
+            .unwrap();
+        let mut root_inputs = Vec::with_capacity(WIDTH + 2);
+        root_inputs.push(shared);
+        root_inputs.push(alternate);
+        root_inputs.extend(shared_inputs);
+        let root = context
+            .add_origin(Origin::Fused {
+                inputs: root_inputs,
+                reason: Some("adversarial pending overlap".into()),
+            })
+            .unwrap();
+
+        assert_eq!(context.resolve_origin_span(root), Some(preferred_span));
     }
 
     #[test]

@@ -13,6 +13,10 @@
 - [Stage 5 implementation checklist](stage-5-todo.md)
 - [Stage 5 Core pass design plans](stage-5-passes/README.md)
 - [Stage 5 to Stage 6 handoff](stage-5-handoff.md)
+- [Stage 6 minimal typed frontend plan](stage-6-minimal-frontend-plan.md)
+- [Stage 6 implementation checklist](stage-6-todo.md)
+- [Stage 7A whole-package module and import plan](stage-6-modules-plan.md)
+- [Stage 7B typed Minecraft effect and unsafe raw-command plan](stage-6-effects-plan.md)
 - [Compiler semantic ambiguities and unknowns](semantic-ambiguities.md)
 - [Rough implementation stages](implementation-stages.md)
 - [mcfunction backend research](../mcfunction/README.md)
@@ -38,4 +42,10 @@ constructed-command reconciliation, exact decision reporting, and official-serve
 `None`/`Baseline` differential are complete and gated. Stage 5H completes public
 report ownership, the raw measurement protocol and private timing hooks, generated
 reproduction context, the final corruption audit, the optimized-Core one-startup
-vanilla proof, and the Stage 6 handoff. Stage 5 is complete; Stage 6 is next.
+vanilla proof, and the Stage 6 handoff. Stage 5 is complete. Stage 6 is also complete:
+the bounded scalar lexer/parser, typed HIR, sparse flow checking and SSA lowering,
+owned compilation facade, deterministic four-policy source differential, minimal
+`mdl` CLI, and both source/CLI Java 26.2 server proofs are gated. Stage 6I fixes the
+next ownership boundaries: whole-package modules/exports are Stage 7A, typed
+Minecraft operations and static unsafe effects Stage 7B, representation bridging
+Stage 8, scheduling consumption Stage 9, and runtime interpolation Stage 10.

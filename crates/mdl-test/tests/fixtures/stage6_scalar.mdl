@@ -1,0 +1,31 @@
+fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
+    var selected: Int32;
+    if (flag) {
+        selected = left;
+    } else {
+        selected = right;
+    }
+    return selected;
+}
+
+fn is_negative(value: Int32) -> Bool {
+    return value < 0;
+}
+
+fn choose_for_sign(value: Int32, negative: Int32, nonnegative: Int32) -> Int32 {
+    return choose(is_negative(value), negative, nonnegative);
+}
+
+fn invert(value: Bool) -> Bool {
+    return !value;
+}
+
+fn same(left: Bool, right: Bool) -> Bool {
+    return left == right;
+}
+
+fn exercise_void(flag: Bool, left: Int32, right: Int32) -> Void {
+    choose(flag, left, right);
+    invert(flag);
+    return;
+}

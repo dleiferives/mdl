@@ -1,4 +1,0 @@
-struct Community{
-       size : int
-       members : List
-};

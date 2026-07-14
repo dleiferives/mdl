@@ -1,0 +1,13 @@
+fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
+    var selected: Int32;
+    if (flag) {
+        selected = left;
+    } else {
+        selected = right;
+    }
+    return selected;
+}
+
+fn is_zero(value: Int32) -> Bool {
+    return value == 0;
+}

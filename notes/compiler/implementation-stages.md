@@ -21,7 +21,7 @@ end-to-end path does not count.
 | 4 | First end-to-end program compiled and executed without a source parser |
 | 5 | Baseline optimization pipeline and measurable lowering alternatives |
 | 6 | Minimal typed source language and useful diagnostics |
-| 7 | Typed Minecraft context, entities, selectors, and command APIs |
+| 7 | Whole-package modules, then typed Minecraft context/entities/command APIs |
 | 8 | Calling convention and multiple runtime representations |
 | 9 | Loops, bounded work analysis, and static multi-tick scheduling |
 | 10 | Typed compile-time macros and disciplined Minecraft macro lowering |
@@ -316,16 +316,32 @@ Exit criteria:
 
 ## Stage 6: Minimal typed source language
 
-Add the smallest frontend that makes the compiler usable by a person:
+Status: **Complete — Stages 6A–6I are implemented/reconciled and both Java 26.2
+source/CLI server gates pass.**
 
-- files, modules, imports, and names;
+Detailed design and execution order:
+[`stage-6-minimal-frontend-plan.md`](stage-6-minimal-frontend-plan.md) and
+[`stage-6-todo.md`](stage-6-todo.md).
+
+Add the smallest frontend that makes the compiler usable by a person. Implementation
+builds one typed scalar compilation unit and preserves it as the reference path. It
+also resolves the later whole-package and Minecraft-effect contracts without folding
+either implementation into this already substantial stage:
+
+- one owned source input and global function namespace;
 - functions and local bindings;
 - explicit core types;
 - expressions, calls, `if`, and return;
 - a deliberately small mutation model;
-- raw-command escape hatch with typed interpolation;
 - source spans through every IR level;
 - diagnostics with primary and supporting labels.
+
+Stage 6I assigns whole-package inputs/imports/exports to Stage 7A and the
+external-operation spine, typed Minecraft APIs, and literal unsafe command to Stage
+7B. Stage 9 consumes their scheduling contracts; Stage 10 owns typed runtime
+interpolation and the Minecraft function-macro ABI. The detailed decisions are in
+[`stage-6-modules-plan.md`](stage-6-modules-plan.md) and
+[`stage-6-effects-plan.md`](stage-6-effects-plan.md).
 
 Surface syntax should be judged by how well it exposes types, context, effects, and
 lowering when requested—not by how quickly a large grammar can be implemented.
@@ -341,8 +357,19 @@ This is the first minimal user-facing compiler.
 
 ## Stage 7: Typed Minecraft programming model
 
-Introduce the types and APIs that make Minecraft commands pleasant and safe:
+Stage 7A first implements the accepted whole-package prerequisite:
 
+- complete owned module inputs independent of diagnostic filenames;
+- explicit module imports/aliases and canonical logical module paths;
+- private, package-visible, and datapack-exported functions; and
+- deterministic whole-package resolution and lowering without filesystem discovery,
+  dependencies, or a stable cross-package ABI.
+
+Stage 7B then introduces the types and APIs that make Minecraft commands pleasant and
+safe:
+
+- a verified external Core operation with compiler-owned semantic descriptors and
+  fixed conservative optimization behavior;
 - `Entity<T>` and `Player`;
 - selectors with known or bounded cardinality;
 - executor, position, rotation, dimension, and anchor context;
@@ -351,6 +378,11 @@ Introduce the types and APIs that make Minecraft commands pleasant and safe:
 - typed scoreboard, storage, NBT, block, item, and predicate access;
 - method/context forms such as `player.say(text)`;
 - command success, command result, absence, and failure as explicit semantics.
+
+Stage 7B also adds the literal-only `unsafe minecraft("...")` statement as a fixed
+unknown-effect/context/fork barrier. Users cannot assert purity or effect precision,
+and safe typed operations lower through structured Minecraft IR rather than raw
+text. Runtime interpolation remains Stage 10.
 
 The compiler should be able to type-check an expression in the spirit of:
 
@@ -363,6 +395,8 @@ the semantics are stable.
 
 Exit criteria:
 
+- module resolution, visibility, cycles, deterministic ordering, and explicit
+  datapack exports pass the Stage 7A package/server gates;
 - context-invalid operations fail during type checking;
 - cardinality-changing operations are visible to analysis;
 - nested context operations lower correctly and can share/fuse prefixes;
@@ -407,6 +441,10 @@ Add structured loops and lower them according to bounds and target budgets:
 - static continuation phases across ticks;
 - explicit live-state preservation at yield points.
 
+Scheduling consumes the Stage 7 context/fork/work contract. It cannot yield inside,
+duplicate, replay, or prove a hard bound through an unsafe raw operation whose
+behavior remains unknown.
+
 The compiler must distinguish:
 
 ```text
@@ -436,6 +474,11 @@ that all verification and optimization passes can inspect.
 Minecraft macros remain a backend choice for runtime-to-syntax substitution. Their
 use requires typed serialization, escaping, range/path validation, and a cost model
 that accounts for parsing and caching.
+
+Typed raw-command interpolation is implemented here as a parsed sequence of literal
+and typed placeholder segments with compiler-owned serializers. It is never ordinary
+runtime string concatenation, and its validated target macro-line representation is
+separate from the non-macro raw physical-line type.
 
 Exit criteria:
 
@@ -488,22 +531,27 @@ Only after the core pipeline is useful should we stabilize public boundaries:
 - compatibility and migration policy;
 - possible stable ABI for separately compiled packages.
 
+Stage 7A already provides one complete in-memory package with logical module paths,
+imports, and explicit datapack exports. Stage 12 owns the filesystem/package
+conventions, dependency graph, serialized interfaces, stable resource spelling, and
+cross-package compatibility layered over that whole-package compiler API.
+
 Prebuilt compiler binaries are an optional release convenience, not an architectural
 requirement. Building the compiler must not require LLVM or a custom Minecraft
 installation.
 
 ## Immediate implementation tranche
 
-Stages 1 through 5 have completed and gated the first optimized vertical slice. The
-next engineering tranche is Stage 6's minimal typed frontend:
+Stages 1 through 6 have completed and gated the first human-usable optimized vertical
+slice. The next engineering tranche is Stage 7A's whole-package module layer:
 
 ```text
-source text -> parse -> type check -> Core -> existing optimized datapack pipeline
+complete owned module inputs -> imports/visibility/exports -> typed HIR -> Core
 ```
 
-The Stage 4/Core-None/Minecraft-None path remains the byte-stable differential oracle
-throughout Stage 6. The frontend may aggregate existing outputs in a compilation
-façade but must preserve their typed ownership and failure boundaries.
+The completed single-source scalar compiler remains the reference path while Stage 7A
+adds canonical logical module ordering without filesystem discovery, dependency
+resolution, or a stable cross-package ABI.
 
 ## Cross-cutting rules
 

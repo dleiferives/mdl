@@ -1,6 +1,0 @@
-namespace top;
-namespace child = {
-namespace grandchild = {
-
-};
-};

@@ -29,6 +29,18 @@ fn classify_step(command: &CommandKind) -> Option<CommandStepCost> {
             CommandStepCounts::new(1, 0, 0, 1),
             vec![CommandOutcome::Continue],
         )),
+        CommandKind::Say(_) => Some(simple_step(
+            CommandStepCounts::new(1, 0, 0, 0),
+            vec![CommandOutcome::Continue],
+        )),
+        CommandKind::Teleport(_) => Some(simple_step(
+            CommandStepCounts::new(1, 0, 0, 0),
+            vec![
+                CommandOutcome::Continue,
+                CommandOutcome::NoResult,
+                CommandOutcome::Fail,
+            ],
+        )),
         CommandKind::Raw(_) => Some(unknown_step(
             UnknownCostReason::RawCommand,
             vec![
@@ -118,6 +130,7 @@ fn classify_call(target: &CallableRef) -> CommandStepCost {
 }
 
 fn classify_return_run(nested: &CommandKind) -> Option<CommandStepCost> {
+    let exact_native_result = nested.contract().native_outcome().exact_result();
     let nested = classify_step(nested)?;
     let internal_calls = nested
         .internal_call_sites()
@@ -145,8 +158,16 @@ fn classify_return_run(nested: &CommandKind) -> Option<CommandStepCost> {
     for outcome in nested.outcomes() {
         match outcome {
             CommandOutcome::Continue => {
-                outcomes.push(CommandOutcome::Return(ReturnValueClass::UnknownInteger));
-                outcomes.push(CommandOutcome::Fail);
+                if let Some(result) = exact_native_result {
+                    outcomes.push(CommandOutcome::Return(if result == 0 {
+                        ReturnValueClass::Zero
+                    } else {
+                        ReturnValueClass::NonZero
+                    }));
+                } else {
+                    outcomes.push(CommandOutcome::Return(ReturnValueClass::UnknownInteger));
+                    outcomes.push(CommandOutcome::Fail);
+                }
             }
             CommandOutcome::Return(value) => outcomes.push(CommandOutcome::Return(*value)),
             CommandOutcome::NoResult | CommandOutcome::Fail => {
@@ -173,17 +194,19 @@ fn classify_execute(execute: &crate::ir::minecraft::ExecuteCommand) -> Option<Co
     let mut calls = vec![];
     let mut condition_calls = 0u64;
     let mut filters = false;
-    let mut checked_redirect = false;
-    let mut unbounded_selector = false;
+    let mut active_contexts = CountBound::exact(1);
+    let mut checked_peak = CountBound::exact(0);
     for modifier in execute.modifiers().as_slice() {
         match modifier.kind() {
             ExecuteModifierKind::As(selector) | ExecuteModifierKind::At(selector) => {
                 filters = true;
-                checked_redirect = true;
-                unbounded_selector |= selector.cardinality() == Cardinality::Unbounded;
+                active_contexts =
+                    apply_selector_cardinality(active_contexts, selector.cardinality());
+                checked_peak = maximum_bound(checked_peak, active_contexts);
             }
             ExecuteModifierKind::If(condition) | ExecuteModifierKind::Unless(condition) => {
                 filters = true;
+                active_contexts = allow_empty(active_contexts);
                 if let Condition::Function(target) = condition {
                     sequence_stages = sequence_stages.checked_sub(1)?;
                     condition_calls = condition_calls.checked_add(1)?;
@@ -192,11 +215,16 @@ fn classify_execute(execute: &crate::ir::minecraft::ExecuteCommand) -> Option<Co
                         role: InternalCallRole::Condition,
                     });
                 } else {
-                    checked_redirect = true;
+                    checked_peak = maximum_bound(checked_peak, active_contexts);
                 }
             }
-            ExecuteModifierKind::In(_) | ExecuteModifierKind::Store(_, _) => {
-                checked_redirect = true;
+            ExecuteModifierKind::In(_)
+            | ExecuteModifierKind::Positioned(_)
+            | ExecuteModifierKind::Rotated(_)
+            | ExecuteModifierKind::Anchored(_)
+            | ExecuteModifierKind::Align(_)
+            | ExecuteModifierKind::Store(_, _) => {
+                checked_peak = maximum_bound(checked_peak, active_contexts);
             }
         }
     }
@@ -211,16 +239,7 @@ fn classify_execute(execute: &crate::ir::minecraft::ExecuteCommand) -> Option<Co
         condition_calls,
         0,
     ))?;
-    let own_expansion = if !checked_redirect {
-        CountBound::exact(0)
-    } else if unbounded_selector {
-        CountBound::no_finite_bound(0, NoFiniteBoundReason::SelectorCardinality)
-    } else if filters {
-        CountBound::finite(0, 1).ok()?
-    } else {
-        CountBound::exact(1)
-    };
-    let expansion = maximum_bound(own_expansion, nested.maximum_chain_expansion());
+    let expansion = maximum_bound(checked_peak, nested.maximum_chain_expansion());
     let mut outcomes = nested.outcomes().to_vec();
     if filters && !outcomes.contains(&CommandOutcome::NoResult) {
         outcomes.push(CommandOutcome::NoResult);
@@ -232,6 +251,35 @@ fn classify_execute(execute: &crate::ir::minecraft::ExecuteCommand) -> Option<Co
         calls,
         nested.intrinsic_unknown_reason(),
     ))
+}
+
+fn apply_selector_cardinality(active: CountBound, cardinality: Cardinality) -> CountBound {
+    let Some(selector_maximum) = cardinality.maximum() else {
+        return CountBound::no_finite_bound(0, NoFiniteBoundReason::SelectorCardinality);
+    };
+    match active.upper().kind() {
+        CountUpperKind::Finite(active_maximum) => {
+            match active_maximum.checked_mul(u64::from(selector_maximum)) {
+                Some(maximum) => CountBound::finite(0, maximum)
+                    .expect("selector multiplication keeps zero below its finite upper bound"),
+                None => CountBound::saturated_above_analysis_cap(0),
+            }
+        }
+        CountUpperKind::AboveAnalysisCap => CountBound::saturated_above_analysis_cap(0),
+        CountUpperKind::NoFiniteBoundProven(reason) => CountBound::no_finite_bound(0, reason),
+        CountUpperKind::Unknown(reason) => CountBound::unknown(0, reason),
+    }
+}
+
+fn allow_empty(bound: CountBound) -> CountBound {
+    match bound.upper().kind() {
+        CountUpperKind::Finite(upper) => {
+            CountBound::finite(0, upper).expect("zero remains below a finite context upper bound")
+        }
+        CountUpperKind::AboveAnalysisCap => CountBound::saturated_above_analysis_cap(0),
+        CountUpperKind::NoFiniteBoundProven(reason) => CountBound::no_finite_bound(0, reason),
+        CountUpperKind::Unknown(reason) => CountBound::unknown(0, reason),
+    }
 }
 
 fn maximum_bound(left: CountBound, right: CountBound) -> CountBound {
@@ -258,15 +306,67 @@ fn maximum_bound(left: CountBound, right: CountBound) -> CountBound {
 mod tests {
     use crate::entity::EntityId;
     use crate::ir::minecraft::{
-        CommandKind, CommandNode, Condition, ExecuteCommand, ExecuteModifier, ExecuteModifierKind,
-        ExecuteModifiers, FunctionCall, FunctionResourceId, FunctionTagEntry, FunctionTagMerge,
-        FunctionTagResourceId, InternalCallableRef, MinecraftProgramBuilder, ReturnCommand,
-        UnboundedSelector, UnsafeRawCommand,
+        CommandKind, CommandNode, Condition, EntitySelector, ExecuteCommand, ExecuteModifier,
+        ExecuteModifierKind, ExecuteModifiers, FunctionCall, FunctionResourceId, FunctionTagEntry,
+        FunctionTagMerge, FunctionTagResourceId, InternalCallableRef, MinecraftProgramBuilder,
+        ReturnCommand, SayCommand, SayMessage, UnboundedSelector, UnsafeRawCommand,
     };
     use crate::source::OriginId;
     use crate::target::JavaEditionTarget;
 
     use super::*;
+
+    #[test]
+    fn local_classifier_multiplies_bounded_selector_prefixes() {
+        let as_two = ExecuteModifier::new(
+            ExecuteModifierKind::As(
+                EntitySelector::armor_stands(vec![], Some(2))
+                    .unwrap()
+                    .into(),
+            ),
+            OriginId::UNKNOWN,
+        );
+        let at_three = ExecuteModifier::new(
+            ExecuteModifierKind::At(
+                EntitySelector::armor_stands(vec![], Some(3))
+                    .unwrap()
+                    .into(),
+            ),
+            OriginId::UNKNOWN,
+        );
+        let nested = CommandNode::new(
+            CommandKind::Return(ReturnCommand::Value(1)),
+            OriginId::UNKNOWN,
+        )
+        .unwrap();
+        let execute = ExecuteCommand::new(ExecuteModifiers::new(as_two, vec![at_three]), nested);
+
+        let cost = classify_execute(&execute).unwrap();
+        assert_eq!(cost.maximum_chain_expansion().lower(), 0);
+        assert_eq!(
+            cost.maximum_chain_expansion().upper().kind(),
+            CountUpperKind::Finite(6)
+        );
+    }
+
+    #[test]
+    fn say_is_one_known_command_and_return_run_projects_exact_native_result() {
+        let say = || CommandKind::Say(SayCommand::new(SayMessage::new("hello").unwrap()));
+
+        let direct = classify_step(&say()).unwrap();
+        assert_eq!(direct.counts().sequence_operations(), 1);
+        assert_eq!(direct.counts().execute_stages(), 0);
+        assert_eq!(direct.counts().internal_function_invocations(), 0);
+        assert_eq!(direct.counts().score_nbt_command_executions(), 0);
+        assert_eq!(direct.outcomes(), &[CommandOutcome::Continue]);
+        assert_eq!(direct.intrinsic_unknown_reason(), None);
+
+        let returned = classify_return_run(&say()).unwrap();
+        assert_eq!(
+            returned.outcomes(),
+            &[CommandOutcome::Return(ReturnValueClass::NonZero)]
+        );
+    }
 
     #[test]
     fn local_classifier_preserves_structural_outcomes_without_inventing_exit_costs() {

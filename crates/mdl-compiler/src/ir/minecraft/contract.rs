@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 /// A set of Minecraft execution-context components.
 ///
 /// The raw bits are private so only context components understood by the compiler
@@ -65,6 +67,10 @@ impl EffectCategories {
     pub const ENTITY_QUERY: Self = Self(1 << 4);
     /// Performs explicit target control flow.
     pub const CONTROL: Self = Self(1 << 5);
+    /// Produces externally observable player/server output.
+    pub const OUTPUT: Self = Self(1 << 6);
+    /// Mutates entity state such as position or dimension.
+    pub const ENTITY_WRITE: Self = Self(1 << 7);
 
     /// Returns the union of two category sets.
     #[must_use]
@@ -153,25 +159,96 @@ impl ContextSummary {
 }
 
 /// Conservative per-input context fan-out.
+///
+/// Like selector cardinality, this is privately represented so `Bounded(1)` cannot
+/// coexist with the canonical [`ForkClass::AT_MOST_ONE`] fact.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ForkClass {
-    /// No modifier can multiply one incoming context.
+pub struct ForkClass(ForkClassKind);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ForkClassKind {
     Never,
-    /// A modifier can retain zero or one context per input.
     AtMostOne,
-    /// A modifier may produce an unbounded number of contexts per input.
+    Bounded(NonZeroU64),
     Unbounded,
-    /// Fan-out cannot be bounded by Stage 3.
     Unknown,
 }
 
 impl ForkClass {
+    /// No modifier can multiply one incoming context.
+    pub const NEVER: Self = Self(ForkClassKind::Never);
+    /// A modifier can retain zero or one context per input.
+    pub const AT_MOST_ONE: Self = Self(ForkClassKind::AtMostOne);
+    /// A modifier may produce an unbounded number of contexts per input.
+    pub const UNBOUNDED: Self = Self(ForkClassKind::Unbounded);
+    /// Fan-out cannot be bounded by Stage 3.
+    pub const UNKNOWN: Self = Self(ForkClassKind::Unknown);
+
+    const fn bounded(maximum: u64) -> Self {
+        let Some(maximum) = NonZeroU64::new(maximum) else {
+            return Self::AT_MOST_ONE;
+        };
+        if maximum.get() == 1 {
+            Self::AT_MOST_ONE
+        } else {
+            Self(ForkClassKind::Bounded(maximum))
+        }
+    }
+
+    /// Returns the proven maximum output contexts per input when finite.
+    ///
+    /// Both `Never` and `AtMostOne` have a numeric upper bound of one; their
+    /// distinct classes retain whether a modifier can filter the input context.
+    #[must_use]
+    pub const fn maximum_per_input(self) -> Option<u64> {
+        match self.0 {
+            ForkClassKind::Never | ForkClassKind::AtMostOne => Some(1),
+            ForkClassKind::Bounded(maximum) => Some(maximum.get()),
+            ForkClassKind::Unbounded | ForkClassKind::Unknown => None,
+        }
+    }
+
     const fn combine(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
-            (Self::Unbounded, _) | (_, Self::Unbounded) => Self::Unbounded,
-            (Self::AtMostOne, _) | (_, Self::AtMostOne) => Self::AtMostOne,
-            (Self::Never, Self::Never) => Self::Never,
+        match (self.0, other.0) {
+            (ForkClassKind::Unknown, _) | (_, ForkClassKind::Unknown) => Self::UNKNOWN,
+            (ForkClassKind::Unbounded, _) | (_, ForkClassKind::Unbounded) => Self::UNBOUNDED,
+            (ForkClassKind::Bounded(left), ForkClassKind::Bounded(right)) => {
+                match left.get().checked_mul(right.get()) {
+                    Some(product) => Self::bounded(product),
+                    None => Self::UNKNOWN,
+                }
+            }
+            (ForkClassKind::Bounded(bound), ForkClassKind::Never | ForkClassKind::AtMostOne)
+            | (ForkClassKind::Never | ForkClassKind::AtMostOne, ForkClassKind::Bounded(bound)) => {
+                Self(ForkClassKind::Bounded(bound))
+            }
+            (ForkClassKind::AtMostOne, _) | (_, ForkClassKind::AtMostOne) => Self::AT_MOST_ONE,
+            (ForkClassKind::Never, ForkClassKind::Never) => Self::NEVER,
+        }
+    }
+}
+
+/// Guaranteed native success/result behavior of one command invocation.
+///
+/// This is deliberately separate from source-language result types and from the
+/// cost analyzer's control-flow outcomes. `Exact(value)` means the native command
+/// succeeds and produces exactly `value`; `Unknown` makes no success or result
+/// claim.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum NativeCommandOutcome {
+    /// Successful native completion with an exact integer result.
+    Exact(i32),
+    /// Native success or result is not modeled exactly.
+    Unknown,
+}
+
+impl NativeCommandOutcome {
+    /// Projects an exact successful native result, when one is known.
+    #[must_use]
+    pub const fn exact_result(self) -> Option<i32> {
+        match self {
+            Self::Exact(result) => Some(result),
+            Self::Unknown => None,
         }
     }
 }
@@ -182,6 +259,7 @@ pub struct CommandContract {
     effects: EffectSummary,
     context: ContextSummary,
     fork: ForkClass,
+    native_outcome: NativeCommandOutcome,
 }
 
 impl CommandContract {
@@ -190,7 +268,13 @@ impl CommandContract {
             effects,
             context,
             fork,
+            native_outcome: NativeCommandOutcome::Unknown,
         }
+    }
+
+    const fn with_native_outcome(mut self, native_outcome: NativeCommandOutcome) -> Self {
+        self.native_outcome = native_outcome;
+        self
     }
 
     /// Returns broad known effects or unknown.
@@ -210,6 +294,12 @@ impl CommandContract {
     pub const fn fork(self) -> ForkClass {
         self.fork
     }
+
+    /// Returns guaranteed native success/result behavior.
+    #[must_use]
+    pub const fn native_outcome(self) -> NativeCommandOutcome {
+        self.native_outcome
+    }
 }
 
 use super::{
@@ -222,7 +312,15 @@ impl CommandNode {
     /// Derives conservative command facts directly from immutable syntax.
     #[must_use]
     pub fn contract(&self) -> CommandContract {
-        contract_for_kind(self.kind())
+        self.kind().contract()
+    }
+}
+
+impl CommandKind {
+    /// Derives conservative command facts directly from immutable syntax.
+    #[must_use]
+    pub fn contract(&self) -> CommandContract {
+        contract_for_kind(self)
     }
 }
 
@@ -230,6 +328,26 @@ fn contract_for_kind(kind: &CommandKind) -> CommandContract {
     match kind {
         CommandKind::Score(command) => score_contract(command),
         CommandKind::Data(command) => data_contract(command),
+        CommandKind::Say(_) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::OUTPUT),
+            ContextSummary::Known {
+                reads: ContextMask::EXECUTOR,
+                changes: ContextMask::NONE,
+            },
+            ForkClass::NEVER,
+        )
+        .with_native_outcome(NativeCommandOutcome::Exact(1)),
+        CommandKind::Teleport(command) => {
+            let reads = teleport_context_reads(command.destination());
+            CommandContract::new(
+                EffectSummary::Known(EffectCategories::ENTITY_WRITE),
+                ContextSummary::Known {
+                    reads,
+                    changes: ContextMask::NONE,
+                },
+                ForkClass::NEVER,
+            )
+        }
         CommandKind::Execute(command) => {
             let mut contract = command.run().contract();
             for modifier in command.modifiers().as_slice() {
@@ -240,12 +358,12 @@ fn contract_for_kind(kind: &CommandKind) -> CommandContract {
         CommandKind::Function(_) | CommandKind::Raw(_) => CommandContract::new(
             EffectSummary::Unknown,
             ContextSummary::Unknown,
-            ForkClass::Unknown,
+            ForkClass::UNKNOWN,
         ),
         CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail) => CommandContract::new(
             EffectSummary::Known(EffectCategories::CONTROL),
             ContextSummary::NONE,
-            ForkClass::Never,
+            ForkClass::NEVER,
         ),
         CommandKind::Return(ReturnCommand::Run(command)) => {
             let nested = command.contract();
@@ -293,7 +411,7 @@ fn score_contract(command: &ScoreCommand) -> CommandContract {
             reads,
             changes: ContextMask::NONE,
         },
-        ForkClass::Never,
+        ForkClass::NEVER,
     )
 }
 
@@ -313,7 +431,7 @@ fn data_contract(command: &DataCommand) -> CommandContract {
     CommandContract::new(
         EffectSummary::Known(effects),
         ContextSummary::NONE,
-        ForkClass::Never,
+        ForkClass::NEVER,
     )
 }
 
@@ -325,7 +443,7 @@ fn compose_modifier(nested: CommandContract, modifier: &ExecuteModifierKind) -> 
                 reads: selector.context_reads(),
                 changes: ContextMask::EXECUTOR,
             },
-            selector_fork(*selector),
+            selector_fork(selector),
         ),
         ExecuteModifierKind::At(selector) => CommandContract::new(
             EffectSummary::Known(EffectCategories::ENTITY_QUERY),
@@ -335,7 +453,7 @@ fn compose_modifier(nested: CommandContract, modifier: &ExecuteModifierKind) -> 
                     .union(ContextMask::ROTATION)
                     .union(ContextMask::DIMENSION),
             },
-            selector_fork(*selector),
+            selector_fork(selector),
         ),
         ExecuteModifierKind::In(_) => CommandContract::new(
             EffectSummary::Known(EffectCategories::NONE),
@@ -343,7 +461,39 @@ fn compose_modifier(nested: CommandContract, modifier: &ExecuteModifierKind) -> 
                 reads: ContextMask::POSITION.union(ContextMask::DIMENSION),
                 changes: ContextMask::POSITION.union(ContextMask::DIMENSION),
             },
-            ForkClass::Never,
+            ForkClass::NEVER,
+        ),
+        ExecuteModifierKind::Positioned(position) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::NONE),
+            ContextSummary::Known {
+                reads: position_context_reads(position),
+                changes: ContextMask::POSITION,
+            },
+            ForkClass::NEVER,
+        ),
+        ExecuteModifierKind::Rotated(rotation) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::NONE),
+            ContextSummary::Known {
+                reads: rotation_context_reads(rotation),
+                changes: ContextMask::ROTATION,
+            },
+            ForkClass::NEVER,
+        ),
+        ExecuteModifierKind::Anchored(_) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::NONE),
+            ContextSummary::Known {
+                reads: ContextMask::NONE,
+                changes: ContextMask::ANCHOR,
+            },
+            ForkClass::NEVER,
+        ),
+        ExecuteModifierKind::Align(_) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::NONE),
+            ContextSummary::Known {
+                reads: ContextMask::POSITION,
+                changes: ContextMask::POSITION,
+            },
+            ForkClass::NEVER,
         ),
         ExecuteModifierKind::If(condition) | ExecuteModifierKind::Unless(condition) => {
             condition_contract(condition)
@@ -357,12 +507,46 @@ fn compose_modifier(nested: CommandContract, modifier: &ExecuteModifierKind) -> 
     )
 }
 
+fn position_context_reads(position: &super::TargetPosition) -> ContextMask {
+    match position {
+        super::TargetPosition::World(position) => {
+            let relative = [&position.x, &position.y, &position.z]
+                .into_iter()
+                .any(|axis| matches!(axis, super::TargetWorldAxis::Relative(_)));
+            if relative {
+                ContextMask::POSITION
+            } else {
+                ContextMask::NONE
+            }
+        }
+        super::TargetPosition::Local(_) => ContextMask::POSITION
+            .union(ContextMask::ROTATION)
+            .union(ContextMask::ANCHOR),
+    }
+}
+
+fn rotation_context_reads(rotation: &super::TargetRotation) -> ContextMask {
+    if matches!(rotation.yaw, super::TargetRotationAxis::Relative(_))
+        || matches!(rotation.pitch, super::TargetRotationAxis::Relative(_))
+    {
+        ContextMask::ROTATION
+    } else {
+        ContextMask::NONE
+    }
+}
+
+fn teleport_context_reads(position: &super::TargetPosition) -> ContextMask {
+    ContextMask::EXECUTOR
+        .union(ContextMask::DIMENSION)
+        .union(position_context_reads(position))
+}
+
 fn condition_contract(condition: &Condition) -> CommandContract {
     match condition {
         Condition::Function(_) => CommandContract::new(
             EffectSummary::Unknown,
             ContextSummary::Unknown,
-            ForkClass::Unknown,
+            ForkClass::UNKNOWN,
         ),
         Condition::ScoreMatches(score, _) => known_condition_contract(
             EffectCategories::SCORE_READ.union(single_holder_effects(score)),
@@ -393,7 +577,7 @@ const fn known_condition_contract(
             reads,
             changes: ContextMask::NONE,
         },
-        ForkClass::Never,
+        ForkClass::NEVER,
     )
 }
 
@@ -411,14 +595,15 @@ fn store_contract(destination: &StoreDestination) -> CommandContract {
             reads,
             changes: ContextMask::NONE,
         },
-        ForkClass::Never,
+        ForkClass::NEVER,
     )
 }
 
-const fn selector_fork(selector: Selector) -> ForkClass {
-    match selector.cardinality() {
-        super::Cardinality::AtMostOne => ForkClass::AtMostOne,
-        super::Cardinality::Unbounded => ForkClass::Unbounded,
+const fn selector_fork(selector: &Selector) -> ForkClass {
+    match selector.cardinality().maximum() {
+        Some(1) => ForkClass::AT_MOST_ONE,
+        Some(maximum) => ForkClass::bounded(maximum as u64),
+        None => ForkClass::UNBOUNDED,
     }
 }
 
@@ -452,12 +637,16 @@ fn single_holder_context(score: &ScoreRef) -> ContextMask {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContextMask, ContextSummary, EffectCategories, EffectSummary, ForkClass};
+    use super::{
+        ContextMask, ContextSummary, EffectCategories, EffectSummary, ForkClass,
+        NativeCommandOutcome,
+    };
     use crate::entity::EntityId;
     use crate::ir::minecraft::{
-        AtMostOneSelector, CommandKind, CommandNode, Condition, ExecuteCommand, ExecuteModifier,
-        ExecuteModifierKind, ExecuteModifiers, FunctionCall, McFunctionId, ObjectiveName,
-        ScoreCommand, ScoreHolders, ScoreSelection, Selector, UnboundedSelector,
+        AtMostOneSelector, CommandKind, CommandNode, Condition, EntitySelector, ExecuteCommand,
+        ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FunctionCall, McFunctionId,
+        ObjectiveName, SayCommand, SayMessage, ScoreCommand, ScoreHolders, ScoreSelection,
+        Selector, UnboundedSelector,
     };
     use crate::source::OriginId;
 
@@ -496,12 +685,31 @@ mod tests {
     #[test]
     fn native_bulk_score_selection_queries_entities_but_never_forks() {
         let contract = known_leaf().contract();
-        assert_eq!(contract.fork(), ForkClass::Never);
+        assert_eq!(contract.fork(), ForkClass::NEVER);
         assert!(matches!(
             contract.effects(),
             EffectSummary::Known(effects)
                 if effects.contains(EffectCategories::SCORE_WRITE)
                     && effects.contains(EffectCategories::ENTITY_QUERY)
+        ));
+    }
+
+    #[test]
+    fn say_contract_is_known_observable_executor_local_and_exact() {
+        let kind = CommandKind::Say(SayCommand::new(SayMessage::new("hello").unwrap()));
+        let contract = kind.contract();
+
+        assert_eq!(contract.fork(), ForkClass::NEVER);
+        assert_eq!(contract.native_outcome(), NativeCommandOutcome::Exact(1));
+        assert_eq!(contract.native_outcome().exact_result(), Some(1));
+        assert!(matches!(
+            contract.effects(),
+            EffectSummary::Known(effects) if effects == EffectCategories::OUTPUT
+        ));
+        assert!(matches!(
+            contract.context(),
+            ContextSummary::Known { reads, changes }
+                if reads == ContextMask::EXECUTOR && changes == ContextMask::NONE
         ));
     }
 
@@ -521,7 +729,7 @@ mod tests {
             OriginId::UNKNOWN,
         )
         .unwrap();
-        assert_eq!(command.contract().fork(), ForkClass::Never);
+        assert_eq!(command.contract().fork(), ForkClass::NEVER);
     }
 
     #[test]
@@ -543,7 +751,7 @@ mod tests {
 
         assert_eq!(contract.effects(), EffectSummary::Unknown);
         assert_eq!(contract.context(), ContextSummary::Unknown);
-        assert_eq!(contract.fork(), ForkClass::Unknown);
+        assert_eq!(contract.fork(), ForkClass::UNKNOWN);
     }
 
     #[test]
@@ -565,7 +773,7 @@ mod tests {
         )
         .unwrap();
         let contract = command.contract();
-        assert_eq!(contract.fork(), ForkClass::Unbounded);
+        assert_eq!(contract.fork(), ForkClass::UNBOUNDED);
         assert!(matches!(
             contract.context(),
             ContextSummary::Known { reads, changes }
@@ -575,6 +783,47 @@ mod tests {
                     && changes.contains(ContextMask::ROTATION)
                     && changes.contains(ContextMask::DIMENSION)
         ));
+    }
+
+    #[test]
+    fn bounded_selector_fanout_is_preserved_and_composed_multiplicatively() {
+        let as_two = ExecuteModifier::new(
+            ExecuteModifierKind::As(
+                EntitySelector::armor_stands(vec!["first".into()], Some(2))
+                    .unwrap()
+                    .into(),
+            ),
+            OriginId::UNKNOWN,
+        );
+        let at_three = ExecuteModifier::new(
+            ExecuteModifierKind::At(
+                EntitySelector::armor_stands(vec!["second".into()], Some(3))
+                    .unwrap()
+                    .into(),
+            ),
+            OriginId::UNKNOWN,
+        );
+        let command = CommandNode::new(
+            CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(as_two, vec![at_three]),
+                known_leaf(),
+            )),
+            OriginId::UNKNOWN,
+        )
+        .unwrap();
+
+        let fork = command.contract().fork();
+        assert_eq!(fork.maximum_per_input(), Some(6));
+        assert_ne!(fork, ForkClass::AT_MOST_ONE);
+        assert_ne!(fork, ForkClass::UNBOUNDED);
+    }
+
+    #[test]
+    fn fork_bound_overflow_becomes_unknown_instead_of_wrapping() {
+        let overflow = ForkClass::bounded(u64::MAX).combine(ForkClass::bounded(2));
+
+        assert_eq!(overflow, ForkClass::UNKNOWN);
+        assert_eq!(overflow.maximum_per_input(), None);
     }
 
     #[test]
@@ -590,7 +839,7 @@ mod tests {
             OriginId::UNKNOWN,
         )
         .unwrap();
-        assert_eq!(call.contract().fork(), ForkClass::Unknown);
+        assert_eq!(call.contract().fork(), ForkClass::UNKNOWN);
         assert_eq!(call.contract().context(), ContextSummary::Unknown);
     }
 }

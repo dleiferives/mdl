@@ -1,0 +1,14 @@
+// MDL: success
+// HIR: as entities(ArmorStand).with_tag("stage7").limit(1)
+// HIR: capture speaker: Executor<ArmorStand>
+// CORE: query @query0 entities(ArmorStand).with_tag("stage7").limit(1)
+// CORE: run_scope @run0 [as @query0] invoke @fn1 bounds 0..=1
+// CORE: external @ext0 minecraft.run_scope @run0
+// TARGET: Entity(EntitySelector { kind: ArmorStand
+// PACK-COUNT-1: execute as @e[type=minecraft:armor_stand,tag=stage7,limit=1] run function
+// PACK-COUNT-1: say stage7 scoped
+export fn announce() {
+    run.as(mc.entities(ArmorStand).with_tag("stage7").limit(1)) |speaker| {
+        unsafe minecraft("say stage7 scoped");
+    }
+}

@@ -587,7 +587,7 @@ impl<'a> Solver<'a> {
                 let result = only_result(data.results(), instruction)?;
                 self.join_value(result, fact)?;
             }
-            CoreOp::Call(_) => {
+            CoreOp::Call(_) | CoreOp::External(_) => {
                 let result_count = data.results().len();
                 for result_index in 0..result_count {
                     let result = self

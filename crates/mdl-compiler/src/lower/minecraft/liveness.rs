@@ -8,7 +8,9 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
-use crate::ir::core::{BlockId, CoreProgram, FunctionBody, FunctionId, TerminatorKind, ValueId};
+use crate::ir::core::{
+    BlockId, CoreProgram, FunctionBody, FunctionId, InstId, TerminatorKind, ValueId,
+};
 
 use super::MinecraftOptimizationLevel;
 use super::analysis::{FunctionSemanticInventory, SemanticInventory};
@@ -45,6 +47,10 @@ pub(crate) struct LiveSegment {
 }
 
 impl LiveSegment {
+    pub(crate) const fn coordinates(self) -> (usize, u64, u64) {
+        (self.block_ordinal, self.from.0, self.to.0)
+    }
+
     #[cfg(test)]
     pub(crate) const fn block(self) -> BlockId {
         self.block
@@ -132,6 +138,38 @@ impl CompletedFunctionLiveness {
         segments_intersect(self.segments(left), self.segments(right))
     }
 
+    /// Whether the current realization of `value` must survive one instruction's
+    /// result-definition boundary. This is the exact caller-live predicate used by
+    /// recursive spill planning.
+    pub(crate) fn is_live_after_instruction(
+        &self,
+        body: &FunctionBody,
+        instruction: InstId,
+        value: ValueId,
+    ) -> bool {
+        let Some((block, ordinal)) = body.block_order().iter().copied().find_map(|block| {
+            body.block(block).and_then(|data| {
+                data.instructions()
+                    .iter()
+                    .position(|candidate| *candidate == instruction)
+                    .map(|ordinal| (block, ordinal))
+            })
+        }) else {
+            return false;
+        };
+        let Some(point) = u64::try_from(ordinal)
+            .ok()
+            .and_then(|ordinal| ordinal.checked_mul(2))
+            .and_then(|point| point.checked_add(2))
+            .map(BlockPoint)
+        else {
+            return false;
+        };
+        self.segments(value)
+            .iter()
+            .any(|segment| segment.block == block && segment.from <= point && point < segment.to)
+    }
+
     pub(crate) const fn statistics(&self) -> FunctionLivenessStatistics {
         self.statistics
     }
@@ -203,13 +241,36 @@ pub(crate) struct LivenessResult {
 }
 
 impl LivenessResult {
+    #[allow(
+        dead_code,
+        reason = "baseline-specific tests and coalescing helpers retain the narrower constructor"
+    )]
     pub(crate) fn for_baseline(
         core: &CoreProgram,
         inventory: &SemanticInventory,
         demand: &RuntimeDemand,
         limits: LivenessLimits,
     ) -> Result<Self, LivenessError> {
-        if !demand.matches_level(MinecraftOptimizationLevel::Baseline) {
+        Self::for_level(
+            core,
+            inventory,
+            demand,
+            MinecraftOptimizationLevel::Baseline,
+            limits,
+        )
+    }
+
+    /// Computes semantic liveness for physical call-boundary planning at either
+    /// lowering policy. `None` still uses distinct score homes; its liveness is
+    /// needed only to avoid spilling undefined/dead homes at recursive calls.
+    pub(crate) fn for_level(
+        core: &CoreProgram,
+        inventory: &SemanticInventory,
+        demand: &RuntimeDemand,
+        level: MinecraftOptimizationLevel,
+        limits: LivenessLimits,
+    ) -> Result<Self, LivenessError> {
+        if !demand.matches_level(level) {
             return Err(LivenessError::DemandPolicyMismatch);
         }
         let mut functions = EntityVec::new();
@@ -233,10 +294,7 @@ impl LivenessResult {
                 .map_err(|EntityLimitError| LivenessError::EntityLimit)?;
             debug_assert_eq!(inserted, function);
         }
-        Ok(Self {
-            level: MinecraftOptimizationLevel::Baseline,
-            functions,
-        })
+        Ok(Self { level, functions })
     }
 
     pub(crate) fn function(&self, function: FunctionId) -> Option<&FunctionLiveness> {

@@ -15,9 +15,23 @@
 - [Stage 5 to Stage 6 handoff](stage-5-handoff.md)
 - [Stage 6 minimal typed frontend plan](stage-6-minimal-frontend-plan.md)
 - [Stage 6 implementation checklist](stage-6-todo.md)
-- [Stage 7A whole-package module and import plan](stage-6-modules-plan.md)
-- [Stage 7B typed Minecraft effect and unsafe raw-command plan](stage-6-effects-plan.md)
+- [Stage 7 typed Minecraft programming-model plan](stage-7-plan.md)
+- [Stage 7 audited remainder implementation plan](stage-7-remainder-plan.md)
+- [Stage 7 implementation checklist](stage-7-todo.md)
+- [Stage 7 to Stage 8 handoff](stage-7-handoff.md)
+- [Stage 7.5 execution-frame and spatial-semantics plan](stage-7-5-plan.md)
+- [Stage 7.5 implementation checklist](stage-7-5-todo.md)
+- [Stage 7.5 to Stage 8 handoff](stage-7-5-handoff.md)
+- [Stage 8 calling-convention and representation plan](stage-8-plan.md)
+- [Stage 8 implementation checklist](stage-8-todo.md)
+- [Stage 8 per-substep design dossiers](stage-8/README.md)
+- [Stage 8 completion audit](stage-8-completion-audit.md)
+- [Stage 8 handoff](stage-8-handoff.md)
+- [Post-Stage-8 aggregate value client plan](aggregate-values-plan.md)
+- [Historical Stage 7A module handoff](stage-6-modules-plan.md)
+- [Historical Stage 7B effect/raw-command handoff](stage-6-effects-plan.md)
 - [Compiler semantic ambiguities and unknowns](semantic-ambiguities.md)
+- [Compiler test harness and fixture workflow](testing-harness.md)
 - [Rough implementation stages](implementation-stages.md)
 - [mcfunction backend research](../mcfunction/README.md)
 
@@ -45,7 +59,17 @@ reproduction context, the final corruption audit, the optimized-Core one-startup
 vanilla proof, and the Stage 6 handoff. Stage 5 is complete. Stage 6 is also complete:
 the bounded scalar lexer/parser, typed HIR, sparse flow checking and SSA lowering,
 owned compilation facade, deterministic four-policy source differential, minimal
-`mdl` CLI, and both source/CLI Java 26.2 server proofs are gated. Stage 6I fixes the
-next ownership boundaries: whole-package modules/exports are Stage 7A, typed
-Minecraft operations and static unsafe effects Stage 7B, representation bridging
-Stage 8, scheduling consumption Stage 9, and runtime interpolation Stage 10.
+`mdl` CLI, and both source/CLI Java 26.2 server proofs are gated. Stage 7 is complete:
+the Zig-like rooted module graph, conservative external/raw boundary, typed static
+entity queries and run scopes, retained fork deployment evidence, captured
+`Executor.say`, independent HIR/Core context proofs, instance-aware Java 26.2 recipe,
+structured target command, exact source-to-command correlation, and clientless
+official-server differential are all verified. Stage 7.5 is also complete: ordered
+frame modifiers, exact static spatial attributes, distinct frame-relative teleport
+and receiver-relative movement, retained target recipes, exact cross-layer
+correlation, and clientless Java 26.2 differentials are gated. Stage 8 is complete
+for the bounded scalar-realization/calling-convention boundary: serial many-context
+reuse, recursive-SCC-only typed spill frames, explicit recovery, physical recipe
+accounting, determinism/corruption gates, and clientless Java 26.2 execution are
+verified. Scheduling remains Stage 9 and runtime interpolation Stage 10; aggregate
+value semantics have a separate post-Stage-8 client plan.

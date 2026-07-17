@@ -69,12 +69,25 @@ fn checked_in_source_fixture_materializes_exact_artifact_and_reports_abi() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("compiled "));
     assert!(stdout.contains("target analysis: complete\n"));
+    assert!(stdout.contains("activation: discipline=SynchronousSerial depth=Static"));
+    assert!(stdout.contains(
+        "command limits: configured_max_command_sequence_length=65536 configured_max_command_forks=65536 target_default_max_command_sequence_length=65536 target_default_max_command_forks=65536 derived_minimum_max_command_forks=0"
+    ));
     assert!(stdout.contains("source function ABI:\n"));
     assert!(stdout.contains("function[0] choose entry mdl_cli_test:"));
     assert!(stdout.contains("parameter[0] bool -> "));
     assert!(stdout.contains("parameter[1] i32 -> "));
     assert!(stdout.contains("result[0] i32 -> "));
-    assert!(stdout.contains("function[1] is_zero entry mdl_cli_test:"));
+    assert!(stdout.contains("generated required_ambient_context=AmbientContextRequirements"));
+    assert!(stdout.contains("source behavior required_ambient_context=AmbientContextRequirements"));
+    assert!(stdout.contains(
+        "world_effect=None observable_effect=None fork_bound=None transitive_work=Finite"
+    ));
+    assert!(stdout.contains("contains_unsafe_unknown=false"));
+    assert!(
+        !stdout.contains("function[1] is_zero entry mdl_cli_test:"),
+        "private functions must not appear in the exported source ABI report:\n{stdout}"
+    );
 
     let mut files = walk_files(&output_root);
     files.sort();
@@ -141,7 +154,7 @@ fn source_diagnostics_are_rendered_and_do_not_create_output() {
 }
 
 #[test]
-fn target_lowering_diagnostics_remain_source_located() {
+fn recursive_source_materializes_activation_frames() {
     let temp = TempDirectory::new("lowering-diagnostic");
     let source = temp.path().join("recursive.mdl");
     let output_root = temp.path().join("pack");
@@ -170,11 +183,22 @@ fn target_lowering_diagnostics_remain_source_located() {
             "recursive",
         ]);
     let output = command.output().unwrap();
-    assert!(!output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("error[lower.recursive-call-abi]"));
-    assert!(stderr.contains("1 | fn again(flag: Bool) -> Bool"));
-    assert!(!output_root.exists());
+    assert!(stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("activation: discipline=SynchronousRecursiveStack depth=CallerBounded")
+    );
+    let recursive_body =
+        fs::read_to_string(output_root.join("data/mdl_cli_test/function/__mdl/f0/b1.mcfunction"))
+            .unwrap();
+    assert!(recursive_body.contains("\"frames\" append value {}"));
+    assert!(recursive_body.contains("\"frames\"[-1]"));
 }
 
 #[test]

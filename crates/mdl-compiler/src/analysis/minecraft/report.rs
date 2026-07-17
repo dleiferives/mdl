@@ -66,6 +66,8 @@ pub struct TargetExecutionCensus {
     function_condition_calls: usize,
     score_commands: usize,
     data_commands: usize,
+    say_commands: usize,
+    teleport_commands: usize,
     return_commands: usize,
     raw_commands: usize,
 }
@@ -91,6 +93,8 @@ impl TargetExecutionCensus {
         (function_condition_calls, function_condition_calls),
         (score_commands, score_commands),
         (data_commands, data_commands),
+        (say_commands, say_commands),
+        (teleport_commands, teleport_commands),
         (return_commands, return_commands),
         (raw_commands, raw_commands),
     );
@@ -122,6 +126,10 @@ impl TargetExecutionCensus {
         match command {
             CommandKind::Score(_) => self.score_commands = self.score_commands.checked_add(1)?,
             CommandKind::Data(_) => self.data_commands = self.data_commands.checked_add(1)?,
+            CommandKind::Say(_) => self.say_commands = self.say_commands.checked_add(1)?,
+            CommandKind::Teleport(_) => {
+                self.teleport_commands = self.teleport_commands.checked_add(1)?;
+            }
             CommandKind::Function(_) => {
                 self.function_calls = self.function_calls.checked_add(1)?;
             }
@@ -412,7 +420,7 @@ impl TargetExecutionCostReport {
         let mut output = String::new();
         writeln!(
             output,
-            "target-execution-cost {:?} completion={:?} assumptions=sequence:{}/effective-sequence:{}/forks:{} defaults=sequence:{}/forks:{} caps=sequence:{}/forks:{} work=graph:{}/solver:{} functions={} tags={} tag-entries={} top-level-commands={} command-nodes={} execute-stages={} calls={} condition-calls={} score={} data={} returns={} raw={} regions={} roots={} stats=graph-entities:{}/graph-edges:{}/tag-entries:{}/solver-updates:{}/command-transfer-visits:{}/retained-functions:{}/retained-regions:{}/retained-roots:{}",
+            "target-execution-cost {:?} completion={:?} assumptions=sequence:{}/effective-sequence:{}/forks:{} defaults=sequence:{}/forks:{} caps=sequence:{}/forks:{} work=graph:{}/solver:{} functions={} tags={} tag-entries={} top-level-commands={} command-nodes={} execute-stages={} calls={} condition-calls={} score={} data={} say={} returns={} raw={} regions={} roots={} stats=graph-entities:{}/graph-edges:{}/tag-entries:{}/solver-updates:{}/command-transfer-visits:{}/retained-functions:{}/retained-regions:{}/retained-roots:{}",
             self.target,
             self.completion,
             self.assumptions.max_command_sequence_length(),
@@ -435,6 +443,7 @@ impl TargetExecutionCostReport {
             self.census.function_condition_calls,
             self.census.score_commands,
             self.census.data_commands,
+            self.census.say_commands,
             self.census.return_commands,
             self.census.raw_commands,
             self.regions.len(),
@@ -603,7 +612,7 @@ mod tests {
     use crate::ir::minecraft::{
         AtMostOneSelector, CommandKind, CommandNode, ExecuteCommand, ExecuteModifier,
         ExecuteModifierKind, ExecuteModifiers, FunctionResourceId, MinecraftProgramBuilder,
-        ReturnCommand, UnsafeRawCommand,
+        ReturnCommand, SayCommand, SayMessage, UnsafeRawCommand,
     };
     use crate::source::OriginId;
     use crate::target::JavaEditionTarget;
@@ -651,14 +660,23 @@ mod tests {
         let mut body = builder.begin_function(function).unwrap();
         body.push(execute).unwrap();
         body.push(returned).unwrap();
+        body.push(
+            CommandNode::new(
+                CommandKind::Say(SayCommand::new(SayMessage::new("hello").unwrap())),
+                OriginId::UNKNOWN,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         body.finish();
         let program = builder.finish().unwrap();
 
         let census = TargetExecutionCensus::from_program(&program).unwrap();
         assert_eq!(census.functions(), 1);
-        assert_eq!(census.top_level_commands(), 2);
-        assert_eq!(census.command_nodes(), 4);
+        assert_eq!(census.top_level_commands(), 3);
+        assert_eq!(census.command_nodes(), 5);
         assert_eq!(census.execute_stages(), 2);
+        assert_eq!(census.say_commands(), 1);
         assert_eq!(census.return_commands(), 1);
         assert_eq!(census.raw_commands(), 2);
     }

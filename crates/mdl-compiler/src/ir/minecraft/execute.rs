@@ -2,6 +2,7 @@ use crate::source::OriginId;
 
 use super::{
     CommandNode, DimensionId, FiniteF64, McFunctionId, ScoreRange, ScoreRef, Selector, StoragePath,
+    TargetAnchor, TargetAxes, TargetPosition, TargetRotation,
 };
 
 /// One ordered `execute` command and its nested command.
@@ -110,6 +111,14 @@ pub enum ExecuteModifierKind {
     At(Selector),
     /// Change dimension and rescale position.
     In(DimensionId),
+    /// Replace the execution position.
+    Positioned(TargetPosition),
+    /// Replace the execution rotation.
+    Rotated(TargetRotation),
+    /// Replace the entity anchor.
+    Anchored(TargetAnchor),
+    /// Floor selected execution-position axes.
+    Align(TargetAxes),
     /// Keep contexts satisfying a condition.
     If(Condition),
     /// Keep contexts not satisfying a condition.

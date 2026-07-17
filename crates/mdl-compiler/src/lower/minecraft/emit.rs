@@ -1,21 +1,205 @@
 use crate::diagnostic::Diagnostics;
-use crate::ir::core::{BlockId, CoreOp, CoreProgram, FunctionId, InstId, TerminatorKind, ValueId};
-use crate::ir::minecraft::MinecraftProgram;
+use crate::entity::{EntityId, EntityLimitError, EntityVec};
+use crate::ir::core::{
+    BlockId, CoreOp, CoreProgram, ExternalSemanticBinding, FunctionId, InstData, InstId,
+    TargetFragment, TerminatorKind, ValueId,
+};
+use crate::ir::minecraft::{
+    CommandId, CommandKind, ExecuteCommand, ExecuteModifier, ExecuteModifiers, FunctionCall,
+    InternalCallableRef, McFunctionId, MinecraftProgram, UnsafeRawCommand,
+};
 use crate::source::OriginId;
 
 use super::call::lower_planned_call;
-use super::construct::{FunctionLoweringCx, TargetConstruction, invariant_diagnostics};
+use super::construct::{FunctionLoweringCx, TargetConstruction, command, invariant_diagnostics};
 use super::control::{lower_branch, lower_branch_helper, lower_jump, lower_return};
-use super::plan::{BranchArm, EdgeTransfer, HomeId, InstructionPlan, LoweringPlan};
+use super::plan::{
+    BranchArm, EdgeTransfer, HomeId, InstructionPlan, LoweringPlan, PlannedFunctionId,
+};
 use super::scalar::{ScalarLowering, lower_scalar_operation};
+
+/// Exact generated command produced for one Core semantic-operation occurrence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ConstructedCommandLocation {
+    function: McFunctionId,
+    command: CommandId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ConstructedRunModifierLocation {
+    pub(crate) function: McFunctionId,
+    pub(crate) command: CommandId,
+    pub(crate) modifier_index: usize,
+    pub(crate) recipe: super::RunModifierRecipeId,
+}
+
+impl ConstructedCommandLocation {
+    pub(crate) const fn function(self) -> McFunctionId {
+        self.function
+    }
+
+    pub(crate) const fn command(self) -> CommandId {
+        self.command
+    }
+}
+
+/// Dense post-construction correlation, indexed by Core function and instruction.
+#[derive(Debug)]
+pub(crate) struct ConstructionMap {
+    functions: EntityVec<FunctionId, Box<[Option<ConstructedCommandLocation>]>>,
+    run_modifiers:
+        EntityVec<crate::ir::core::RunScopeId, Box<[Option<ConstructedRunModifierLocation>]>>,
+}
+
+impl ConstructionMap {
+    fn new(core: &CoreProgram) -> Result<Self, Diagnostics> {
+        let mut functions = EntityVec::new();
+        for (function, declaration) in core.functions() {
+            let body = declaration.body().ok_or_else(|| {
+                invariant_diagnostics(
+                    "planned function definition disappeared",
+                    declaration.origin(),
+                )
+            })?;
+            let slots = vec![None; body.instruction_counts().allocated].into_boxed_slice();
+            let mapped = functions.push(slots).map_err(|EntityLimitError| {
+                invariant_diagnostics(
+                    "post-construction correlation identity space is exhausted",
+                    declaration.origin(),
+                )
+            })?;
+            if mapped != function {
+                return Err(invariant_diagnostics(
+                    "post-construction correlation is not dense over Core functions",
+                    declaration.origin(),
+                ));
+            }
+        }
+        let mut run_modifiers = EntityVec::new();
+        for (scope, declaration) in core.run_scopes() {
+            let allocated = run_modifiers
+                .push(vec![None; declaration.modifiers().len()].into_boxed_slice())
+                .map_err(|EntityLimitError| {
+                    invariant_diagnostics(
+                        "construction run-modifier map identity space exhausted",
+                        declaration.origin(),
+                    )
+                })?;
+            if allocated != scope {
+                return Err(invariant_diagnostics(
+                    "construction run-modifier map is not dense",
+                    declaration.origin(),
+                ));
+            }
+        }
+        Ok(Self {
+            functions,
+            run_modifiers,
+        })
+    }
+
+    fn record(
+        &mut self,
+        function: FunctionId,
+        instruction: InstId,
+        location: ConstructedCommandLocation,
+        origin: OriginId,
+    ) -> Result<(), Diagnostics> {
+        let slot = usize::try_from(instruction.index())
+            .ok()
+            .and_then(|index| self.functions.get_mut(function)?.get_mut(index))
+            .ok_or_else(|| {
+                invariant_diagnostics(
+                    "constructed semantic command has no dense Core correlation slot",
+                    origin,
+                )
+            })?;
+        if slot.replace(location).is_some() {
+            return Err(invariant_diagnostics(
+                "one Core semantic occurrence produced multiple top-level commands",
+                origin,
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn location(
+        &self,
+        function: FunctionId,
+        instruction: InstId,
+    ) -> Option<ConstructedCommandLocation> {
+        usize::try_from(instruction.index())
+            .ok()
+            .and_then(|index| self.functions.get(function)?.get(index))
+            .copied()
+            .flatten()
+    }
+
+    pub(crate) fn function_slots(
+        &self,
+        function: FunctionId,
+    ) -> Option<&[Option<ConstructedCommandLocation>]> {
+        self.functions.get(function).map(Box::as_ref)
+    }
+
+    pub(crate) fn run_scopes(
+        &self,
+    ) -> impl ExactSizeIterator<
+        Item = (
+            crate::ir::core::RunScopeId,
+            &[Option<ConstructedRunModifierLocation>],
+        ),
+    > + '_ {
+        self.run_modifiers
+            .iter()
+            .map(|(scope, slots)| (scope, slots.as_ref()))
+    }
+
+    fn record_run_modifiers(
+        &mut self,
+        scope: crate::ir::core::RunScopeId,
+        values: Vec<ConstructedRunModifierLocation>,
+        origin: OriginId,
+    ) -> Result<(), Diagnostics> {
+        let slots = self
+            .run_modifiers
+            .get_mut(scope)
+            .ok_or_else(|| invariant_diagnostics("construction run scope is absent", origin))?;
+        if slots.len() != values.len() || slots.iter().any(Option::is_some) {
+            return Err(invariant_diagnostics(
+                "construction run-modifier correlation shape mismatch",
+                origin,
+            ));
+        }
+        for (slot, value) in slots.iter_mut().zip(values) {
+            *slot = Some(value);
+        }
+        Ok(())
+    }
+}
+
+/// Complete construction product. No partial target or correlation escapes failure.
+#[derive(Debug)]
+pub(crate) struct ConstructedProgram {
+    program: MinecraftProgram,
+    commands: ConstructionMap,
+}
+
+impl ConstructedProgram {
+    pub(crate) fn into_parts(self) -> (MinecraftProgram, ConstructionMap) {
+        (self.program, self.commands)
+    }
+}
 
 /// Constructs every frozen block and helper, returning no partial target on failure.
 pub(crate) fn construct_program(
     core: &CoreProgram,
     plan: &LoweringPlan,
-) -> Result<MinecraftProgram, Diagnostics> {
+) -> Result<ConstructedProgram, Diagnostics> {
     let mut target = TargetConstruction::declare(plan)?;
+    let mut commands = ConstructionMap::new(core)?;
     target.define_initialization(plan)?;
+    define_external_helpers(&mut target, core, plan, &mut commands)?;
     for (function, declaration) in core.functions() {
         let body = declaration.body().ok_or_else(|| {
             invariant_diagnostics(
@@ -23,10 +207,13 @@ pub(crate) fn construct_program(
                 declaration.origin(),
             )
         })?;
-        lower_blocks(&mut target, function, body, plan)?;
+        lower_blocks(&mut target, function, body, plan, &mut commands)?;
         lower_branch_helpers(&mut target, function, body, plan)?;
     }
-    target.finish()
+    Ok(ConstructedProgram {
+        program: target.finish()?,
+        commands,
+    })
 }
 
 fn lower_blocks(
@@ -34,10 +221,11 @@ fn lower_blocks(
     function: FunctionId,
     body: &crate::ir::core::FunctionBody,
     plan: &LoweringPlan,
+    commands: &mut ConstructionMap,
 ) -> Result<(), Diagnostics> {
     for block in body.block_order().iter().copied() {
         if let Some(planned) = plan.block_function(function, block) {
-            lower_block(target, function, block, body, plan, planned)?;
+            lower_block(target, function, block, body, plan, planned, commands)?;
         }
     }
     Ok(())
@@ -50,26 +238,45 @@ fn lower_block(
     body: &crate::ir::core::FunctionBody,
     plan: &LoweringPlan,
     planned: super::plan::PlannedFunctionId,
+    commands: &mut ConstructionMap,
 ) -> Result<(), Diagnostics> {
+    let target_function = target.function(planned)?;
     let mut context = target.begin_function(body, plan, planned)?;
     let data = body.block(block).ok_or_else(|| {
         invariant_diagnostics("planned Core block disappeared", OriginId::UNKNOWN)
     })?;
     for instruction in data.instructions().iter().copied() {
-        lower_instruction(
+        if let Some(command) = lower_instruction(
             &mut context,
             function,
             instruction,
             body,
             plan,
             data.origin(),
-        )?;
+        )? {
+            let origin = body
+                .instruction(instruction)
+                .map_or(data.origin(), InstData::origin);
+            commands.record(
+                function,
+                instruction,
+                ConstructedCommandLocation {
+                    function: target_function,
+                    command,
+                },
+                origin,
+            )?;
+        }
     }
     lower_terminator(&mut context, function, block, data, plan)?;
     context.finish();
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "construction exhaustively consumes the closed frozen instruction-plan vocabulary"
+)]
 fn lower_instruction(
     context: &mut FunctionLoweringCx<'_, '_>,
     function: FunctionId,
@@ -77,7 +284,7 @@ fn lower_instruction(
     body: &crate::ir::core::FunctionBody,
     plan: &LoweringPlan,
     block_origin: OriginId,
-) -> Result<(), Diagnostics> {
+) -> Result<Option<CommandId>, Diagnostics> {
     let data = body.instruction(instruction).ok_or_else(|| {
         invariant_diagnostics("planned Core instruction disappeared", block_origin)
     })?;
@@ -90,7 +297,52 @@ fn lower_instruction(
             )
         })?;
     match instruction_plan {
-        InstructionPlan::OmittedPure => Ok(()),
+        InstructionPlan::OmittedPure => Ok(None),
+        InstructionPlan::External { helper } => {
+            let CoreOp::External(_) = data.op() else {
+                return Err(invariant_diagnostics(
+                    "non-external instruction has an external physical plan",
+                    data.origin(),
+                ));
+            };
+            let target = context.function(*helper)?;
+            context.push(command(
+                CommandKind::Function(FunctionCall::new(
+                    InternalCallableRef::Function(target).into(),
+                )),
+                data.origin(),
+            )?)?;
+            Ok(None)
+        }
+        InstructionPlan::Minecraft { external, recipe } => {
+            let CoreOp::External(actual) = data.op() else {
+                return Err(invariant_diagnostics(
+                    "non-external instruction has a Minecraft command plan",
+                    data.origin(),
+                ));
+            };
+            if actual != external {
+                return Err(invariant_diagnostics(
+                    "Minecraft command plan names the wrong external declaration",
+                    data.origin(),
+                ));
+            }
+            let selected = plan.selected_semantic_recipe(*external).ok_or_else(|| {
+                invariant_diagnostics(
+                    "Minecraft command plan has no retained preflight recipe",
+                    data.origin(),
+                )
+            })?;
+            if selected.recipe_id() != *recipe {
+                return Err(invariant_diagnostics(
+                    "Minecraft command plan disagrees with retained preflight",
+                    data.origin(),
+                ));
+            }
+            context
+                .push_correlated(command(selected.command_kind(), data.origin())?)
+                .map(Some)
+        }
         InstructionPlan::Scalar { operands, results } => {
             if matches!(data.op(), CoreOp::Call(_)) {
                 return Err(invariant_diagnostics(
@@ -106,7 +358,7 @@ fn lower_instruction(
             if lower_scalar_operation(context, data.op(), operands, &result_homes, data.origin())?
                 == ScalarLowering::Lowered
             {
-                Ok(())
+                Ok(None)
             } else {
                 Err(invariant_diagnostics(
                     "scalar physical plan was deferred as a call",
@@ -126,13 +378,175 @@ fn lower_instruction(
             };
             lower_planned_call(
                 context,
+                function,
+                instruction,
                 *callee,
                 arguments,
                 result_destinations,
                 data.origin(),
-            )
+            )?;
+            Ok(None)
         }
     }
+}
+
+fn define_external_helpers(
+    target: &mut TargetConstruction,
+    core: &CoreProgram,
+    plan: &LoweringPlan,
+    commands: &mut ConstructionMap,
+) -> Result<(), Diagnostics> {
+    for (function, declaration) in core.functions() {
+        let body = declaration.body().ok_or_else(|| {
+            invariant_diagnostics(
+                "planned function definition disappeared",
+                declaration.origin(),
+            )
+        })?;
+        for block in body.block_order().iter().copied() {
+            let Some(block) = body.block(block) else {
+                continue;
+            };
+            for instruction in block.instructions().iter().copied() {
+                let Some(InstructionPlan::External { helper }) =
+                    plan.instruction_plan(function, instruction)
+                else {
+                    continue;
+                };
+                let data = body.instruction(instruction).ok_or_else(|| {
+                    invariant_diagnostics(
+                        "planned external instruction disappeared",
+                        block.origin(),
+                    )
+                })?;
+                let CoreOp::External(operation) = data.op() else {
+                    return Err(invariant_diagnostics(
+                        "external helper belongs to a non-external instruction",
+                        data.origin(),
+                    ));
+                };
+                define_external_helper(target, core, plan, *helper, *operation, data, commands)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn define_external_helper(
+    target: &mut TargetConstruction,
+    core: &CoreProgram,
+    plan: &LoweringPlan,
+    helper: PlannedFunctionId,
+    operation: crate::ir::core::ExternalOpId,
+    data: &InstData,
+    commands: &mut ConstructionMap,
+) -> Result<(), Diagnostics> {
+    let declaration = core.external_op(operation).ok_or_else(|| {
+        invariant_diagnostics("planned external operation disappeared", data.origin())
+    })?;
+    match declaration.binding() {
+        ExternalSemanticBinding::UnsafeTargetFragment(fragment) => {
+            let Some(TargetFragment::UnsafeMinecraftCommand(fragment)) =
+                core.target_fragment(fragment)
+            else {
+                return Err(invariant_diagnostics(
+                    "planned unsafe target fragment disappeared",
+                    data.origin(),
+                ));
+            };
+            let raw = UnsafeRawCommand::new_for_target(fragment.as_str(), plan.target()).map_err(
+                |error| {
+                    invariant_diagnostics(
+                        format!("audited unsafe target fragment became invalid: {error}"),
+                        data.origin(),
+                    )
+                },
+            )?;
+            target.define_external_helper(helper, command(CommandKind::Raw(raw), data.origin())?)
+        }
+        ExternalSemanticBinding::MinecraftRunScope(scope) => {
+            define_run_scope_helper(target, core, plan, helper, scope, data, commands)
+        }
+        ExternalSemanticBinding::MinecraftOperation(_) => Err(invariant_diagnostics(
+            "typed Minecraft operation incorrectly received an external helper",
+            data.origin(),
+        )),
+    }
+}
+
+fn define_run_scope_helper(
+    target: &mut TargetConstruction,
+    core: &CoreProgram,
+    plan: &LoweringPlan,
+    helper: PlannedFunctionId,
+    scope: crate::ir::core::RunScopeId,
+    data: &InstData,
+    commands: &mut ConstructionMap,
+) -> Result<(), Diagnostics> {
+    let scope_id = scope;
+    let scope = core
+        .run_scope(scope)
+        .ok_or_else(|| invariant_diagnostics("planned run scope disappeared", data.origin()))?;
+    let body_entry = plan.function_entry(scope.callee()).ok_or_else(|| {
+        invariant_diagnostics("planned run body has no function entry", data.origin())
+    })?;
+    let body_target = target.function(body_entry)?;
+    let invoke_body = command(
+        CommandKind::Function(FunctionCall::new(
+            InternalCallableRef::Function(body_target).into(),
+        )),
+        data.origin(),
+    )?;
+
+    let mut modifiers = Vec::with_capacity(scope.modifiers().len());
+    for (modifier_index, modifier) in scope.modifiers().iter().enumerate() {
+        let selected = plan
+            .preflight()
+            .selected_run_modifier(scope_id, modifier_index)
+            .ok_or_else(|| {
+                invariant_diagnostics(
+                    "planned run modifier has no retained preflight recipe",
+                    modifier.origin(),
+                )
+            })?;
+        modifiers.push(ExecuteModifier::new(
+            selected.target_kind(),
+            modifier.origin(),
+        ));
+    }
+    let mut modifiers = modifiers.into_iter();
+    let Some(first) = modifiers.next() else {
+        return target.define_external_helper(helper, invoke_body);
+    };
+    let modifiers = ExecuteModifiers::new(first, modifiers.collect());
+    let target_function = target.function(helper)?;
+    let command_id = CommandId::from_index(0);
+    let correlations = scope
+        .modifiers()
+        .iter()
+        .enumerate()
+        .map(|(modifier_index, _modifier)| {
+            let recipe = plan
+                .preflight()
+                .selected_run_modifier(scope_id, modifier_index)
+                .expect("verified selected run modifier exists")
+                .recipe_id();
+            ConstructedRunModifierLocation {
+                function: target_function,
+                command: command_id,
+                modifier_index,
+                recipe,
+            }
+        })
+        .collect::<Vec<_>>();
+    target.define_external_helper(
+        helper,
+        command(
+            CommandKind::Execute(ExecuteCommand::new(modifiers, invoke_body)),
+            data.origin(),
+        )?,
+    )?;
+    commands.record_run_modifiers(scope_id, correlations, data.origin())
 }
 
 fn lower_terminator(
@@ -2192,7 +2606,13 @@ mod tests {
     ) -> (LoweringPlan, MinecraftProgram) {
         crate::ir::core::verify_program(core, sources).unwrap();
         let analyses = SemanticInventory::new(core).unwrap();
-        audit_legality(core, &analyses).unwrap();
+        audit_legality(
+            core,
+            &analyses,
+            options().target(),
+            options().command_limit_assumptions(),
+        )
+        .unwrap();
         let mut builder = PlanBuilder::new(core, options()).unwrap();
         builder
             .physicalize(
@@ -2202,7 +2622,7 @@ mod tests {
             )
             .unwrap();
         let plan = builder.finish(core, &analyses).unwrap();
-        let target = construct_program(core, &plan).unwrap();
+        let (target, _) = construct_program(core, &plan).unwrap().into_parts();
         verify_program(&target, sources).unwrap();
         (plan, target)
     }
@@ -2370,7 +2790,10 @@ mod tests {
                         })
                     }
                 }
-                CommandKind::Data(_) | CommandKind::Raw(_) => {
+                CommandKind::Data(_)
+                | CommandKind::Say(_)
+                | CommandKind::Teleport(_)
+                | CommandKind::Raw(_) => {
                     panic!("loop lowering emitted a non-score primitive")
                 }
             }

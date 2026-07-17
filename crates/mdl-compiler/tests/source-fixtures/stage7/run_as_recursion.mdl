@@ -1,0 +1,8 @@
+// MDL: success
+// PACK: data modify storage mdl_fixture:__mdl/runtime/v0 "frames" append value {}
+// PACK: data remove storage mdl_fixture:__mdl/runtime/v0 "frames"[-1]
+export fn recurse_through_scope() {
+    run.as(mc.entities(ArmorStand).limit(1)) {
+        recurse_through_scope();
+    }
+}

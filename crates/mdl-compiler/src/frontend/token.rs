@@ -7,7 +7,15 @@ use crate::source::Span;
 pub(crate) enum TokenKind {
     Identifier,
     DecimalInteger,
+    DecimalNumber,
+    StringLiteral,
     KeywordFn,
+    KeywordPub,
+    KeywordExport,
+    KeywordImport,
+    KeywordUnsafe,
+    KeywordMinecraft,
+    KeywordRun,
     KeywordConst,
     KeywordVar,
     KeywordIf,
@@ -25,8 +33,13 @@ pub(crate) enum TokenKind {
     Colon,
     Semicolon,
     Comma,
+    Dot,
+    Pipe,
     Equal,
     Arrow,
+    Minus,
+    Tilde,
+    Caret,
     Bang,
     EqualEqual,
     BangEqual,
@@ -80,7 +93,6 @@ impl TokenBuffer {
         self.tokens.iter()
     }
 
-    #[cfg(test)]
     pub(crate) const fn len(&self) -> usize {
         self.tokens.len()
     }

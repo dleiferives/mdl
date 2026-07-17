@@ -3,26 +3,18 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::num::NonZeroU32;
 
+use super::context::{apply_run_modifiers, function_entry_context};
+use super::input::ModuleKey;
+use crate::ir::command_line::validate_command_line_shape;
+pub use crate::ir::semantic::RuntimeValueType as ValueType;
+use crate::ir::semantic::{
+    Axes, DimensionKey, EntityAnchor, EntityCapability, EntityKind, EntityTag, ExecutionContext,
+    ExecutorType, FunctionBehavior, MessageLiteral, MinecraftSemanticKey, PositionSpec,
+    RelativeWorldOffset, RotationSpec, StaticEntityQuery, minecraft_descriptor,
+};
 use crate::source::{OriginId, SourceContext};
-
-/// Scalar value types accepted by the first source-language tranche.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ValueType {
-    /// A boolean value.
-    Bool,
-    /// A signed 32-bit integer value.
-    Int32,
-}
-
-impl fmt::Display for ValueType {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Bool => formatter.write_str("Bool"),
-            Self::Int32 => formatter.write_str("Int32"),
-        }
-    }
-}
 
 /// A source function's result contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -59,6 +51,87 @@ impl SourceFunctionId {
 
     pub(super) fn as_usize(self) -> Option<usize> {
         usize::try_from(self.0).ok()
+    }
+}
+
+/// Dense identity of one source module in canonical package order.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceModuleId(u32);
+
+impl SourceModuleId {
+    /// Returns this identity's zero-based canonical package index.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        u32::try_from(index).ok().map(Self)
+    }
+
+    pub(super) fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+/// Dense identity of one source external operation in canonical source order.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceExternalOpId(u32);
+
+impl SourceExternalOpId {
+    /// Returns this identity's zero-based source-order index.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        u32::try_from(index).ok().map(Self)
+    }
+
+    pub(super) fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+/// Dense identity of one structured run scope in canonical source order.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceRunId(u32);
+
+impl SourceRunId {
+    /// Returns this identity's zero-based source-order index.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        u32::try_from(index).ok().map(Self)
+    }
+
+    pub(super) fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+/// Source visibility and datapack-entry linkage of one checked function.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FunctionVisibility {
+    /// Visible only inside the declaring source module.
+    Private,
+    /// Callable through an importing package module but not a datapack entry.
+    Public,
+    /// Published as a supported generated datapack entry.
+    DatapackExport,
+}
+
+impl fmt::Display for FunctionVisibility {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Private => formatter.write_str("private"),
+            Self::Public => formatter.write_str("public"),
+            Self::DatapackExport => formatter.write_str("export"),
+        }
     }
 }
 
@@ -103,6 +176,63 @@ impl CheckedFrontendOutput {
         self.module.functions.is_empty()
     }
 
+    /// Returns the number of modules in canonical package order.
+    #[must_use]
+    pub fn module_count(&self) -> usize {
+        self.module.modules.len()
+    }
+
+    /// Iterates source module IDs in deterministic canonical package order.
+    #[must_use]
+    pub fn module_ids(&self) -> impl ExactSizeIterator<Item = SourceModuleId> + '_ {
+        self.module.modules.iter().map(|module| module.id)
+    }
+
+    /// Returns the number of closed external operations in canonical source order.
+    #[must_use]
+    pub fn external_operation_count(&self) -> usize {
+        self.module.external_ops.len()
+    }
+
+    /// Iterates external-operation identities in deterministic canonical source order.
+    #[must_use]
+    pub fn external_operation_ids(&self) -> impl ExactSizeIterator<Item = SourceExternalOpId> + '_ {
+        self.module.external_ops.iter().map(|external| external.id)
+    }
+
+    /// Returns the number of structured run scopes in canonical source order.
+    #[must_use]
+    pub const fn run_scope_count(&self) -> usize {
+        self.module.run_scope_count
+    }
+
+    /// Iterates dense structured-run identities in canonical source order.
+    ///
+    /// # Panics
+    ///
+    /// Only if a previously verified HIR inventory exceeds its `u32` identity domain.
+    #[must_use]
+    pub fn run_scope_ids(&self) -> impl ExactSizeIterator<Item = SourceRunId> {
+        (0..self.module.run_scope_count).map(|index| {
+            SourceRunId::from_index(index).expect("verified run count fits identity space")
+        })
+    }
+
+    /// Returns the distinguished root module.
+    #[must_use]
+    pub const fn root_module(&self) -> SourceModuleId {
+        self.module.root
+    }
+
+    /// Returns one module's driver-owned identity.
+    #[must_use]
+    pub fn module_key(&self, module: SourceModuleId) -> Option<&ModuleKey> {
+        self.module
+            .modules
+            .get(module.as_usize()?)
+            .map(|module| &module.key)
+    }
+
     /// Iterates source function IDs in deterministic declaration order.
     #[must_use]
     pub fn function_ids(&self) -> impl ExactSizeIterator<Item = SourceFunctionId> + '_ {
@@ -113,6 +243,24 @@ impl CheckedFrontendOutput {
     #[must_use]
     pub fn function_result(&self, function: SourceFunctionId) -> Option<FunctionResult> {
         self.function(function).map(|function| function.result)
+    }
+
+    /// Returns the module that owns a function.
+    #[must_use]
+    pub fn function_module(&self, function: SourceFunctionId) -> Option<SourceModuleId> {
+        self.function(function).map(|function| function.module)
+    }
+
+    /// Returns a function's source visibility and datapack-entry intent.
+    #[must_use]
+    pub fn function_visibility(&self, function: SourceFunctionId) -> Option<FunctionVisibility> {
+        self.function(function).map(|function| function.visibility)
+    }
+
+    /// Returns a source function's verified, transitively inferred behavior.
+    #[must_use]
+    pub fn function_behavior(&self, function: SourceFunctionId) -> Option<FunctionBehavior> {
+        self.module.behaviors.get(function.as_usize()?).copied()
     }
 
     /// Returns a function's parameter count, or `None` for an ID outside this output.
@@ -151,6 +299,14 @@ impl CheckedFrontendOutput {
         &self.module.functions
     }
 
+    pub(super) fn external_ops(&self) -> &[HirExternalOp] {
+        &self.module.external_ops
+    }
+
+    pub(super) fn external_op(&self, id: SourceExternalOpId) -> Option<&HirExternalOp> {
+        self.module.external_ops.get(id.as_usize()?)
+    }
+
     fn function(&self, id: SourceFunctionId) -> Option<&HirFunction> {
         self.module.functions.get(id.as_usize()?)
     }
@@ -158,13 +314,81 @@ impl CheckedFrontendOutput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HirModule {
+    pub(super) root: SourceModuleId,
+    pub(super) modules: Box<[HirModuleInfo]>,
+    pub(super) external_ops: Box<[HirExternalOp]>,
+    pub(super) run_scope_count: usize,
     pub(super) functions: Box<[HirFunction]>,
+    pub(super) behaviors: Box<[FunctionBehavior]>,
+    pub(super) origin: OriginId,
+}
+
+/// One closed source external operation with semantic identity and source data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirExternalOp {
+    pub(super) id: SourceExternalOpId,
+    pub(super) semantic: HirExternalSemantic,
+    pub(super) origin: OriginId,
+}
+
+/// External meanings admitted by the current HIR boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirExternalSemantic {
+    UnsafeMinecraftCommand {
+        command: Box<str>,
+        command_origin: OriginId,
+    },
+    MinecraftOperation {
+        key: MinecraftSemanticKey,
+        receiver_kind: EntityKind,
+        executor_proof: HirContextStep,
+        attributes: HirMinecraftOperationAttributes,
+        call_origin: OriginId,
+        member_origin: OriginId,
+        receiver_origin: OriginId,
+    },
+}
+
+/// Closed static attributes of one checked Minecraft operation occurrence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirMinecraftOperationAttributes {
+    Say {
+        message: MessageLiteral,
+        message_origin: OriginId,
+    },
+    Teleport {
+        position: PositionSpec,
+        component_origins: [OriginId; 3],
+    },
+    MoveBy {
+        offset: RelativeWorldOffset,
+        component_origins: [OriginId; 3],
+    },
+}
+
+impl HirMinecraftOperationAttributes {
+    pub(super) const fn semantic_key(&self) -> MinecraftSemanticKey {
+        match self {
+            Self::Say { .. } => MinecraftSemanticKey::Say,
+            Self::Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
+            Self::MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirModuleInfo {
+    pub(super) id: SourceModuleId,
+    pub(super) key: ModuleKey,
     pub(super) origin: OriginId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HirFunction {
     pub(super) id: SourceFunctionId,
+    pub(super) module: SourceModuleId,
+    pub(super) visibility: FunctionVisibility,
+    pub(super) visibility_origin: Option<OriginId>,
     pub(super) name_origin: OriginId,
     pub(super) parameter_count: usize,
     pub(super) result: FunctionResult,
@@ -229,8 +453,108 @@ pub(super) enum HirStatementKind {
         value: HirExpression,
     },
     Call(HirCall),
+    External(SourceExternalOpId),
     If(HirIf),
+    Run(HirRun),
     Return(Option<HirExpression>),
+}
+
+/// One ordered compiler-known execution-context modifier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirRunModifier {
+    As {
+        query: HirEntityQuery,
+        origin: OriginId,
+    },
+    At {
+        query: HirEntityQuery,
+        origin: OriginId,
+    },
+    AtExecutor {
+        kind: EntityKind,
+        proof: HirContextStep,
+        origin: OriginId,
+    },
+    Positioned {
+        position: PositionSpec,
+        origin: OriginId,
+    },
+    Rotated {
+        rotation: RotationSpec,
+        origin: OriginId,
+    },
+    In {
+        dimension: DimensionKey,
+        origin: OriginId,
+    },
+    Anchored {
+        anchor: EntityAnchor,
+        origin: OriginId,
+    },
+    Align {
+        axes: Axes,
+        origin: OriginId,
+    },
+}
+
+/// Exact identity of one source run-modifier transition.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) struct HirContextStep {
+    pub(super) run: SourceRunId,
+    pub(super) modifier_index: usize,
+    pub(super) origin: OriginId,
+}
+
+pub(super) type HirExecutionContext = ExecutionContext<HirContextStep>;
+
+/// One source occurrence of a pure semantic entity query.
+///
+/// The semantic query remains canonical and origin-free. `steps` retains every
+/// source refinement so verification can replay construction and target failures
+/// can point at the exact argument that introduced an unsupported value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirEntityQuery {
+    pub(super) semantic: StaticEntityQuery,
+    pub(super) steps: Vec<HirEntityQueryStep>,
+}
+
+/// One source-ordered query-construction step with exact provenance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirEntityQueryStep {
+    Entities {
+        kind: EntityKind,
+        origin: OriginId,
+        kind_origin: OriginId,
+    },
+    WithTag {
+        tag: EntityTag,
+        origin: OriginId,
+        value_origin: OriginId,
+    },
+    Limit {
+        maximum: NonZeroU32,
+        origin: OriginId,
+        value_origin: OriginId,
+    },
+}
+
+/// One optional, non-escaping lexical proof of the current executor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirExecutorCapture {
+    pub(super) ty: ExecutorType,
+    pub(super) proof: HirContextStep,
+    pub(super) name_origin: OriginId,
+}
+
+/// One structured contextual region whose modifiers retain exact source order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirRun {
+    pub(super) id: SourceRunId,
+    pub(super) modifiers: Box<[HirRunModifier]>,
+    pub(super) resulting_context: HirExecutionContext,
+    pub(super) capture: Option<HirExecutorCapture>,
+    pub(super) body: HirBlock,
+    pub(super) origin: OriginId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -323,8 +647,79 @@ impl<'a> Dumper<'a> {
     fn dump(mut self) -> String {
         self.line(
             0,
-            &format!("module {}", self.location(self.output.module.origin)),
+            &format!(
+                "package root=@{} {}",
+                self.output.module.root.index(),
+                self.location(self.output.module.origin)
+            ),
         );
+        for module in &self.output.module.modules {
+            self.line(
+                1,
+                &format!(
+                    "module @{} key={:?} {}",
+                    module.id.index(),
+                    module.key.as_str(),
+                    self.location(module.origin)
+                ),
+            );
+        }
+        for external in self.output.external_ops() {
+            match &external.semantic {
+                HirExternalSemantic::UnsafeMinecraftCommand {
+                    command,
+                    command_origin,
+                } => self.line(
+                    1,
+                    &format!(
+                        "external @{} unsafe.minecraft {:?} command={} {}",
+                        external.id.index(),
+                        command,
+                        self.location(*command_origin),
+                        self.location(external.origin)
+                    ),
+                ),
+                HirExternalSemantic::MinecraftOperation {
+                    key,
+                    receiver_kind,
+                    executor_proof,
+                    attributes,
+                    call_origin,
+                    member_origin,
+                    receiver_origin,
+                } => {
+                    let attributes = match attributes {
+                        HirMinecraftOperationAttributes::Say {
+                            message,
+                            message_origin,
+                        } => format!(
+                            "message={:?} message_origin={}",
+                            message.as_str(),
+                            self.location(*message_origin)
+                        ),
+                        HirMinecraftOperationAttributes::Teleport { position, .. } => {
+                            format!("position={position:?}")
+                        }
+                        HirMinecraftOperationAttributes::MoveBy { offset, .. } => {
+                            format!("offset={offset:?}")
+                        }
+                    };
+                    self.line(
+                        1,
+                        &format!(
+                            "external @{} minecraft.{key:?} receiver=Executor<{receiver_kind}> proof=run@{}:modifier{} {attributes} call={} member={} receiver_origin={} {}",
+                            external.id.index(),
+                            executor_proof.run.index(),
+                            executor_proof.modifier_index,
+                            self.location(*call_origin),
+                            self.location(*member_origin),
+                            self.location(*receiver_origin),
+                            self.location(external.origin),
+                        ),
+                    );
+                }
+            }
+        }
         for function in self.output.functions() {
             self.dump_function(function);
         }
@@ -344,14 +739,21 @@ impl<'a> Dumper<'a> {
         self.line(
             1,
             &format!(
-                "fn @{} {}({}) -> {} {}",
+                "fn @{} {}({}) -> {} module=@{} visibility={} {}",
                 function.id.index(),
                 self.spelling(function.name_origin),
                 parameters.join(", "),
                 function.result,
+                function.module.index(),
+                function.visibility,
                 self.location(function.origin)
             ),
         );
+        let behavior = self
+            .output
+            .function_behavior(function.id)
+            .map_or_else(|| "<missing>".to_owned(), render_behavior);
+        self.line(2, &format!("behavior {behavior}"));
         self.line(2, "bindings");
         for binding in &function.bindings {
             self.line(
@@ -409,6 +811,14 @@ impl<'a> Dumper<'a> {
                     self.location(statement.origin)
                 ),
             ),
+            HirStatementKind::External(external) => self.line(
+                indent,
+                &format!(
+                    "external @{} {}",
+                    external.index(),
+                    self.location(statement.origin)
+                ),
+            ),
             HirStatementKind::If(conditional) => {
                 self.line(indent, &format!("if {}", self.location(conditional.origin)));
                 for arm in &conditional.arms {
@@ -427,6 +837,7 @@ impl<'a> Dumper<'a> {
                     self.dump_block(else_body, indent + 2);
                 }
             }
+            HirStatementKind::Run(run) => self.dump_run(run, indent),
             HirStatementKind::Return(value) => {
                 let value = value.as_ref().map_or_else(
                     || "return".to_owned(),
@@ -438,6 +849,98 @@ impl<'a> Dumper<'a> {
                 );
             }
         }
+    }
+
+    fn dump_run(&mut self, run: &HirRun, indent: usize) {
+        self.line(
+            indent,
+            &format!("run @{} {}", run.id.index(), self.location(run.origin)),
+        );
+        for modifier in &run.modifiers {
+            match modifier {
+                HirRunModifier::As { query, origin } => {
+                    self.line(
+                        indent + 1,
+                        &format!("as {} {}", query.semantic, self.location(*origin)),
+                    );
+                    for step in &query.steps {
+                        let rendered = match step {
+                            HirEntityQueryStep::Entities {
+                                kind,
+                                origin,
+                                kind_origin,
+                            } => format!(
+                                "query.entities {kind} {} kind={}",
+                                self.location(*origin),
+                                self.location(*kind_origin)
+                            ),
+                            HirEntityQueryStep::WithTag {
+                                tag,
+                                origin,
+                                value_origin,
+                            } => format!(
+                                "query.with_tag {:?} {} value={}",
+                                tag.as_str(),
+                                self.location(*origin),
+                                self.location(*value_origin)
+                            ),
+                            HirEntityQueryStep::Limit {
+                                maximum,
+                                origin,
+                                value_origin,
+                            } => format!(
+                                "query.limit {maximum} {} value={}",
+                                self.location(*origin),
+                                self.location(*value_origin)
+                            ),
+                        };
+                        self.line(indent + 2, &rendered);
+                    }
+                }
+                HirRunModifier::At { query, origin } => self.line(
+                    indent + 1,
+                    &format!("at {} {}", query.semantic, self.location(*origin)),
+                ),
+                HirRunModifier::AtExecutor { kind, origin, .. } => self.line(
+                    indent + 1,
+                    &format!("at_executor {kind} {}", self.location(*origin)),
+                ),
+                HirRunModifier::Positioned { position, origin } => self.line(
+                    indent + 1,
+                    &format!("positioned {position:?} {}", self.location(*origin)),
+                ),
+                HirRunModifier::Rotated { rotation, origin } => self.line(
+                    indent + 1,
+                    &format!("rotated {rotation:?} {}", self.location(*origin)),
+                ),
+                HirRunModifier::In { dimension, origin } => self.line(
+                    indent + 1,
+                    &format!("in {dimension:?} {}", self.location(*origin)),
+                ),
+                HirRunModifier::Anchored { anchor, origin } => self.line(
+                    indent + 1,
+                    &format!("anchored {anchor:?} {}", self.location(*origin)),
+                ),
+                HirRunModifier::Align { axes, origin } => self.line(
+                    indent + 1,
+                    &format!("align {} {}", axes.as_str(), self.location(*origin)),
+                ),
+            }
+        }
+        self.line(indent + 1, &format!("context {:?}", run.resulting_context));
+        if let Some(capture) = &run.capture {
+            self.line(
+                indent + 1,
+                &format!(
+                    "capture {}: Executor<{}> proof={:?} {}",
+                    self.spelling(capture.name_origin),
+                    capture.ty.kind(),
+                    capture.proof,
+                    self.location(capture.name_origin)
+                ),
+            );
+        }
+        self.dump_block(&run.body, indent + 1);
     }
 
     fn expression(&self, expression: &HirExpression) -> String {
@@ -489,6 +992,18 @@ impl<'a> Dumper<'a> {
     }
 }
 
+fn render_behavior(behavior: FunctionBehavior) -> String {
+    format!(
+        "context={:?} world={:?} observable={:?} fork={:?} work={:?} unsafe_unknown={}",
+        behavior.required_ambient_context(),
+        behavior.world_effect(),
+        behavior.observable_effect(),
+        behavior.fork_bound(),
+        behavior.transitive_work(),
+        behavior.contains_unsafe_unknown()
+    )
+}
+
 /// Internal HIR invariant failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HirVerificationError {
@@ -524,8 +1039,112 @@ struct Verifier<'a> {
 }
 
 impl Verifier<'_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the package verifier checks dense global inventories and recomputed summaries in one ordered boundary"
+    )]
     fn verify(&self) -> Result<(), HirVerificationError> {
-        self.origin(self.output.module.origin, "module")?;
+        self.origin(self.output.module.origin, "package")?;
+        let root_index = self
+            .output
+            .module
+            .root
+            .as_usize()
+            .filter(|index| self.output.module.modules.get(*index).is_some())
+            .ok_or_else(|| HirVerificationError::new("package has an invalid root module"))?;
+        for (index, module) in self.output.module.modules.iter().enumerate() {
+            let expected = SourceModuleId::from_index(index)
+                .ok_or_else(|| HirVerificationError::new("module identity space exhausted"))?;
+            if module.id != expected {
+                return Err(HirVerificationError::new(format!(
+                    "module at index {index} has non-dense identity {:?}",
+                    module.id
+                )));
+            }
+            self.origin(module.origin, "module")?;
+        }
+        if self.output.module.modules[root_index].id != self.output.module.root {
+            return Err(HirVerificationError::new(
+                "package root does not match its module inventory entry",
+            ));
+        }
+        for (index, external) in self.output.external_ops().iter().enumerate() {
+            let expected = SourceExternalOpId::from_index(index).ok_or_else(|| {
+                HirVerificationError::new("external-operation identity space exhausted")
+            })?;
+            if external.id != expected {
+                return Err(HirVerificationError::new(format!(
+                    "external operation at index {index} has non-dense identity {:?}",
+                    external.id
+                )));
+            }
+            self.origin(external.origin, "external operation")?;
+            match &external.semantic {
+                HirExternalSemantic::UnsafeMinecraftCommand {
+                    command,
+                    command_origin,
+                } => {
+                    self.origin(*command_origin, "unsafe command literal")?;
+                    validate_command_line_shape(command).map_err(|error| {
+                        HirVerificationError::new(format!(
+                            "unsafe command {:?} has invalid physical shape: {error:?}",
+                            external.id
+                        ))
+                    })?;
+                }
+                HirExternalSemantic::MinecraftOperation {
+                    key,
+                    receiver_kind,
+                    executor_proof,
+                    attributes,
+                    call_origin,
+                    member_origin,
+                    receiver_origin,
+                } => {
+                    self.origin(*call_origin, "Minecraft method call")?;
+                    self.origin(*member_origin, "Minecraft method member")?;
+                    self.origin(*receiver_origin, "Minecraft method receiver")?;
+                    self.origin(executor_proof.origin, "Minecraft executor proof")?;
+                    if attributes.semantic_key() != *key
+                        || minecraft_descriptor(*key).key() != *key
+                        || !receiver_kind
+                            .capabilities()
+                            .contains(EntityCapability::CommandExecutor)
+                    {
+                        return Err(HirVerificationError::new(format!(
+                            "Minecraft operation {:?} has mismatched key, attributes, or receiver",
+                            external.id
+                        )));
+                    }
+                    match attributes {
+                        HirMinecraftOperationAttributes::Say {
+                            message,
+                            message_origin,
+                        } => {
+                            self.origin(*message_origin, "Minecraft message literal")?;
+                            crate::ir::semantic::MessageLiteral::new(message.as_str()).map_err(
+                                |error| {
+                                    HirVerificationError::new(format!(
+                                        "Minecraft message in {:?} is invalid: {error}",
+                                        external.id
+                                    ))
+                                },
+                            )?;
+                        }
+                        HirMinecraftOperationAttributes::Teleport {
+                            component_origins, ..
+                        }
+                        | HirMinecraftOperationAttributes::MoveBy {
+                            component_origins, ..
+                        } => {
+                            for origin in component_origins {
+                                self.origin(*origin, "Minecraft spatial component")?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for (index, function) in self.output.functions().iter().enumerate() {
             let expected = SourceFunctionId::from_index(index)
                 .ok_or_else(|| HirVerificationError::new("function identity space exhausted"))?;
@@ -535,7 +1154,46 @@ impl Verifier<'_> {
                     function.id
                 )));
             }
+        }
+        if self.output.module.behaviors.len() != self.output.module.functions.len() {
+            return Err(HirVerificationError::new(format!(
+                "package has {} function behavior summaries for {} functions",
+                self.output.module.behaviors.len(),
+                self.output.module.functions.len()
+            )));
+        }
+        let mut next_run_scope = 0_usize;
+        for function in self.output.functions() {
+            verify_run_scope_ids(&function.body, &mut next_run_scope)?;
+        }
+        if next_run_scope != self.output.module.run_scope_count {
+            return Err(HirVerificationError::new(format!(
+                "package inventories {} run scopes but contains {next_run_scope}",
+                self.output.module.run_scope_count
+            )));
+        }
+        for function in self.output.functions() {
             self.verify_function(function)?;
+        }
+        verify_external_operation_occurrences(self.output.functions(), self.output.external_ops())?;
+        let inferred = super::behavior::infer_function_behaviors(
+            &self.output.module.functions,
+            &self.output.module.external_ops,
+        )
+        .map_err(|error| {
+            HirVerificationError::new(format!(
+                "cannot recompute function behavior summaries: {error}"
+            ))
+        })?;
+        if inferred != self.output.module.behaviors {
+            let mismatch = inferred
+                .iter()
+                .zip(self.output.module.behaviors.iter())
+                .position(|(expected, actual)| expected != actual)
+                .unwrap_or(0);
+            return Err(HirVerificationError::new(format!(
+                "function behavior summary at index {mismatch} does not match HIR inference"
+            )));
         }
         Ok(())
     }
@@ -543,6 +1201,40 @@ impl Verifier<'_> {
     fn verify_function(&self, function: &HirFunction) -> Result<(), HirVerificationError> {
         self.origin(function.origin, "function")?;
         self.origin(function.name_origin, "function name")?;
+        let module_index = function
+            .module
+            .as_usize()
+            .filter(|index| self.output.module.modules.get(*index).is_some())
+            .ok_or_else(|| {
+                HirVerificationError::new(format!(
+                    "function {:?} has invalid owner module {:?}",
+                    function.id, function.module
+                ))
+            })?;
+        if self.output.module.modules[module_index].id != function.module {
+            return Err(HirVerificationError::new(format!(
+                "function {:?} owner module does not match the module inventory",
+                function.id
+            )));
+        }
+        match (function.visibility, function.visibility_origin) {
+            (FunctionVisibility::Private, None) => {}
+            (FunctionVisibility::Public | FunctionVisibility::DatapackExport, Some(origin)) => {
+                self.origin(origin, "function visibility")?;
+            }
+            (FunctionVisibility::Private, Some(_)) => {
+                return Err(HirVerificationError::new(format!(
+                    "private function {:?} has a visibility origin",
+                    function.id
+                )));
+            }
+            (FunctionVisibility::Public | FunctionVisibility::DatapackExport, None) => {
+                return Err(HirVerificationError::new(format!(
+                    "visible function {:?} has no visibility origin",
+                    function.id
+                )));
+            }
+        }
         if function.parameter_count > function.bindings.len() {
             return Err(HirVerificationError::new(format!(
                 "function {:?} has more parameters than bindings",
@@ -587,8 +1279,14 @@ impl Verifier<'_> {
             state.set_assigned(index, true);
         }
         let mut next_declaration = function.parameter_count;
-        let continues =
-            self.verify_block(function, &function.body, &mut state, &mut next_declaration)?;
+        let context = function_entry_context();
+        let continues = self.verify_block(
+            function,
+            &function.body,
+            &mut state,
+            &mut next_declaration,
+            &context,
+        )?;
         if matches!(function.result, FunctionResult::Value(_)) && continues {
             return Err(HirVerificationError::new(format!(
                 "value function {:?} has a continuing exit",
@@ -611,6 +1309,7 @@ impl Verifier<'_> {
         block: &HirBlock,
         state: &mut VerifyState,
         next_declaration: &mut usize,
+        context: &HirExecutionContext,
     ) -> Result<bool, HirVerificationError> {
         self.origin(block.origin, "block")?;
         self.origin(block.closing_brace_origin, "block closing brace")?;
@@ -623,6 +1322,7 @@ impl Verifier<'_> {
                 state,
                 next_declaration,
                 &mut scope_locals,
+                context,
             )?;
             if continues && !statement_continues {
                 continues = false;
@@ -643,40 +1343,19 @@ impl Verifier<'_> {
         state: &mut VerifyState,
         next_declaration: &mut usize,
         scope_locals: &mut Vec<LocalId>,
+        context: &HirExecutionContext,
     ) -> Result<bool, HirVerificationError> {
         self.origin(statement.origin, "statement")?;
         match &statement.kind {
             HirStatementKind::Declaration { local, initializer } => {
-                let index = Self::local_index(function, *local)?;
-                let binding = &function.bindings[index];
-                if binding.kind == HirBindingKind::Parameter {
-                    return Err(HirVerificationError::new(format!(
-                        "binding {local:?} is declared as a parameter"
-                    )));
-                }
-                if index != *next_declaration {
-                    return Err(HirVerificationError::new(format!(
-                        "binding {local:?} is out of source order; expected binding index {}",
-                        *next_declaration
-                    )));
-                }
-                if let Some(initializer) = initializer {
-                    self.expression(function, initializer, state)?;
-                    if initializer.ty != binding.ty {
-                        return Err(HirVerificationError::new(format!(
-                            "binding {local:?} initializer has type {}, expected {}",
-                            initializer.ty, binding.ty
-                        )));
-                    }
-                } else if binding.kind == HirBindingKind::Const {
-                    return Err(HirVerificationError::new(format!(
-                        "const binding {local:?} has no initializer"
-                    )));
-                }
-                *next_declaration += 1;
-                state.set_active(index, true);
-                state.set_assigned(index, initializer.is_some());
-                scope_locals.push(*local);
+                self.verify_declaration(
+                    function,
+                    *local,
+                    initializer.as_ref(),
+                    state,
+                    next_declaration,
+                    scope_locals,
+                )?;
                 Ok(true)
             }
             HirStatementKind::Assignment { target, value } => {
@@ -701,8 +1380,41 @@ impl Verifier<'_> {
                 self.call(function, call, state)?;
                 Ok(true)
             }
+            HirStatementKind::External(external) => {
+                let declaration = self.output.external_op(*external).ok_or_else(|| {
+                    HirVerificationError::new(format!(
+                        "statement references invalid external operation {external:?}"
+                    ))
+                })?;
+                if declaration.origin != statement.origin {
+                    return Err(HirVerificationError::new(format!(
+                        "external statement {external:?} does not match declaration provenance"
+                    )));
+                }
+                if let HirExternalSemantic::MinecraftOperation {
+                    receiver_kind,
+                    executor_proof,
+                    ..
+                } = &declaration.semantic
+                {
+                    match context.executor() {
+                        crate::ir::semantic::ContextFact::Established { value, by }
+                            if value == receiver_kind && by == executor_proof => {}
+                        _ => {
+                            return Err(HirVerificationError::new(format!(
+                                "Minecraft operation {external:?} does not use the exact current executor proof"
+                            )));
+                        }
+                    }
+                }
+                Ok(true)
+            }
             HirStatementKind::If(conditional) => {
-                self.verify_if(function, conditional, state, next_declaration)
+                self.verify_if(function, conditional, state, next_declaration, context)
+            }
+            HirStatementKind::Run(run) => {
+                self.verify_run(function, run, statement.origin, next_declaration, context)?;
+                Ok(true)
             }
             HirStatementKind::Return(value) => {
                 match (function.result, value) {
@@ -730,12 +1442,222 @@ impl Verifier<'_> {
         }
     }
 
+    fn verify_declaration(
+        &self,
+        function: &HirFunction,
+        local: LocalId,
+        initializer: Option<&HirExpression>,
+        state: &mut VerifyState,
+        next_declaration: &mut usize,
+        scope_locals: &mut Vec<LocalId>,
+    ) -> Result<(), HirVerificationError> {
+        let index = Self::local_index(function, local)?;
+        let binding = &function.bindings[index];
+        if binding.kind == HirBindingKind::Parameter {
+            return Err(HirVerificationError::new(format!(
+                "binding {local:?} is declared as a parameter"
+            )));
+        }
+        if index != *next_declaration {
+            return Err(HirVerificationError::new(format!(
+                "binding {local:?} is out of source order; expected binding index {}",
+                *next_declaration
+            )));
+        }
+        if let Some(initializer) = initializer {
+            self.expression(function, initializer, state)?;
+            if initializer.ty != binding.ty {
+                return Err(HirVerificationError::new(format!(
+                    "binding {local:?} initializer has type {}, expected {}",
+                    initializer.ty, binding.ty
+                )));
+            }
+        } else if binding.kind == HirBindingKind::Const {
+            return Err(HirVerificationError::new(format!(
+                "const binding {local:?} has no initializer"
+            )));
+        }
+        *next_declaration += 1;
+        state.set_active(index, true);
+        state.set_assigned(index, initializer.is_some());
+        scope_locals.push(local);
+        Ok(())
+    }
+
+    fn verify_run(
+        &self,
+        function: &HirFunction,
+        run: &HirRun,
+        statement_origin: OriginId,
+        next_declaration: &mut usize,
+        input_context: &HirExecutionContext,
+    ) -> Result<(), HirVerificationError> {
+        if run.origin != statement_origin {
+            return Err(HirVerificationError::new(
+                "run statement and region provenance differ",
+            ));
+        }
+        self.origin(run.origin, "run region")?;
+        for modifier in &run.modifiers {
+            match modifier {
+                HirRunModifier::As { query, origin } => {
+                    self.origin(*origin, "run as modifier")?;
+                    self.verify_entity_query(query)?;
+                    if !query
+                        .semantic
+                        .kind()
+                        .capabilities()
+                        .contains(EntityCapability::CommandExecutor)
+                    {
+                        return Err(HirVerificationError::new(format!(
+                            "run query kind {} cannot establish an executor",
+                            query.semantic.kind()
+                        )));
+                    }
+                }
+                HirRunModifier::At { query, origin } => {
+                    self.origin(*origin, "run at modifier")?;
+                    self.verify_entity_query(query)?;
+                }
+                HirRunModifier::AtExecutor { origin, proof, .. } => {
+                    self.origin(*origin, "run at-executor modifier")?;
+                    if proof.run != run.id {
+                        return Err(HirVerificationError::new(
+                            "at_executor proof belongs to another run",
+                        ));
+                    }
+                }
+                HirRunModifier::Positioned { origin, .. }
+                | HirRunModifier::Rotated { origin, .. }
+                | HirRunModifier::In { origin, .. }
+                | HirRunModifier::Anchored { origin, .. }
+                | HirRunModifier::Align { origin, .. } => {
+                    self.origin(*origin, "spatial run modifier")?;
+                }
+            }
+        }
+        let replayed_context = apply_run_modifiers(*input_context, run.id, &run.modifiers)
+            .map_err(|error| {
+                HirVerificationError::new(format!(
+                    "run modifier at {:?} cannot establish its promised context",
+                    error.origin
+                ))
+            })?;
+        if replayed_context != run.resulting_context {
+            return Err(HirVerificationError::new(
+                "run resulting context does not match its ordered modifier transfer",
+            ));
+        }
+        self.verify_executor_capture(run, &replayed_context)?;
+        if block_contains_return(&run.body) {
+            return Err(HirVerificationError::new(
+                "run region contains a function return",
+            ));
+        }
+
+        // Run bodies are outlined into independent functions. Until explicit scalar
+        // captures exist, verify them in an empty environment so corrupted HIR cannot
+        // depend on an outer local that lowering has no way to supply.
+        let mut isolated_state = VerifyState::new(function.bindings.len());
+        let _ = self.verify_block(
+            function,
+            &run.body,
+            &mut isolated_state,
+            next_declaration,
+            &replayed_context,
+        )?;
+        Ok(())
+    }
+
+    fn verify_entity_query(&self, query: &HirEntityQuery) -> Result<(), HirVerificationError> {
+        let mut steps = query.steps.iter();
+        let Some(HirEntityQueryStep::Entities {
+            kind,
+            origin,
+            kind_origin,
+        }) = steps.next()
+        else {
+            return Err(HirVerificationError::new(
+                "entity query does not begin with exactly one entities root",
+            ));
+        };
+        self.origin(*origin, "entity query root")?;
+        self.origin(*kind_origin, "entity query kind")?;
+        let mut replayed = StaticEntityQuery::entities(*kind);
+        for step in steps {
+            match step {
+                HirEntityQueryStep::Entities { .. } => {
+                    return Err(HirVerificationError::new(
+                        "entity query contains a repeated entities root",
+                    ));
+                }
+                HirEntityQueryStep::WithTag {
+                    tag,
+                    origin,
+                    value_origin,
+                } => {
+                    self.origin(*origin, "entity query with_tag step")?;
+                    self.origin(*value_origin, "entity query tag value")?;
+                    replayed = replayed.with_tag(tag.clone());
+                }
+                HirEntityQueryStep::Limit {
+                    maximum,
+                    origin,
+                    value_origin,
+                } => {
+                    self.origin(*origin, "entity query limit step")?;
+                    self.origin(*value_origin, "entity query limit value")?;
+                    replayed = replayed.limit(maximum.get()).map_err(|error| {
+                        HirVerificationError::new(format!(
+                            "entity query contains an invalid limit step: {error}"
+                        ))
+                    })?;
+                }
+            }
+        }
+        if replayed != query.semantic {
+            return Err(HirVerificationError::new(
+                "entity query steps do not reproduce its canonical semantics",
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_executor_capture(
+        &self,
+        run: &HirRun,
+        final_context: &HirExecutionContext,
+    ) -> Result<(), HirVerificationError> {
+        match (&run.capture, final_context.executor()) {
+            (Some(capture), crate::ir::semantic::ContextFact::Established { value: kind, by })
+                if capture.ty.kind() == *kind && capture.proof == *by =>
+            {
+                self.origin(capture.name_origin, "executor capture")?;
+                Ok(())
+            }
+            (Some(_), crate::ir::semantic::ContextFact::Established { .. }) => {
+                Err(HirVerificationError::new(
+                    "executor capture kind or exact proof does not match the final run context",
+                ))
+            }
+            (
+                Some(_),
+                crate::ir::semantic::ContextFact::Unavailable
+                | crate::ir::semantic::ContextFact::Inherited,
+            ) => Err(HirVerificationError::new(
+                "run captures an executor no modifier establishes",
+            )),
+            (None, _) => Ok(()),
+        }
+    }
+
     fn verify_if(
         &self,
         function: &HirFunction,
         conditional: &HirIf,
         state: &mut VerifyState,
         next_declaration: &mut usize,
+        context: &HirExecutionContext,
     ) -> Result<bool, HirVerificationError> {
         self.origin(conditional.origin, "conditional")?;
         if conditional.arms.is_empty() {
@@ -751,14 +1673,14 @@ impl Verifier<'_> {
                     "conditional arm condition is not Bool",
                 ));
             }
-            if self.verify_block(function, &arm.body, state, next_declaration)? {
+            if self.verify_block(function, &arm.body, state, next_declaration, context)? {
                 let delta = state.newly_assigned_since(checkpoint);
                 VerifyState::merge_delta_intersection(&mut continuing_delta, &delta);
             }
             state.rollback(checkpoint);
         }
         if let Some(else_body) = &conditional.else_body {
-            if self.verify_block(function, else_body, state, next_declaration)? {
+            if self.verify_block(function, else_body, state, next_declaration, context)? {
                 let delta = state.newly_assigned_since(checkpoint);
                 VerifyState::merge_delta_intersection(&mut continuing_delta, &delta);
             }
@@ -912,6 +1834,125 @@ impl Verifier<'_> {
     }
 }
 
+fn block_contains_return(block: &HirBlock) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            HirStatementKind::Return(_) => true,
+            HirStatementKind::If(conditional) => {
+                conditional
+                    .arms
+                    .iter()
+                    .any(|arm| block_contains_return(&arm.body))
+                    || conditional
+                        .else_body
+                        .as_ref()
+                        .is_some_and(block_contains_return)
+            }
+            HirStatementKind::Run(run) => block_contains_return(&run.body),
+            HirStatementKind::Declaration { .. }
+            | HirStatementKind::Assignment { .. }
+            | HirStatementKind::Call(_)
+            | HirStatementKind::External(_) => false,
+        })
+}
+
+fn verify_run_scope_ids(block: &HirBlock, next: &mut usize) -> Result<(), HirVerificationError> {
+    for statement in &block.statements {
+        match &statement.kind {
+            HirStatementKind::Run(run) => {
+                let expected = SourceRunId::from_index(*next).ok_or_else(|| {
+                    HirVerificationError::new("run-scope identity space exhausted")
+                })?;
+                if run.id != expected {
+                    return Err(HirVerificationError::new(format!(
+                        "run scope at source index {next} has non-dense identity {:?}",
+                        run.id
+                    )));
+                }
+                *next = (*next).saturating_add(1);
+                verify_run_scope_ids(&run.body, next)?;
+            }
+            HirStatementKind::If(conditional) => {
+                for arm in &conditional.arms {
+                    verify_run_scope_ids(&arm.body, next)?;
+                }
+                if let Some(body) = &conditional.else_body {
+                    verify_run_scope_ids(body, next)?;
+                }
+            }
+            HirStatementKind::Declaration { .. }
+            | HirStatementKind::Assignment { .. }
+            | HirStatementKind::Call(_)
+            | HirStatementKind::External(_)
+            | HirStatementKind::Return(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn verify_external_operation_occurrences(
+    functions: &[HirFunction],
+    external_ops: &[HirExternalOp],
+) -> Result<(), HirVerificationError> {
+    let mut seen = vec![false; external_ops.len()];
+    for function in functions {
+        record_external_operation_occurrences(&function.body, &mut seen)?;
+    }
+    for (index, was_seen) in seen.into_iter().enumerate() {
+        if !was_seen {
+            return Err(HirVerificationError::new(format!(
+                "external operation {:?} has no HIR statement occurrence",
+                external_ops[index].id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn record_external_operation_occurrences(
+    block: &HirBlock,
+    seen: &mut [bool],
+) -> Result<(), HirVerificationError> {
+    for statement in &block.statements {
+        match &statement.kind {
+            HirStatementKind::External(external) => {
+                let occurrence = external
+                    .as_usize()
+                    .and_then(|index| seen.get_mut(index))
+                    .ok_or_else(|| {
+                        HirVerificationError::new(format!(
+                            "statement references invalid external operation {external:?}"
+                        ))
+                    })?;
+                if *occurrence {
+                    return Err(HirVerificationError::new(format!(
+                        "external operation {external:?} has multiple HIR statement occurrences"
+                    )));
+                }
+                *occurrence = true;
+            }
+            HirStatementKind::If(conditional) => {
+                for arm in &conditional.arms {
+                    record_external_operation_occurrences(&arm.body, seen)?;
+                }
+                if let Some(body) = &conditional.else_body {
+                    record_external_operation_occurrences(body, seen)?;
+                }
+            }
+            HirStatementKind::Run(run) => {
+                record_external_operation_occurrences(&run.body, seen)?;
+            }
+            HirStatementKind::Declaration { .. }
+            | HirStatementKind::Assignment { .. }
+            | HirStatementKind::Call(_)
+            | HirStatementKind::Return(_) => {}
+        }
+    }
+    Ok(())
+}
+
 struct VerifyState {
     active: Vec<bool>,
     assigned: Vec<bool>,
@@ -1001,12 +2042,18 @@ impl VerifyState {
 #[cfg(test)]
 mod tests {
     use super::{
-        HirBindingKind, HirExpressionKind, HirStatementKind, LocalId, SourceFunctionId, verify,
+        HirBindingKind, HirEntityQueryStep, HirExpressionKind, HirExternalSemantic, HirRun,
+        HirRunModifier, HirStatementKind, LocalId, SourceExternalOpId, SourceFunctionId,
+        SourceRunId, verify,
     };
     use crate::frontend::FrontendLimits;
     use crate::frontend::check::{CheckOutput, check};
     use crate::frontend::lexer::lex;
     use crate::frontend::parser::parse;
+    use crate::ir::semantic::{
+        ContextRequirement, EntityKind, ForkBound, FunctionBehavior, ObservableEffect,
+        StaticEntityQuery, TransitiveWork, WorldEffect,
+    };
     use crate::source::{OriginId, SourceContext};
 
     fn checked_text(text: &str) -> (SourceContext, CheckOutput) {
@@ -1021,6 +2068,20 @@ mod tests {
         assert_eq!(output.diagnostics(), None);
         (sources, output)
     }
+
+    fn first_run(checked: &mut super::CheckedFrontendOutput) -> &mut HirRun {
+        let HirStatementKind::Run(run) = &mut checked.module.functions[0].body.statements[0].kind
+        else {
+            unreachable!();
+        };
+        run
+    }
+
+    const RUN_SOURCE: &str = r#"export fn scoped() {
+        run.as(mc.entities(ArmorStand).limit(1)) |entity| {
+            unsafe minecraft("say scoped");
+        }
+    }"#;
 
     #[test]
     fn verifier_rejects_non_dense_function_identity() {
@@ -1108,6 +2169,493 @@ mod tests {
             error
                 .to_string()
                 .contains("invalid or unresolvable provenance")
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_corrupted_external_inventory_and_statement_links() {
+        let source = r#"fn raw() { unsafe minecraft("say valid"); }"#;
+
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut non_dense = checked.unwrap();
+        non_dense.module.external_ops[0].id = SourceExternalOpId(7);
+        assert!(
+            verify(&non_dense, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("non-dense identity")
+        );
+
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut malformed = checked.unwrap();
+        let HirExternalSemantic::UnsafeMinecraftCommand { command, .. } =
+            &mut malformed.module.external_ops[0].semantic
+        else {
+            unreachable!("fixture constructs one unsafe operation")
+        };
+        *command = "say bad\nline".into();
+        assert!(
+            verify(&malformed, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid physical shape")
+        );
+
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut dangling = checked.unwrap();
+        dangling.module.functions[0].body.statements[0].kind =
+            HirStatementKind::External(SourceExternalOpId(9));
+        assert!(
+            verify(&dangling, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid external operation")
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_duplicate_external_operation_occurrence() {
+        let (sources, output) = checked_text(r#"fn raw() { unsafe minecraft("say valid"); }"#);
+        let (checked, _) = output.into_parts();
+        let mut checked = checked.unwrap();
+        let statement = checked.module.functions[0].body.statements[0].clone();
+        checked.module.functions[0].body.statements =
+            vec![statement.clone(), statement].into_boxed_slice();
+
+        let error = verify(&checked, &sources).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("multiple HIR statement occurrences")
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_missing_external_operation_occurrence() {
+        let (sources, output) = checked_text(r#"fn raw() { unsafe minecraft("say valid"); }"#);
+        let (checked, _) = output.into_parts();
+        let mut checked = checked.unwrap();
+        checked.module.functions[0].body.statements = Box::new([]);
+
+        let error = verify(&checked, &sources).unwrap_err();
+        assert!(error.to_string().contains("no HIR statement occurrence"));
+    }
+
+    #[test]
+    fn verifier_rejects_implicit_outer_local_capture_in_run_body() {
+        let source = r"
+            export fn scoped() {
+                var outer: Int32 = 1;
+                run.as(mc.entities(ArmorStand).limit(1)) {
+                    var inner: Int32 = 2;
+                }
+            }
+        ";
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut checked = checked.unwrap();
+        let HirStatementKind::Run(run) = &mut checked.module.functions[0].body.statements[1].kind
+        else {
+            unreachable!();
+        };
+        let HirStatementKind::Declaration {
+            initializer: Some(initializer),
+            ..
+        } = &mut run.body.statements[0].kind
+        else {
+            unreachable!();
+        };
+        initializer.kind = HirExpressionKind::Local(LocalId(0));
+
+        let error = verify(&checked, &sources).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("referenced outside its active scope")
+        );
+    }
+
+    #[test]
+    fn verifier_rechecks_run_identity_and_ordered_context_transfer() {
+        let (sources, output) = checked_text(RUN_SOURCE);
+        let (checked, _) = output.into_parts();
+        let mut non_dense = checked.unwrap();
+        first_run(&mut non_dense).id = SourceRunId(7);
+        assert!(
+            verify(&non_dense, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("non-dense identity")
+        );
+
+        let repeated_source = r"export fn scoped() {
+            run.as(mc.entities(ArmorStand).limit(1))
+                .as(mc.entities(ArmorStand).limit(1)) |entity| {}
+        }";
+        let (sources, output) = checked_text(repeated_source);
+        let (checked, _) = output.into_parts();
+        let mut repeated = checked.unwrap();
+        let run = first_run(&mut repeated);
+        assert_eq!(run.modifiers.len(), 2);
+        let established = run.resulting_context.executor().established().unwrap();
+        assert_eq!(established.1.modifier_index, 1);
+
+        run.resulting_context = crate::ir::semantic::ExecutionContext::function_entry();
+        assert!(
+            verify(&repeated, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("ordered modifier transfer")
+        );
+    }
+
+    #[test]
+    fn verifier_rechecks_nested_identity_and_inherited_context_provenance() {
+        let source = r"export fn nested() {
+            run.as(mc.entities(ArmorStand).limit(1)) |outer| {
+                run |inherited| {}
+            }
+        }";
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut non_dense = checked.unwrap();
+        let outer = first_run(&mut non_dense);
+        let HirStatementKind::Run(inner) = &mut outer.body.statements[0].kind else {
+            unreachable!()
+        };
+        inner.id = SourceRunId(0);
+        assert!(
+            verify(&non_dense, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("non-dense identity")
+        );
+
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut wrong_context = checked.unwrap();
+        let outer = first_run(&mut wrong_context);
+        let HirStatementKind::Run(inner) = &mut outer.body.statements[0].kind else {
+            unreachable!()
+        };
+        inner.resulting_context = crate::ir::semantic::ExecutionContext::function_entry();
+        assert!(
+            verify(&wrong_context, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("ordered modifier transfer")
+        );
+    }
+
+    #[test]
+    fn verifier_replays_query_steps_and_checks_their_provenance() {
+        let (sources, output) = checked_text(RUN_SOURCE);
+        let (checked, _) = output.into_parts();
+        let mut reordered = checked.unwrap();
+        let run = first_run(&mut reordered);
+        let HirRunModifier::As { query, .. } = &mut run.modifiers[0] else {
+            panic!("expected as")
+        };
+        query.steps.swap(0, 1);
+        assert!(
+            verify(&reordered, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("does not begin with exactly one entities root")
+        );
+
+        let (sources, output) = checked_text(RUN_SOURCE);
+        let (checked, _) = output.into_parts();
+        let mut mismatched = checked.unwrap();
+        let run = first_run(&mut mismatched);
+        let HirRunModifier::As { query, .. } = &mut run.modifiers[0] else {
+            panic!("expected as")
+        };
+        query.semantic = StaticEntityQuery::entities(EntityKind::ArmorStand);
+        assert!(
+            verify(&mismatched, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("do not reproduce its canonical semantics")
+        );
+
+        let (sources, output) = checked_text(RUN_SOURCE);
+        let (checked, _) = output.into_parts();
+        let mut foreign_origin = checked.unwrap();
+        let run = first_run(&mut foreign_origin);
+        let HirRunModifier::As { query, .. } = &mut run.modifiers[0] else {
+            panic!("expected as")
+        };
+        let HirEntityQueryStep::Limit { value_origin, .. } = &mut query.steps[1] else {
+            unreachable!();
+        };
+        *value_origin = OriginId::UNKNOWN;
+        assert!(
+            verify(&foreign_origin, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid or unresolvable provenance")
+        );
+    }
+
+    #[test]
+    fn verifier_rechecks_executor_capture_proof_and_void_region() {
+        let (sources, output) = checked_text(RUN_SOURCE);
+        let (checked, _) = output.into_parts();
+        let mut missing_executor = checked.unwrap();
+        let run = first_run(&mut missing_executor);
+        run.modifiers = Box::new([]);
+        run.resulting_context = crate::ir::semantic::ExecutionContext::function_entry();
+        assert!(
+            verify(&missing_executor, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("no modifier establishes")
+        );
+
+        let (sources, output) = checked_text(RUN_SOURCE);
+        let (checked, _) = output.into_parts();
+        let mut stale_proof = checked.unwrap();
+        let capture = first_run(&mut stale_proof).capture.as_mut().unwrap();
+        capture.proof.modifier_index = usize::MAX;
+        assert!(
+            verify(&stale_proof, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("exact proof")
+        );
+
+        let (sources, output) = checked_text(RUN_SOURCE);
+        let (checked, _) = output.into_parts();
+        let mut returning = checked.unwrap();
+        first_run(&mut returning).body.statements[0].kind = HirStatementKind::Return(None);
+        assert!(
+            verify(&returning, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("contains a function return")
+        );
+    }
+
+    #[test]
+    fn checked_output_exposes_transitive_behavior_summaries() {
+        let source = r#"
+            fn empty() {}
+            fn scalar() { var value: Int32 = 1; }
+            fn raw() { unsafe minecraft("say raw"); }
+            fn caller() { raw(); }
+            fn first() { second(); }
+            fn second() { first(); }
+        "#;
+        let (_sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let checked = checked.unwrap();
+
+        assert_eq!(
+            checked
+                .function_behavior(SourceFunctionId::from_index(0).unwrap())
+                .unwrap()
+                .transitive_work(),
+            TransitiveWork::Zero
+        );
+        assert_eq!(
+            checked
+                .function_behavior(SourceFunctionId::from_index(1).unwrap())
+                .unwrap()
+                .transitive_work(),
+            TransitiveWork::Finite
+        );
+        for index in [2, 3] {
+            let behavior = checked
+                .function_behavior(SourceFunctionId::from_index(index).unwrap())
+                .unwrap();
+            assert_eq!(behavior.world_effect(), WorldEffect::Unknown);
+            assert_eq!(behavior.observable_effect(), ObservableEffect::Unknown);
+            assert!(behavior.contains_unsafe_unknown());
+        }
+        for index in [4, 5] {
+            assert_eq!(
+                checked
+                    .function_behavior(SourceFunctionId::from_index(index).unwrap())
+                    .unwrap()
+                    .transitive_work(),
+                TransitiveWork::NoFiniteUpperBound
+            );
+        }
+    }
+
+    #[test]
+    fn run_behavior_retains_query_context_and_fork_facts() {
+        let source = r"
+            fn scoped() {
+                run.as(mc.entities(ArmorStand).limit(1)) {}
+            }
+        ";
+        let (_sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let behavior = checked
+            .unwrap()
+            .function_behavior(SourceFunctionId::from_index(0).unwrap())
+            .unwrap();
+        let context = behavior.required_ambient_context();
+
+        assert_eq!(context.executor(), ContextRequirement::None);
+        assert_eq!(context.position(), ContextRequirement::Required(()));
+        assert_eq!(context.dimension(), ContextRequirement::Required(()));
+        assert_eq!(context.rotation(), ContextRequirement::None);
+        assert_eq!(context.anchor(), ContextRequirement::None);
+        assert_eq!(behavior.world_effect(), WorldEffect::Read);
+        assert_eq!(behavior.observable_effect(), ObservableEffect::None);
+        assert_eq!(behavior.fork_bound(), ForkBound::finite(1).unwrap());
+        assert_eq!(behavior.transitive_work(), TransitiveWork::Finite);
+    }
+
+    #[test]
+    fn run_behavior_composes_prefixes_without_hiding_unbounded_queries() {
+        let source = r"
+            fn bounded() {
+                run.as(mc.entities(ArmorStand).limit(2))
+                    .as(mc.entities(ArmorStand).limit(3)) {}
+            }
+            fn unbounded() {
+                run.as(mc.entities(ArmorStand)) {}
+            }
+            fn nested() {
+                run.as(mc.entities(ArmorStand).limit(2)) {
+                    run.as(mc.entities(ArmorStand).limit(3)) {}
+                }
+            }
+        ";
+        let (_sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let checked = checked.unwrap();
+
+        let bounded = checked
+            .function_behavior(SourceFunctionId::from_index(0).unwrap())
+            .unwrap();
+        assert_eq!(bounded.fork_bound(), ForkBound::finite(6).unwrap());
+        assert_eq!(bounded.transitive_work(), TransitiveWork::Finite);
+
+        let unbounded = checked
+            .function_behavior(SourceFunctionId::from_index(1).unwrap())
+            .unwrap();
+        assert_eq!(unbounded.fork_bound(), ForkBound::NoFiniteUpperBound);
+        assert_eq!(
+            unbounded.transitive_work(),
+            TransitiveWork::NoFiniteUpperBound
+        );
+
+        let nested = checked
+            .function_behavior(SourceFunctionId::from_index(2).unwrap())
+            .unwrap();
+        assert_eq!(nested.fork_bound(), ForkBound::finite(3).unwrap());
+    }
+
+    #[test]
+    fn outer_as_discharges_unsafe_executor_need_through_identity_run() {
+        let source = r#"
+            fn scoped() {
+                run.as(mc.entities(ArmorStand).limit(1)) {
+                    run {
+                        unsafe minecraft("say scoped");
+                    }
+                }
+            }
+            fn ambient() {
+                run {
+                    unsafe minecraft("say ambient");
+                }
+            }
+        "#;
+        let (_sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let checked = checked.unwrap();
+
+        let scoped = checked
+            .function_behavior(SourceFunctionId::from_index(0).unwrap())
+            .unwrap();
+        assert_eq!(
+            scoped.required_ambient_context().executor(),
+            ContextRequirement::None
+        );
+        assert!(scoped.contains_unsafe_unknown());
+        assert_eq!(scoped.observable_effect(), ObservableEffect::Unknown);
+
+        let ambient = checked
+            .function_behavior(SourceFunctionId::from_index(1).unwrap())
+            .unwrap();
+        assert_eq!(
+            ambient.required_ambient_context().executor(),
+            ContextRequirement::Unknown
+        );
+        assert!(ambient.contains_unsafe_unknown());
+        assert_eq!(ambient.observable_effect(), ObservableEffect::Unknown);
+    }
+
+    #[test]
+    fn unreachable_unsafe_suffix_does_not_contaminate_behavior() {
+        let (_sources, output) = checked_text(
+            r#"fn stopped() {
+                return;
+                unsafe minecraft("say unreachable");
+            }"#,
+        );
+        let (checked, _) = output.into_parts();
+        let behavior = checked
+            .unwrap()
+            .function_behavior(SourceFunctionId::from_index(0).unwrap())
+            .unwrap();
+
+        assert!(!behavior.contains_unsafe_unknown());
+        assert_eq!(behavior.world_effect(), WorldEffect::None);
+        assert_eq!(behavior.observable_effect(), ObservableEffect::None);
+        assert_ne!(behavior.transitive_work(), TransitiveWork::Unknown);
+    }
+
+    #[test]
+    fn verifier_recomputes_the_dense_behavior_table() {
+        let (sources, output) = checked_text("fn valid() { var value: Int32 = 1; }");
+        let (checked, _) = output.into_parts();
+        let mut truncated = checked.unwrap();
+        truncated.module.behaviors = Box::new([]);
+        assert!(
+            verify(&truncated, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("behavior summaries")
+        );
+
+        let (sources, output) = checked_text("fn valid() { var value: Int32 = 1; }");
+        let (checked, _) = output.into_parts();
+        let mut corrupted = checked.unwrap();
+        corrupted.module.behaviors[0] = FunctionBehavior::NONE;
+        assert!(
+            verify(&corrupted, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match HIR inference")
+        );
+
+        let (sources, output) = checked_text(r#"fn raw() { unsafe minecraft("say raw"); }"#);
+        let (checked, _) = output.into_parts();
+        let mut corrupted = checked.unwrap();
+        let inferred = corrupted.module.behaviors[0];
+        corrupted.module.behaviors[0] = FunctionBehavior::new(
+            inferred.required_ambient_context(),
+            inferred.world_effect(),
+            ObservableEffect::None,
+            inferred.fork_bound(),
+            inferred.transitive_work(),
+            inferred.contains_unsafe_unknown(),
+        );
+        assert!(
+            verify(&corrupted, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match HIR inference")
         );
     }
 }

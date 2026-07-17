@@ -1,5 +1,5 @@
 use crate::entity::EntityId;
-use crate::ir::core::{BlockId, CoreType, FunctionId, ValueId};
+use crate::ir::core::{BlockId, CoreType, FunctionId, InstId, ValueId};
 use crate::ir::minecraft::{
     FakeScoreHolder, FunctionResourceId, NbtPath, NbtPathKey, NbtPathSegment, PackResourcePath,
     ResourcePath, StorageId, StoragePath,
@@ -44,6 +44,18 @@ impl<'a> GeneratedNames<'a> {
         ))
     }
 
+    pub(crate) fn external_helper_function(
+        self,
+        function: FunctionId,
+        instruction: InstId,
+    ) -> FunctionResourceId {
+        self.function_resource(format!(
+            "__mdl/f{}/x{}",
+            function.index(),
+            instruction.index()
+        ))
+    }
+
     pub(crate) fn init_sentinel(self) -> StoragePath {
         let objective_hex = encode_hex(self.options.register_objective().as_str().as_bytes());
         let storage = StorageId::new(
@@ -55,6 +67,50 @@ impl<'a> GeneratedNames<'a> {
             NbtPathKey::new("initialized").expect("generated initialization NBT key must be valid"),
         );
         StoragePath::new(storage, NbtPath::new(initialized, vec![]))
+    }
+
+    pub(crate) fn activation_frames_for(
+        namespace: &crate::ir::minecraft::PackNamespace,
+    ) -> StoragePath {
+        let storage = StorageId::new(
+            namespace.as_namespace().clone(),
+            ResourcePath::new("__mdl/runtime/v0")
+                .expect("generated activation storage path must be valid"),
+        );
+        StoragePath::new(
+            storage,
+            NbtPath::new(
+                NbtPathSegment::Key(
+                    NbtPathKey::new("frames").expect("static activation key is valid"),
+                ),
+                vec![],
+            ),
+        )
+    }
+
+    pub(crate) fn activation_frame_for(base: &StoragePath) -> StoragePath {
+        let mut segments = base.path().segments().to_vec();
+        segments.push(NbtPathSegment::Index(-1));
+        StoragePath::new(
+            base.storage().clone(),
+            NbtPath::from_segments(segments).expect("activation frame path is nonempty"),
+        )
+    }
+
+    pub(crate) fn activation_frame_spill_for(
+        base: &StoragePath,
+        storage_ordinal: u32,
+    ) -> StoragePath {
+        let mut segments = base.path().segments().to_vec();
+        segments.push(NbtPathSegment::Index(-1));
+        segments.push(NbtPathSegment::Key(
+            NbtPathKey::new(&format!("s{storage_ordinal}"))
+                .expect("generated activation spill key must be valid"),
+        ));
+        StoragePath::new(
+            base.storage().clone(),
+            NbtPath::from_segments(segments).expect("activation path is nonempty"),
+        )
     }
 
     pub(crate) fn value_holder(function: FunctionId, value: ValueId) -> FakeScoreHolder {

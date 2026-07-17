@@ -1,6 +1,222 @@
 lowering-report V26_2 mdl mdl.reg homes=36 target-functions=17
-execution activation=SingleContextNonReentrant command-limits=CallerBoundedToTarget { max_command_sequence_length: 65536, max_command_forks: 65536 }
+execution activation=SynchronousSerial depth=Static command-limits=CommandLimitContract { configured_max_command_sequence_length: 65536, configured_max_command_forks: 65536, target_default_max_command_sequence_length: 65536, target_default_max_command_forks: 65536, derived_minimum_max_command_forks: 0 }
 pack-abi load=0 init-try-create=1 sentinel=StoragePath { storage: StorageId(ResourceLocation { namespace: Namespace("mdl"), path: ResourcePath("__mdl/init/v0/6d646c2e726567") }), path: NbtPath { segments: [Key(NbtPathKey(NbtKey("initialized")))] } }
+physical-plan policy=None
+physical-storage 0 function=0 class=ScoreBool binding=AssignedScore { home: AssignedHomeId(0), role: PinnedParameter { parameter_index: 0, value: ValueId(0) }, local_ordinal: 0 }
+physical-storage 1 function=0 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(1), role: PinnedParameter { parameter_index: 1, value: ValueId(1) }, local_ordinal: 1 }
+physical-storage 2 function=0 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(2), role: PinnedParameter { parameter_index: 2, value: ValueId(2) }, local_ordinal: 2 }
+physical-storage 3 function=0 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(3), role: LegacyValue { value: ValueId(3) }, local_ordinal: 3 }
+physical-storage 4 function=0 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(4), role: PinnedResult { result_index: 0 }, local_ordinal: 4 }
+physical-storage 5 function=1 class=ScoreBool binding=AssignedScore { home: AssignedHomeId(0), role: PinnedParameter { parameter_index: 0, value: ValueId(0) }, local_ordinal: 0 }
+physical-storage 6 function=1 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(1), role: PinnedParameter { parameter_index: 1, value: ValueId(1) }, local_ordinal: 1 }
+physical-storage 7 function=1 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(2), role: PinnedParameter { parameter_index: 2, value: ValueId(2) }, local_ordinal: 2 }
+physical-storage 8 function=1 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(3), role: LegacyValue { value: ValueId(3) }, local_ordinal: 3 }
+physical-storage 9 function=1 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(4), role: PinnedResult { result_index: 0 }, local_ordinal: 4 }
+physical-storage 10 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(0), role: PinnedParameter { parameter_index: 0, value: ValueId(0) }, local_ordinal: 0 }
+physical-storage 11 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(1), role: PinnedParameter { parameter_index: 1, value: ValueId(1) }, local_ordinal: 1 }
+physical-storage 12 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(2), role: LegacyValue { value: ValueId(2) }, local_ordinal: 2 }
+physical-storage 13 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(3), role: LegacyValue { value: ValueId(3) }, local_ordinal: 3 }
+physical-storage 14 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(4), role: LegacyValue { value: ValueId(5) }, local_ordinal: 4 }
+physical-storage 15 function=2 class=ScoreBool binding=AssignedScore { home: AssignedHomeId(5), role: LegacyValue { value: ValueId(6) }, local_ordinal: 5 }
+physical-storage 16 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(6), role: LegacyValue { value: ValueId(7) }, local_ordinal: 6 }
+physical-storage 17 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(7), role: LegacyValue { value: ValueId(8) }, local_ordinal: 7 }
+physical-storage 18 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(8), role: LegacyValue { value: ValueId(9) }, local_ordinal: 8 }
+physical-storage 19 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(9), role: LegacyValue { value: ValueId(4) }, local_ordinal: 9 }
+physical-storage 20 function=2 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(10), role: PinnedResult { result_index: 0 }, local_ordinal: 10 }
+physical-storage 21 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(0), role: PinnedParameter { parameter_index: 0, value: ValueId(0) }, local_ordinal: 0 }
+physical-storage 22 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(1), role: PinnedParameter { parameter_index: 1, value: ValueId(1) }, local_ordinal: 1 }
+physical-storage 23 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(2), role: PinnedParameter { parameter_index: 2, value: ValueId(2) }, local_ordinal: 2 }
+physical-storage 24 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(3), role: LegacyValue { value: ValueId(3) }, local_ordinal: 3 }
+physical-storage 25 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(4), role: LegacyValue { value: ValueId(4) }, local_ordinal: 4 }
+physical-storage 26 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(5), role: LegacyValue { value: ValueId(5) }, local_ordinal: 5 }
+physical-storage 27 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(6), role: LegacyValue { value: ValueId(8) }, local_ordinal: 6 }
+physical-storage 28 function=3 class=ScoreBool binding=AssignedScore { home: AssignedHomeId(7), role: LegacyValue { value: ValueId(9) }, local_ordinal: 7 }
+physical-storage 29 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(8), role: LegacyValue { value: ValueId(10) }, local_ordinal: 8 }
+physical-storage 30 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(9), role: LegacyValue { value: ValueId(11) }, local_ordinal: 9 }
+physical-storage 31 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(10), role: LegacyValue { value: ValueId(6) }, local_ordinal: 10 }
+physical-storage 32 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(11), role: LegacyValue { value: ValueId(7) }, local_ordinal: 11 }
+physical-storage 33 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(12), role: PinnedResult { result_index: 0 }, local_ordinal: 12 }
+physical-storage 34 function=3 class=ScoreI32 binding=AssignedScore { home: AssignedHomeId(13), role: PinnedResult { result_index: 1 }, local_ordinal: 13 }
+realization 0 function=0 value=0 storage=0 type=Bool definition=FunctionParameter { parameter_index: 0 } live=Sparse { segment_start: 0, segment_count: 1 } origin=OriginId(0)
+realization 1 function=0 value=1 storage=1 type=I32 definition=FunctionParameter { parameter_index: 1 } live=Sparse { segment_start: 1, segment_count: 2 } origin=OriginId(0)
+realization 2 function=0 value=2 storage=2 type=I32 definition=FunctionParameter { parameter_index: 2 } live=Sparse { segment_start: 3, segment_count: 2 } origin=OriginId(0)
+realization 3 function=0 value=3 storage=3 type=I32 definition=BlockParameter { block: BlockId(3), parameter_index: 0 } live=Sparse { segment_start: 5, segment_count: 1 } origin=OriginId(0)
+realization 4 function=1 value=0 storage=5 type=Bool definition=FunctionParameter { parameter_index: 0 } live=Sparse { segment_start: 6, segment_count: 1 } origin=OriginId(0)
+realization 5 function=1 value=1 storage=6 type=I32 definition=FunctionParameter { parameter_index: 1 } live=Sparse { segment_start: 7, segment_count: 1 } origin=OriginId(0)
+realization 6 function=1 value=2 storage=7 type=I32 definition=FunctionParameter { parameter_index: 2 } live=Sparse { segment_start: 8, segment_count: 1 } origin=OriginId(0)
+realization 7 function=1 value=3 storage=8 type=I32 definition=InstructionResult { instruction: InstId(0), result_index: 0 } live=Sparse { segment_start: 9, segment_count: 1 } origin=OriginId(0)
+realization 8 function=2 value=0 storage=10 type=I32 definition=FunctionParameter { parameter_index: 0 } live=Sparse { segment_start: 10, segment_count: 1 } origin=OriginId(0)
+realization 9 function=2 value=1 storage=11 type=I32 definition=FunctionParameter { parameter_index: 1 } live=Sparse { segment_start: 11, segment_count: 1 } origin=OriginId(0)
+realization 10 function=2 value=2 storage=12 type=I32 definition=BlockParameter { block: BlockId(1), parameter_index: 0 } live=Sparse { segment_start: 12, segment_count: 2 } origin=OriginId(0)
+realization 11 function=2 value=3 storage=13 type=I32 definition=BlockParameter { block: BlockId(1), parameter_index: 1 } live=Sparse { segment_start: 14, segment_count: 2 } origin=OriginId(0)
+realization 12 function=2 value=5 storage=14 type=I32 definition=InstructionResult { instruction: InstId(0), result_index: 0 } live=Sparse { segment_start: 16, segment_count: 1 } origin=OriginId(0)
+realization 13 function=2 value=6 storage=15 type=Bool definition=InstructionResult { instruction: InstId(1), result_index: 0 } live=Sparse { segment_start: 17, segment_count: 1 } origin=OriginId(0)
+realization 14 function=2 value=7 storage=16 type=I32 definition=InstructionResult { instruction: InstId(2), result_index: 0 } live=Sparse { segment_start: 18, segment_count: 1 } origin=OriginId(0)
+realization 15 function=2 value=8 storage=17 type=I32 definition=InstructionResult { instruction: InstId(3), result_index: 0 } live=Sparse { segment_start: 19, segment_count: 1 } origin=OriginId(0)
+realization 16 function=2 value=9 storage=18 type=I32 definition=InstructionResult { instruction: InstId(4), result_index: 0 } live=Sparse { segment_start: 20, segment_count: 1 } origin=OriginId(0)
+realization 17 function=2 value=4 storage=19 type=I32 definition=BlockParameter { block: BlockId(3), parameter_index: 0 } live=Sparse { segment_start: 21, segment_count: 1 } origin=OriginId(0)
+realization 18 function=3 value=0 storage=21 type=I32 definition=FunctionParameter { parameter_index: 0 } live=Sparse { segment_start: 22, segment_count: 1 } origin=OriginId(0)
+realization 19 function=3 value=1 storage=22 type=I32 definition=FunctionParameter { parameter_index: 1 } live=Sparse { segment_start: 23, segment_count: 1 } origin=OriginId(0)
+realization 20 function=3 value=2 storage=23 type=I32 definition=FunctionParameter { parameter_index: 2 } live=Sparse { segment_start: 24, segment_count: 1 } origin=OriginId(0)
+realization 21 function=3 value=3 storage=24 type=I32 definition=BlockParameter { block: BlockId(1), parameter_index: 0 } live=Sparse { segment_start: 25, segment_count: 2 } origin=OriginId(0)
+realization 22 function=3 value=4 storage=25 type=I32 definition=BlockParameter { block: BlockId(1), parameter_index: 1 } live=Sparse { segment_start: 27, segment_count: 2 } origin=OriginId(0)
+realization 23 function=3 value=5 storage=26 type=I32 definition=BlockParameter { block: BlockId(1), parameter_index: 2 } live=Sparse { segment_start: 29, segment_count: 2 } origin=OriginId(0)
+realization 24 function=3 value=8 storage=27 type=I32 definition=InstructionResult { instruction: InstId(0), result_index: 0 } live=Sparse { segment_start: 31, segment_count: 1 } origin=OriginId(0)
+realization 25 function=3 value=9 storage=28 type=Bool definition=InstructionResult { instruction: InstId(1), result_index: 0 } live=Sparse { segment_start: 32, segment_count: 1 } origin=OriginId(0)
+realization 26 function=3 value=10 storage=29 type=I32 definition=InstructionResult { instruction: InstId(2), result_index: 0 } live=Sparse { segment_start: 33, segment_count: 1 } origin=OriginId(0)
+realization 27 function=3 value=11 storage=30 type=I32 definition=InstructionResult { instruction: InstId(3), result_index: 0 } live=Sparse { segment_start: 34, segment_count: 1 } origin=OriginId(0)
+realization 28 function=3 value=6 storage=31 type=I32 definition=BlockParameter { block: BlockId(3), parameter_index: 0 } live=Sparse { segment_start: 35, segment_count: 1 } origin=OriginId(0)
+realization 29 function=3 value=7 storage=32 type=I32 definition=BlockParameter { block: BlockId(3), parameter_index: 1 } live=Sparse { segment_start: 36, segment_count: 1 } origin=OriginId(0)
+physical-live-segment 0 block=0 from=0 to=2
+physical-live-segment 1 block=0 from=0 to=2
+physical-live-segment 2 block=1 from=0 to=2
+physical-live-segment 3 block=0 from=0 to=2
+physical-live-segment 4 block=2 from=0 to=2
+physical-live-segment 5 block=3 from=0 to=2
+physical-live-segment 6 block=0 from=0 to=2
+physical-live-segment 7 block=0 from=0 to=2
+physical-live-segment 8 block=0 from=0 to=2
+physical-live-segment 9 block=0 from=2 to=4
+physical-live-segment 10 block=0 from=0 to=2
+physical-live-segment 11 block=0 from=0 to=2
+physical-live-segment 12 block=1 from=0 to=6
+physical-live-segment 13 block=2 from=0 to=6
+physical-live-segment 14 block=1 from=0 to=6
+physical-live-segment 15 block=2 from=0 to=6
+physical-live-segment 16 block=1 from=2 to=4
+physical-live-segment 17 block=1 from=4 to=6
+physical-live-segment 18 block=2 from=2 to=4
+physical-live-segment 19 block=2 from=4 to=8
+physical-live-segment 20 block=2 from=6 to=8
+physical-live-segment 21 block=3 from=0 to=2
+physical-live-segment 22 block=0 from=0 to=2
+physical-live-segment 23 block=0 from=0 to=2
+physical-live-segment 24 block=0 from=0 to=2
+physical-live-segment 25 block=1 from=0 to=6
+physical-live-segment 26 block=2 from=0 to=4
+physical-live-segment 27 block=1 from=0 to=6
+physical-live-segment 28 block=2 from=0 to=6
+physical-live-segment 29 block=1 from=0 to=6
+physical-live-segment 30 block=2 from=0 to=6
+physical-live-segment 31 block=1 from=2 to=4
+physical-live-segment 32 block=1 from=4 to=6
+physical-live-segment 33 block=2 from=2 to=4
+physical-live-segment 34 block=2 from=4 to=6
+physical-live-segment 35 block=3 from=0 to=2
+physical-live-segment 36 block=3 from=0 to=2
+physical-use 0 function=0 value=0 site=BranchCondition { block: BlockId(0) } accepted=[ScoreBool] timing=BeforeWrites realization=0 destination=None origin=OriginId(0)
+physical-use 1 function=0 value=1 site=EdgeArgument { block: BlockId(1), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=1 destination=Some(3) origin=OriginId(0)
+physical-use 2 function=0 value=2 site=EdgeArgument { block: BlockId(2), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=2 destination=Some(3) origin=OriginId(0)
+physical-use 3 function=0 value=3 site=ReturnValue { block: BlockId(3), result_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=3 destination=Some(4) origin=OriginId(0)
+physical-use 4 function=0 value=0 site=FunctionParameter { parameter_index: 0 } accepted=[ScoreBool] timing=DefinesAtOccurrence realization=0 destination=Some(0) origin=OriginId(0)
+physical-use 5 function=0 value=1 site=FunctionParameter { parameter_index: 1 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=1 destination=Some(1) origin=OriginId(0)
+physical-use 6 function=0 value=2 site=FunctionParameter { parameter_index: 2 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=2 destination=Some(2) origin=OriginId(0)
+physical-use 7 function=1 value=0 site=CallArgument { instruction: InstId(0), argument_index: 0 } accepted=[ScoreBool] timing=BeforeWrites realization=4 destination=Some(5) origin=OriginId(0)
+physical-use 8 function=1 value=1 site=CallArgument { instruction: InstId(0), argument_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=5 destination=Some(6) origin=OriginId(0)
+physical-use 9 function=1 value=2 site=CallArgument { instruction: InstId(0), argument_index: 2 } accepted=[ScoreI32] timing=BeforeWrites realization=6 destination=Some(7) origin=OriginId(0)
+physical-use 10 function=1 value=3 site=CallResult { instruction: InstId(0), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=7 destination=Some(8) origin=OriginId(0)
+physical-use 11 function=1 value=3 site=ReturnValue { block: BlockId(0), result_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=7 destination=Some(9) origin=OriginId(0)
+physical-use 12 function=1 value=0 site=FunctionParameter { parameter_index: 0 } accepted=[ScoreBool] timing=DefinesAtOccurrence realization=4 destination=Some(5) origin=OriginId(0)
+physical-use 13 function=1 value=1 site=FunctionParameter { parameter_index: 1 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=5 destination=Some(6) origin=OriginId(0)
+physical-use 14 function=1 value=2 site=FunctionParameter { parameter_index: 2 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=6 destination=Some(7) origin=OriginId(0)
+physical-use 15 function=2 value=5 site=InstructionResult { instruction: InstId(0), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=12 destination=Some(14) origin=OriginId(0)
+physical-use 16 function=2 value=2 site=InstructionOperand { instruction: InstId(1), operand_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=10 destination=Some(12) origin=OriginId(0)
+physical-use 17 function=2 value=5 site=InstructionOperand { instruction: InstId(1), operand_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=12 destination=Some(14) origin=OriginId(0)
+physical-use 18 function=2 value=6 site=InstructionResult { instruction: InstId(1), result_index: 0 } accepted=[ScoreBool] timing=DefinesAtOccurrence realization=13 destination=Some(15) origin=OriginId(0)
+physical-use 19 function=2 value=7 site=InstructionResult { instruction: InstId(2), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=14 destination=Some(16) origin=OriginId(0)
+physical-use 20 function=2 value=2 site=InstructionOperand { instruction: InstId(3), operand_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=10 destination=Some(12) origin=OriginId(0)
+physical-use 21 function=2 value=7 site=InstructionOperand { instruction: InstId(3), operand_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=14 destination=Some(16) origin=OriginId(0)
+physical-use 22 function=2 value=8 site=InstructionResult { instruction: InstId(3), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=15 destination=Some(17) origin=OriginId(0)
+physical-use 23 function=2 value=3 site=InstructionOperand { instruction: InstId(4), operand_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=11 destination=Some(13) origin=OriginId(0)
+physical-use 24 function=2 value=2 site=InstructionOperand { instruction: InstId(4), operand_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=10 destination=Some(12) origin=OriginId(0)
+physical-use 25 function=2 value=9 site=InstructionResult { instruction: InstId(4), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=16 destination=Some(18) origin=OriginId(0)
+physical-use 26 function=2 value=0 site=EdgeArgument { block: BlockId(0), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=8 destination=Some(12) origin=OriginId(0)
+physical-use 27 function=2 value=1 site=EdgeArgument { block: BlockId(0), successor_index: 0, argument_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=9 destination=Some(13) origin=OriginId(0)
+physical-use 28 function=2 value=6 site=BranchCondition { block: BlockId(1) } accepted=[ScoreBool] timing=BeforeWrites realization=13 destination=None origin=OriginId(0)
+physical-use 29 function=2 value=3 site=EdgeArgument { block: BlockId(1), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=11 destination=Some(19) origin=OriginId(0)
+physical-use 30 function=2 value=8 site=EdgeArgument { block: BlockId(2), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=15 destination=Some(12) origin=OriginId(0)
+physical-use 31 function=2 value=9 site=EdgeArgument { block: BlockId(2), successor_index: 0, argument_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=16 destination=Some(13) origin=OriginId(0)
+physical-use 32 function=2 value=4 site=ReturnValue { block: BlockId(3), result_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=17 destination=Some(20) origin=OriginId(0)
+physical-use 33 function=2 value=0 site=FunctionParameter { parameter_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=8 destination=Some(10) origin=OriginId(0)
+physical-use 34 function=2 value=1 site=FunctionParameter { parameter_index: 1 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=9 destination=Some(11) origin=OriginId(0)
+physical-use 35 function=3 value=8 site=InstructionResult { instruction: InstId(0), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=24 destination=Some(27) origin=OriginId(0)
+physical-use 36 function=3 value=3 site=InstructionOperand { instruction: InstId(1), operand_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=21 destination=Some(24) origin=OriginId(0)
+physical-use 37 function=3 value=8 site=InstructionOperand { instruction: InstId(1), operand_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=24 destination=Some(27) origin=OriginId(0)
+physical-use 38 function=3 value=9 site=InstructionResult { instruction: InstId(1), result_index: 0 } accepted=[ScoreBool] timing=DefinesAtOccurrence realization=25 destination=Some(28) origin=OriginId(0)
+physical-use 39 function=3 value=10 site=InstructionResult { instruction: InstId(2), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=26 destination=Some(29) origin=OriginId(0)
+physical-use 40 function=3 value=3 site=InstructionOperand { instruction: InstId(3), operand_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=21 destination=Some(24) origin=OriginId(0)
+physical-use 41 function=3 value=10 site=InstructionOperand { instruction: InstId(3), operand_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=26 destination=Some(29) origin=OriginId(0)
+physical-use 42 function=3 value=11 site=InstructionResult { instruction: InstId(3), result_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=27 destination=Some(30) origin=OriginId(0)
+physical-use 43 function=3 value=0 site=EdgeArgument { block: BlockId(0), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=18 destination=Some(24) origin=OriginId(0)
+physical-use 44 function=3 value=1 site=EdgeArgument { block: BlockId(0), successor_index: 0, argument_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=19 destination=Some(25) origin=OriginId(0)
+physical-use 45 function=3 value=2 site=EdgeArgument { block: BlockId(0), successor_index: 0, argument_index: 2 } accepted=[ScoreI32] timing=BeforeWrites realization=20 destination=Some(26) origin=OriginId(0)
+physical-use 46 function=3 value=9 site=BranchCondition { block: BlockId(1) } accepted=[ScoreBool] timing=BeforeWrites realization=25 destination=None origin=OriginId(0)
+physical-use 47 function=3 value=4 site=EdgeArgument { block: BlockId(1), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=22 destination=Some(31) origin=OriginId(0)
+physical-use 48 function=3 value=5 site=EdgeArgument { block: BlockId(1), successor_index: 0, argument_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=23 destination=Some(32) origin=OriginId(0)
+physical-use 49 function=3 value=11 site=EdgeArgument { block: BlockId(2), successor_index: 0, argument_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=27 destination=Some(24) origin=OriginId(0)
+physical-use 50 function=3 value=5 site=EdgeArgument { block: BlockId(2), successor_index: 0, argument_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=23 destination=Some(25) origin=OriginId(0)
+physical-use 51 function=3 value=4 site=EdgeArgument { block: BlockId(2), successor_index: 0, argument_index: 2 } accepted=[ScoreI32] timing=BeforeWrites realization=22 destination=Some(26) origin=OriginId(0)
+physical-use 52 function=3 value=6 site=ReturnValue { block: BlockId(3), result_index: 0 } accepted=[ScoreI32] timing=BeforeWrites realization=28 destination=Some(33) origin=OriginId(0)
+physical-use 53 function=3 value=7 site=ReturnValue { block: BlockId(3), result_index: 1 } accepted=[ScoreI32] timing=BeforeWrites realization=29 destination=Some(34) origin=OriginId(0)
+physical-use 54 function=3 value=0 site=FunctionParameter { parameter_index: 0 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=18 destination=Some(21) origin=OriginId(0)
+physical-use 55 function=3 value=1 site=FunctionParameter { parameter_index: 1 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=19 destination=Some(22) origin=OriginId(0)
+physical-use 56 function=3 value=2 site=FunctionParameter { parameter_index: 2 } accepted=[ScoreI32] timing=DefinesAtOccurrence realization=20 destination=Some(23) origin=OriginId(0)
+materialization 0 function=2 value=5 destination=12 site=InstructionResult { instruction: InstId(0), result_index: 0 } recipe=ConstantI32ToScore(0) origin=OriginId(0)
+materialization 1 function=2 value=7 destination=14 site=InstructionResult { instruction: InstId(2), result_index: 0 } recipe=ConstantI32ToScore(-1) origin=OriginId(0)
+materialization 2 function=3 value=8 destination=24 site=InstructionResult { instruction: InstId(0), result_index: 0 } recipe=ConstantI32ToScore(0) origin=OriginId(0)
+materialization 3 function=3 value=10 destination=26 site=InstructionResult { instruction: InstId(2), result_index: 0 } recipe=ConstantI32ToScore(-1) origin=OriginId(0)
+physical-function 0 activation=SerialStatic reason=acyclic-or-synchronously-serial
+  fact 0 Unknown realizations=[0] primary=Some(0)
+  fact 1 Unknown realizations=[1] primary=Some(1)
+  fact 2 Unknown realizations=[2] primary=Some(2)
+  fact 3 Unknown realizations=[3] primary=Some(3)
+  abi parameter 0 type=Bool mode=DirectScore { storage: PhysicalStorageId(0) }
+  abi parameter 1 type=I32 mode=DirectScore { storage: PhysicalStorageId(1) }
+  abi parameter 2 type=I32 mode=DirectScore { storage: PhysicalStorageId(2) }
+  abi result 0 type=I32 mode=DirectScore { storage: PhysicalStorageId(4) }
+physical-function 1 activation=SerialStatic reason=acyclic-or-synchronously-serial
+  fact 0 Unknown realizations=[4] primary=Some(4)
+  fact 1 Unknown realizations=[5] primary=Some(5)
+  fact 2 Unknown realizations=[6] primary=Some(6)
+  fact 3 Unknown realizations=[7] primary=Some(7)
+  abi parameter 0 type=Bool mode=DirectScore { storage: PhysicalStorageId(5) }
+  abi parameter 1 type=I32 mode=DirectScore { storage: PhysicalStorageId(6) }
+  abi parameter 2 type=I32 mode=DirectScore { storage: PhysicalStorageId(7) }
+  abi result 0 type=I32 mode=DirectScore { storage: PhysicalStorageId(9) }
+physical-function 2 activation=SerialStatic reason=acyclic-or-synchronously-serial
+  fact 0 Unknown realizations=[8] primary=Some(8)
+  fact 1 Unknown realizations=[9] primary=Some(9)
+  fact 2 Unknown realizations=[10] primary=Some(10)
+  fact 3 Unknown realizations=[11] primary=Some(11)
+  fact 4 Unknown realizations=[17] primary=Some(17)
+  fact 5 ConstantI32(0) realizations=[12] primary=Some(12)
+  fact 6 Unknown realizations=[13] primary=Some(13)
+  fact 7 ConstantI32(-1) realizations=[14] primary=Some(14)
+  fact 8 Unknown realizations=[15] primary=Some(15)
+  fact 9 Unknown realizations=[16] primary=Some(16)
+  abi parameter 0 type=I32 mode=DirectScore { storage: PhysicalStorageId(10) }
+  abi parameter 1 type=I32 mode=DirectScore { storage: PhysicalStorageId(11) }
+  abi result 0 type=I32 mode=DirectScore { storage: PhysicalStorageId(20) }
+physical-function 3 activation=SerialStatic reason=acyclic-or-synchronously-serial
+  fact 0 Unknown realizations=[18] primary=Some(18)
+  fact 1 Unknown realizations=[19] primary=Some(19)
+  fact 2 Unknown realizations=[20] primary=Some(20)
+  fact 3 Unknown realizations=[21] primary=Some(21)
+  fact 4 Unknown realizations=[22] primary=Some(22)
+  fact 5 Unknown realizations=[23] primary=Some(23)
+  fact 6 Unknown realizations=[28] primary=Some(28)
+  fact 7 Unknown realizations=[29] primary=Some(29)
+  fact 8 ConstantI32(0) realizations=[24] primary=Some(24)
+  fact 9 Unknown realizations=[25] primary=Some(25)
+  fact 10 ConstantI32(-1) realizations=[26] primary=Some(26)
+  fact 11 Unknown realizations=[27] primary=Some(27)
+  abi parameter 0 type=I32 mode=DirectScore { storage: PhysicalStorageId(21) }
+  abi parameter 1 type=I32 mode=DirectScore { storage: PhysicalStorageId(22) }
+  abi parameter 2 type=I32 mode=DirectScore { storage: PhysicalStorageId(23) }
+  abi result 0 type=I32 mode=DirectScore { storage: PhysicalStorageId(33) }
+  abi result 1 type=I32 mode=DirectScore { storage: PhysicalStorageId(34) }
+physical-call 0 caller=1 instruction=0 callee=0 activation=SerialStatic reason=activations-proven-serial arguments=[(RealizationId(4), PhysicalStorageId(5)), (RealizationId(5), PhysicalStorageId(6)), (RealizationId(6), PhysicalStorageId(7))] results=[Some((PhysicalStorageId(8), RealizationId(7)))] spills=[] origin=OriginId(0)
+physical-preflight local-sequence-operations=4 local-forks=0
 home 0 #f0v0 Value { function: FunctionId(0), value: ValueId(0), ty: Bool }
 home 1 #f0v1 Value { function: FunctionId(0), value: ValueId(1), ty: I32 }
 home 2 #f0v2 Value { function: FunctionId(0), value: ValueId(2), ty: I32 }
@@ -54,7 +270,8 @@ target-function 13 mdl:__mdl/f3/b1 Block { function: FunctionId(3), block: Block
 target-function 14 mdl:__mdl/f3/b2 Block { function: FunctionId(3), block: BlockId(2) } OriginId(0)
 target-function 15 mdl:__mdl/f3/b3 Block { function: FunctionId(3), block: BlockId(3) } OriginId(0)
 target-function 16 mdl:__mdl/f3/e1_0 BranchHelper { function: FunctionId(3), edge: BranchEdge { source: BlockId(1), arm: Then } } OriginId(0)
-function 0 name=Some("choose") params=[(Bool, HomeId(0), FakeScoreHolder(ScoreWord("f0v0"))), (I32, HomeId(1), FakeScoreHolder(ScoreWord("f0v1"))), (I32, HomeId(2), FakeScoreHolder(ScoreWord("f0v2")))] results=[(I32, HomeId(4), FakeScoreHolder(ScoreWord("f0r0")))]
+function 0 name=Some("choose") linkage=internal params=[(Bool, HomeId(0), FakeScoreHolder(ScoreWord("f0v0"))), (I32, HomeId(1), FakeScoreHolder(ScoreWord("f0v1"))), (I32, HomeId(2), FakeScoreHolder(ScoreWord("f0v2")))] results=[(I32, HomeId(4), FakeScoreHolder(ScoreWord("f0r0")))]
+  generated-entry-requirement AmbientContextRequirements { executor: None, position: None, rotation: None, dimension: None, anchor: None }
   abi entry=0 resource=mdl:__mdl/f0/b0 temp=None
   block 0 -> 2 mdl:__mdl/f0/b0
   block 1 -> 3 mdl:__mdl/f0/b1
@@ -70,14 +287,16 @@ function 0 name=Some("choose") params=[(Bool, HomeId(0), FakeScoreHolder(ScoreWo
     move 3 <- 1
   edge 2 jump
     move 3 <- 2
-function 1 name=Some("call_choose") params=[(Bool, HomeId(5), FakeScoreHolder(ScoreWord("f1v0"))), (I32, HomeId(6), FakeScoreHolder(ScoreWord("f1v1"))), (I32, HomeId(7), FakeScoreHolder(ScoreWord("f1v2")))] results=[(I32, HomeId(9), FakeScoreHolder(ScoreWord("f1r0")))]
+function 1 name=Some("call_choose") linkage=internal params=[(Bool, HomeId(5), FakeScoreHolder(ScoreWord("f1v0"))), (I32, HomeId(6), FakeScoreHolder(ScoreWord("f1v1"))), (I32, HomeId(7), FakeScoreHolder(ScoreWord("f1v2")))] results=[(I32, HomeId(9), FakeScoreHolder(ScoreWord("f1r0")))]
+  generated-entry-requirement AmbientContextRequirements { executor: None, position: None, rotation: None, dimension: None, anchor: None }
   abi entry=0 resource=mdl:__mdl/f1/b0 temp=None
   block 0 -> 6 mdl:__mdl/f1/b0
   value 0 -> 5
   value 1 -> 6
   value 2 -> 7
   value 3 -> 8
-function 2 name=Some("sum_down") params=[(I32, HomeId(10), FakeScoreHolder(ScoreWord("f2v0"))), (I32, HomeId(11), FakeScoreHolder(ScoreWord("f2v1")))] results=[(I32, HomeId(20), FakeScoreHolder(ScoreWord("f2r0")))]
+function 2 name=Some("sum_down") linkage=internal params=[(I32, HomeId(10), FakeScoreHolder(ScoreWord("f2v0"))), (I32, HomeId(11), FakeScoreHolder(ScoreWord("f2v1")))] results=[(I32, HomeId(20), FakeScoreHolder(ScoreWord("f2r0")))]
+  generated-entry-requirement AmbientContextRequirements { executor: None, position: None, rotation: None, dimension: None, anchor: None }
   abi entry=0 resource=mdl:__mdl/f2/b0 temp=None
   block 0 -> 7 mdl:__mdl/f2/b0
   block 1 -> 8 mdl:__mdl/f2/b1
@@ -102,7 +321,8 @@ function 2 name=Some("sum_down") params=[(I32, HomeId(10), FakeScoreHolder(Score
   edge 2 jump
     move 12 <- 17
     move 13 <- 18
-function 3 name=Some("countdown_swap") params=[(I32, HomeId(21), FakeScoreHolder(ScoreWord("f3v0"))), (I32, HomeId(22), FakeScoreHolder(ScoreWord("f3v1"))), (I32, HomeId(23), FakeScoreHolder(ScoreWord("f3v2")))] results=[(I32, HomeId(33), FakeScoreHolder(ScoreWord("f3r0"))), (I32, HomeId(34), FakeScoreHolder(ScoreWord("f3r1")))]
+function 3 name=Some("countdown_swap") linkage=internal params=[(I32, HomeId(21), FakeScoreHolder(ScoreWord("f3v0"))), (I32, HomeId(22), FakeScoreHolder(ScoreWord("f3v1"))), (I32, HomeId(23), FakeScoreHolder(ScoreWord("f3v2")))] results=[(I32, HomeId(33), FakeScoreHolder(ScoreWord("f3r0"))), (I32, HomeId(34), FakeScoreHolder(ScoreWord("f3r1")))]
+  generated-entry-requirement AmbientContextRequirements { executor: None, position: None, rotation: None, dimension: None, anchor: None }
   abi entry=0 resource=mdl:__mdl/f3/b0 temp=Some((HomeId(35), FakeScoreHolder(ScoreWord("f3t0"))))
   block 0 -> 12 mdl:__mdl/f3/b0
   block 1 -> 13 mdl:__mdl/f3/b1

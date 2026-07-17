@@ -1,11 +1,11 @@
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
 use crate::ir::minecraft::{
-    BuildError, CommandKind, CommandNode, Condition, DataCommand, DataModifyMode, DataSource,
-    ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FunctionBodyBuilder,
-    FunctionTagEntry, FunctionTagId, FunctionTagMerge, FunctionTagResourceId, InternalCallableRef,
-    McFunctionId, MinecraftProgram, MinecraftProgramBuilder, NbtValue, ReturnCommand, ScoreCommand,
-    ScoreRef,
+    BuildError, CommandId, CommandKind, CommandNode, Condition, DataCommand, DataModifyMode,
+    DataSource, ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
+    FunctionBodyBuilder, FunctionTagEntry, FunctionTagId, FunctionTagMerge, FunctionTagResourceId,
+    InternalCallableRef, McFunctionId, MinecraftProgram, MinecraftProgramBuilder, NbtValue,
+    ReturnCommand, ScoreCommand, ScoreRef,
 };
 use crate::source::OriginId;
 
@@ -163,11 +163,42 @@ impl TargetConstruction {
             )?,
         )?;
         let fail = command(CommandKind::Return(ReturnCommand::Fail), OriginId::UNKNOWN)?;
-        define_commands(
-            &mut self.builder,
-            load,
-            vec![already_initialized, create_and_commit, fail],
-        )
+        let mut load_commands = Vec::with_capacity(if plan.has_recursive_activation() {
+            4
+        } else {
+            3
+        });
+        if plan.has_recursive_activation() {
+            let empty_frames = NbtValue::list(Vec::new()).map_err(|error| {
+                invariant_diagnostics(
+                    format!("compiler activation-list literal is invalid: {error}"),
+                    OriginId::UNKNOWN,
+                )
+            })?;
+            load_commands.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: plan.activation_frames(),
+                    mode: DataModifyMode::Set,
+                    source: DataSource::Value(empty_frames),
+                }),
+                OriginId::UNKNOWN,
+            )?);
+        }
+        load_commands.extend([already_initialized, create_and_commit, fail]);
+        define_commands(&mut self.builder, load, load_commands)
+    }
+
+    pub(crate) fn define_external_helper(
+        &mut self,
+        planned: PlannedFunctionId,
+        body: CommandNode,
+    ) -> Result<(), Diagnostics> {
+        let function = self.declared_function(planned)?;
+        define_commands(&mut self.builder, function, vec![body])
+    }
+
+    pub(crate) fn function(&self, planned: PlannedFunctionId) -> Result<McFunctionId, Diagnostics> {
+        self.declared_function(planned)
     }
 
     fn declared_function(&self, planned: PlannedFunctionId) -> Result<McFunctionId, Diagnostics> {
@@ -250,10 +281,17 @@ impl<'a> FunctionLoweringCx<'a, '_> {
     }
 
     pub(crate) fn push(&mut self, command: CommandNode) -> Result<(), Diagnostics> {
+        self.push_correlated(command).map(|_| ())
+    }
+
+    /// Appends one top-level command and retains its exact function-local identity.
+    pub(crate) fn push_correlated(
+        &mut self,
+        command: CommandNode,
+    ) -> Result<CommandId, Diagnostics> {
         let origin = command.origin();
         self.target_body
             .push(command)
-            .map(|_| ())
             .map_err(|error| construction_diagnostics(&error, origin))
     }
 

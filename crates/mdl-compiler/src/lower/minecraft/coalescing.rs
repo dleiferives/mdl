@@ -399,7 +399,7 @@ fn forbidden_scalar_pairs(
             .instruction(instruction)
             .ok_or(CoalescingError::InvalidCoreEntity { function })?;
         let Some(contract) = scalar_access_contract(data.op()) else {
-            debug_assert!(matches!(data.op(), CoreOp::Call(_)));
+            debug_assert!(matches!(data.op(), CoreOp::Call(_) | CoreOp::External(_)));
             continue;
         };
         for (result_index, result) in data.results().iter().copied().enumerate() {

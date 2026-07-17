@@ -323,7 +323,7 @@ fn analysis_limits(
         .map()
         .execution_contract()
         .command_limits()
-        .assumptions();
+        .configured_assumptions();
     TargetExecutionAnalysisLimits::new(
         AnalysisArithmeticCaps::minimum_for(assumptions),
         1_000_000,

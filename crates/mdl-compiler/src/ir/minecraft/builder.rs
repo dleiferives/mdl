@@ -309,7 +309,7 @@ mod tests {
     use crate::entity::{EntityId, EntityVec};
     use crate::ir::minecraft::{
         CallableRef, CommandKind, CommandNode, FunctionCall, FunctionResourceId, FunctionTagEntry,
-        FunctionTagMerge, FunctionTagResourceId, InternalCallableRef,
+        FunctionTagMerge, FunctionTagResourceId, InternalCallableRef, SayCommand, SayMessage,
     };
     use crate::source::OriginId;
     use crate::target::JavaEditionTarget;
@@ -420,6 +420,40 @@ mod tests {
 
         let program = builder.finish().unwrap();
         assert!(program.function(function).unwrap().body().is_empty());
+    }
+
+    #[test]
+    fn function_body_builder_retains_typed_say_without_raw_text() {
+        let mut builder = MinecraftProgramBuilder::new(JavaEditionTarget::V26_2);
+        let function = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:say").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let mut body = builder.begin_function(function).unwrap();
+        let command = body
+            .push(
+                CommandNode::new(
+                    CommandKind::Say(SayCommand::new(SayMessage::new("hello").unwrap())),
+                    OriginId::UNKNOWN,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        body.finish();
+
+        let program = builder.finish().unwrap();
+        let node = program
+            .function(function)
+            .unwrap()
+            .body()
+            .command(command)
+            .unwrap();
+        let CommandKind::Say(say) = node.kind() else {
+            panic!("typed say was not retained");
+        };
+        assert_eq!(say.message().as_str(), "hello");
     }
 
     #[test]

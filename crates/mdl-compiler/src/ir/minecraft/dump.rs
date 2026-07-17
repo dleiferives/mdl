@@ -74,6 +74,16 @@ fn write_command(
     match command.kind() {
         CommandKind::Score(score) => write_score(score, output)?,
         CommandKind::Data(data) => write_data(data, output)?,
+        CommandKind::Say(command) => {
+            write!(output, "say message={:?}", command.message().as_str())?;
+        }
+        CommandKind::Teleport(command) => {
+            write!(
+                output,
+                "teleport.self destination={:?}",
+                command.destination()
+            )?;
+        }
         CommandKind::Execute(execute) => {
             writeln!(output, "execute")?;
             for (index, modifier) in execute.modifiers().as_slice().iter().enumerate() {
@@ -163,6 +173,10 @@ fn write_modifier(modifier: &ExecuteModifierKind, output: &mut impl fmt::Write) 
         ExecuteModifierKind::As(selector) => write!(output, "as {selector:?}"),
         ExecuteModifierKind::At(selector) => write!(output, "at {selector:?}"),
         ExecuteModifierKind::In(dimension) => write!(output, "in {dimension}"),
+        ExecuteModifierKind::Positioned(position) => write!(output, "positioned {position:?}"),
+        ExecuteModifierKind::Rotated(rotation) => write!(output, "rotated {rotation:?}"),
+        ExecuteModifierKind::Anchored(anchor) => write!(output, "anchored {anchor:?}"),
+        ExecuteModifierKind::Align(axes) => write!(output, "align {}", axes.as_str()),
         ExecuteModifierKind::If(condition) => {
             output.write_str("if ")?;
             write_condition(condition, output)
@@ -229,7 +243,7 @@ mod tests {
     use crate::ir::minecraft::{
         CallableRef, CommandKind, CommandNode, Condition, ExecuteCommand, ExecuteModifier,
         ExecuteModifierKind, ExecuteModifiers, FunctionCall, InternalCallableRef, McFunctionId,
-        ReturnCommand,
+        ReturnCommand, SayCommand, SayMessage,
     };
     use crate::source::OriginId;
 
@@ -260,6 +274,20 @@ mod tests {
         assert_eq!(
             MinecraftDebugDumper::command(&command),
             "origin=OriginId(0) raw.unknown \"say marker\"\n"
+        );
+    }
+
+    #[test]
+    fn structured_say_is_visibly_typed() {
+        let command = CommandNode::new(
+            CommandKind::Say(SayCommand::new(SayMessage::new("hello").unwrap())),
+            OriginId::UNKNOWN,
+        )
+        .unwrap();
+
+        assert_eq!(
+            MinecraftDebugDumper::command(&command),
+            "origin=OriginId(0) say message=\"hello\"\n"
         );
     }
 

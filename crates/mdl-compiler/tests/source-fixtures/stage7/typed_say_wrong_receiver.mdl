@@ -1,0 +1,5 @@
+// MDL: failure semantic frontend.check.invalid-minecraft-method-receiver
+export fn wrong_receiver() {
+    var value: Int32 = 1;
+    value.say("hello");
+}

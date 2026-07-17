@@ -1,2 +1,5 @@
 /target
 /.mdl-test
+/libraries/
+/logs/
+/versions/**/*.jar

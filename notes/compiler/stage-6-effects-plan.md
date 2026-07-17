@@ -1,6 +1,14 @@
 # Stage 7B: Typed Minecraft Effects and the Unsafe Raw Boundary
 
-Status: **Accepted Stage 6I contract; implementation assigned to Stages 7B–10**
+Status: **Historical Stage 6I handoff; refined by
+[`stage-7-plan.md`](stage-7-plan.md)**
+
+The authoritative Stage 7 design splits this former 7B into the external Core/raw
+substrate (7B), semantic entity/context/function contracts (7C), and method-first
+command registry plus versioned recipes (7D). It also replaces copied HIR context
+contracts and flat context-transition wording with registry lookup and structurally
+scoped context. The conservative external-operation and unsafe-boundary rules below
+remain design input where they do not conflict with that refinement.
 
 Stage 6I resolves how Minecraft behavior enters the verified compiler pipeline. It
 does not implement that behavior. The selected design has two deliberately unequal
@@ -28,8 +36,9 @@ Roadmap ownership is therefore explicit:
 
 - **Stage 7B** implements the Core external-operation spine, the first compiler-owned
   typed Minecraft APIs, and a literal-only unsafe raw statement;
-- **Stage 8** selects physical representations for new semantic value types and
-  conversions across the external boundary;
+- **Stage 8** first establishes scalar realizations and safe synchronous call
+  activation; separately planned representation clients then add new semantic value
+  types and external-boundary conversions;
 - **Stage 9** consumes exact or conservative context/fork/work contracts when it
   schedules and must treat unsafe raw commands as indivisible unknown work;
 - **Stage 10** adds typed runtime interpolation and the Minecraft function-macro ABI,

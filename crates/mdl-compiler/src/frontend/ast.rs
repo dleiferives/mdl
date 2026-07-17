@@ -1,4 +1,4 @@
-//! Syntax-shaped representation produced by the Stage 6 parser.
+//! Syntax-shaped representation produced by the source parser.
 
 #[cfg(test)]
 use std::fmt;
@@ -12,7 +12,17 @@ use crate::source::Span;
 /// One parsed single-file compilation unit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstModule {
+    pub(super) imports: Vec<AstImport>,
     pub(super) functions: Vec<AstFunction>,
+    pub(super) span: Span,
+}
+
+/// One Zig-style module namespace binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstImport {
+    pub(super) binding: AstName,
+    /// Complete quoted and lexically validated dependency-name literal.
+    pub(super) dependency: Span,
     pub(super) span: Span,
 }
 
@@ -61,12 +71,22 @@ pub(super) struct AstParameter {
 /// One parsed function definition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstFunction {
+    pub(super) visibility: AstFunctionVisibility,
+    pub(super) visibility_span: Option<Span>,
     pub(super) name: AstName,
     pub(super) parameters: Vec<AstParameter>,
     /// Omission means the same result contract as explicit `Void`.
     pub(super) result: Option<AstResultType>,
     pub(super) body: AstBlock,
     pub(super) span: Span,
+}
+
+/// Source visibility and datapack-entry intent of one function.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AstFunctionVisibility {
+    Private,
+    Public,
+    Export,
 }
 
 /// One lexical source block.
@@ -125,6 +145,31 @@ pub(super) struct AstReturnStatement {
     pub(super) span: Span,
 }
 
+/// One literal-only unsafe Minecraft command statement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstUnsafeMinecraftStatement {
+    /// Complete quoted and lexically validated command literal.
+    pub(super) command: Span,
+    pub(super) span: Span,
+}
+
+/// One ordered modifier in a contextual `run` statement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstRunModifier {
+    pub(super) name: AstName,
+    pub(super) arguments: Vec<AstExpression>,
+    pub(super) span: Span,
+}
+
+/// One contextual block with ordered modifiers and an optional executor capture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstRunStatement {
+    pub(super) modifiers: Vec<AstRunModifier>,
+    pub(super) capture: Option<AstName>,
+    pub(super) body: AstBlock,
+    pub(super) span: Span,
+}
+
 /// Statements accepted by the first scalar grammar.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum AstStatement {
@@ -133,14 +178,16 @@ pub(super) enum AstStatement {
     Call(AstCallStatement),
     If(AstIfStatement),
     Return(AstReturnStatement),
+    Run(AstRunStatement),
+    UnsafeMinecraft(AstUnsafeMinecraftStatement),
     /// A required statement that parser recovery could not construct.
     Error(Span),
 }
 
-/// One direct source call before name resolution.
+/// One postfix source call before name or member resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstCall {
-    pub(super) callee: AstName,
+    pub(super) callee: Box<AstExpression>,
     pub(super) arguments: Vec<AstExpression>,
     pub(super) span: Span,
 }
@@ -176,7 +223,20 @@ pub(super) enum AstExpressionKind {
     Bool(bool),
     /// The original decimal spelling is recovered from this span during checking.
     DecimalInteger(Span),
+    /// A compiler-known decimal coordinate atom, optionally prefixed by `~` or `^`.
+    StaticDecimal {
+        sigil: Option<AstCoordinateSigil>,
+        negative: bool,
+        digits: Option<Span>,
+    },
+    /// Complete quoted and lexically validated literal spelling.
+    StringLiteral(Span),
     Name(AstName),
+    Member {
+        receiver: Box<AstExpression>,
+        dot: Span,
+        member: AstName,
+    },
     Call(AstCall),
     Not(Box<AstExpression>),
     Compare {
@@ -188,6 +248,12 @@ pub(super) enum AstExpressionKind {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AstCoordinateSigil {
+    Relative,
+    Local,
+}
+
 /// Dumps parsed structure deterministically for frontend tests and debugging.
 #[cfg(test)]
 pub(super) fn dump(module: &AstModule, sources: &SourceContext) -> String {
@@ -196,6 +262,17 @@ pub(super) fn dump(module: &AstModule, sources: &SourceContext) -> String {
         output: String::new(),
     };
     printer.line(0, format_args!("module {}", location(module.span)));
+    for import in &module.imports {
+        printer.line(
+            1,
+            format_args!(
+                "import {} = {} {}",
+                printer.spelling(import.binding.span),
+                printer.spelling(import.dependency),
+                location(import.span)
+            ),
+        );
+    }
     for function in &module.functions {
         printer.function(function);
     }
@@ -211,10 +288,15 @@ struct AstPrinter<'a> {
 #[cfg(test)]
 impl AstPrinter<'_> {
     fn function(&mut self, function: &AstFunction) {
+        let visibility = match function.visibility {
+            AstFunctionVisibility::Private => "private",
+            AstFunctionVisibility::Public => "public",
+            AstFunctionVisibility::Export => "export",
+        };
         self.line(
             1,
             format_args!(
-                "function {} {}",
+                "{visibility} function {} {}",
                 self.spelling(function.name.span),
                 location(function.span)
             ),
@@ -310,6 +392,41 @@ impl AstPrinter<'_> {
                     self.expression(value, indent + 1);
                 }
             }
+            AstStatement::Run(run) => {
+                self.line(indent, format_args!("run {}", location(run.span)));
+                for modifier in &run.modifiers {
+                    self.line(
+                        indent + 1,
+                        format_args!(
+                            "modifier {} {}",
+                            self.spelling(modifier.name.span),
+                            location(modifier.span)
+                        ),
+                    );
+                    for argument in &modifier.arguments {
+                        self.expression(argument, indent + 2);
+                    }
+                }
+                if let Some(capture) = run.capture {
+                    self.line(
+                        indent + 1,
+                        format_args!(
+                            "capture {} {}",
+                            self.spelling(capture.span),
+                            location(capture.span)
+                        ),
+                    );
+                }
+                self.block(&run.body, indent + 1);
+            }
+            AstStatement::UnsafeMinecraft(statement) => self.line(
+                indent,
+                format_args!(
+                    "unsafe minecraft {} {}",
+                    self.spelling(statement.command),
+                    location(statement.span)
+                ),
+            ),
             AstStatement::Error(span) => {
                 self.line(indent, format_args!("error {}", location(*span)));
             }
@@ -330,6 +447,28 @@ impl AstPrinter<'_> {
                     location(expression.span)
                 ),
             ),
+            AstExpressionKind::StaticDecimal {
+                sigil,
+                negative,
+                digits,
+            } => self.line(
+                indent,
+                format_args!(
+                    "spatial {:?} negative={} digits={} {}",
+                    sigil,
+                    negative,
+                    digits.map_or_else(|| "<zero>".to_owned(), |span| self.spelling(span)),
+                    location(expression.span)
+                ),
+            ),
+            AstExpressionKind::StringLiteral(span) => self.line(
+                indent,
+                format_args!(
+                    "string {} {}",
+                    self.spelling(*span),
+                    location(expression.span)
+                ),
+            ),
             AstExpressionKind::Name(name) => self.line(
                 indent,
                 format_args!(
@@ -338,6 +477,22 @@ impl AstPrinter<'_> {
                     location(expression.span)
                 ),
             ),
+            AstExpressionKind::Member {
+                receiver,
+                dot,
+                member,
+            } => {
+                self.line(
+                    indent,
+                    format_args!(
+                        "member {} dot={} {}",
+                        self.spelling(member.span),
+                        location(*dot),
+                        location(expression.span)
+                    ),
+                );
+                self.expression(receiver, indent + 1);
+            }
             AstExpressionKind::Call(call) => {
                 self.line(indent, format_args!("call {}", location(expression.span)));
                 self.call(call, indent + 1);
@@ -364,10 +519,8 @@ impl AstPrinter<'_> {
     }
 
     fn call(&mut self, call: &AstCall, indent: usize) {
-        self.line(
-            indent,
-            format_args!("callee {}", self.spelling(call.callee.span)),
-        );
+        self.line(indent, format_args!("callee"));
+        self.expression(&call.callee, indent + 1);
         for argument in &call.arguments {
             self.expression(argument, indent + 1);
         }

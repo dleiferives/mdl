@@ -290,7 +290,9 @@ impl<'a> SymbolicChecker<'a> {
             return Ok(());
         };
         match plan {
-            InstructionPlan::OmittedPure => Ok(()),
+            InstructionPlan::OmittedPure
+            | InstructionPlan::External { .. }
+            | InstructionPlan::Minecraft { .. } => Ok(()),
             InstructionPlan::Scalar { results, .. } => {
                 self.finish_scalar_outputs(function, data, results, state, false)
             }
@@ -583,6 +585,34 @@ impl<'a> SymbolicChecker<'a> {
                 }
                 Ok(())
             }
+            InstructionPlan::External { .. } => {
+                if !matches!(data.op(), CoreOp::External(_))
+                    || !data.operands().is_empty()
+                    || !data.results().is_empty()
+                {
+                    self.record(SymbolicIssue::shape(
+                        Some(function),
+                        None,
+                        format!("{instruction:?} has an invalid external plan shape"),
+                        data.origin(),
+                    ));
+                }
+                Ok(())
+            }
+            InstructionPlan::Minecraft { .. } => {
+                if !matches!(data.op(), CoreOp::External(_))
+                    || !data.operands().is_empty()
+                    || !data.results().is_empty()
+                {
+                    self.record(SymbolicIssue::shape(
+                        Some(function),
+                        None,
+                        format!("{instruction:?} has an invalid Minecraft command plan shape"),
+                        data.origin(),
+                    ));
+                }
+                Ok(())
+            }
             InstructionPlan::Scalar { operands, results } => {
                 self.validate_scalar(function, instruction, data, operands, results, state)
             }
@@ -613,11 +643,11 @@ impl<'a> SymbolicChecker<'a> {
         results: &[ScalarResultPlacement],
         state: &mut SparseState,
     ) -> CheckResult<()> {
-        if matches!(data.op(), CoreOp::Call(_)) {
+        if matches!(data.op(), CoreOp::Call(_) | CoreOp::External(_)) {
             self.record(SymbolicIssue::shape(
                 Some(function),
                 None,
-                format!("call {instruction:?} has a scalar plan"),
+                format!("non-scalar {instruction:?} has a scalar plan"),
                 data.origin(),
             ));
             return Ok(());
@@ -796,7 +826,9 @@ impl<'a> SymbolicChecker<'a> {
                     );
                 }
             }
-            CoreOp::Call(_) => unreachable!("call rejected before exhaustive scalar match"),
+            CoreOp::Call(_) | CoreOp::External(_) => {
+                unreachable!("non-scalar operation rejected before exhaustive scalar match")
+            }
         }
         self.finish_scalar_outputs(function, data, results, state, true)
     }
@@ -3442,7 +3474,9 @@ mod tests {
         state: &mut DenseState,
     ) -> bool {
         match plan {
-            InstructionPlan::OmittedPure => true,
+            InstructionPlan::OmittedPure
+            | InstructionPlan::External { .. }
+            | InstructionPlan::Minecraft { .. } => true,
             InstructionPlan::Scalar { results, .. } => {
                 let mut valid = true;
                 for result in results.iter().copied() {
@@ -3554,7 +3588,9 @@ mod tests {
                 continue;
             };
             let operand_homes: &[HomeId] = match instruction_plan {
-                InstructionPlan::OmittedPure => &[],
+                InstructionPlan::OmittedPure
+                | InstructionPlan::External { .. }
+                | InstructionPlan::Minecraft { .. } => &[],
                 InstructionPlan::Scalar { operands, .. } => operands,
                 InstructionPlan::Call { arguments, .. } => arguments,
             };

@@ -2,8 +2,9 @@
 
 use super::analysis::definition_block;
 use super::{
-    BlockId, CoreProgram, CoreType, Dominance, DominatorTree, FunctionBody, FunctionId,
-    PlacementIndex, TerminatorKind, UseIndex, UseSite, ValueDef, ValueId,
+    BlockId, CoreProgram, CoreType, Dominance, DominatorTree, EntityQueryStep, FunctionBody,
+    FunctionId, MinecraftOperationAttributes, PlacementIndex, RunModifierInstance, TargetFragment,
+    TerminatorKind, UnsafeMinecraftCommandFragment, UseIndex, UseSite, ValueDef, ValueId,
 };
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityId;
@@ -107,6 +108,7 @@ pub fn verify_program(program: &CoreProgram, sources: &SourceContext) -> Result<
     PROGRAM_VERIFY_CALLS.with(|calls| calls.set(calls.get() + 1));
 
     let mut findings = vec![];
+    verify_linked_inventories(program, sources, &mut findings);
     for (function, declaration) in program.functions() {
         if sources.origin(declaration.origin).is_none() {
             findings.push(Diagnostic::new(
@@ -133,6 +135,157 @@ pub fn verify_program(program: &CoreProgram, sources: &SourceContext) -> Result<
     match Diagnostics::from_findings(findings) {
         Some(diagnostics) => Err(diagnostics),
         None => Ok(()),
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "linked Core inventories share one ordered whole-program provenance and shape audit"
+)]
+fn verify_linked_inventories(
+    program: &CoreProgram,
+    sources: &SourceContext,
+    findings: &mut Vec<Diagnostic>,
+) {
+    for (query, declaration) in program.entity_queries() {
+        let fallback = declaration.origin().unwrap_or(OriginId::UNKNOWN);
+        for step in declaration.steps() {
+            let role = match step {
+                EntityQueryStep::Entities { .. } => "entity-query root",
+                EntityQueryStep::WithTag { .. } => "entity-query tag refinement",
+                EntityQueryStep::Limit { .. } => "entity-query limit refinement",
+            };
+            for (label, origin) in [("step", step.origin()), ("operand", step.value_origin())] {
+                if sources.origin(origin).is_none() {
+                    findings.push(Diagnostic::new(
+                        "core.invalid-origin",
+                        format!("{role} {label} in {query:?} has invalid origin {origin:?}"),
+                        OriginId::UNKNOWN,
+                    ));
+                }
+            }
+        }
+        if !declaration.is_well_formed() {
+            findings.push(Diagnostic::new(
+                "core.invalid-entity-query",
+                format!(
+                    "entity query {query:?} has malformed steps or mismatched canonical semantics"
+                ),
+                fallback,
+            ));
+        }
+    }
+    for (fragment, data) in program.target_fragments() {
+        match data {
+            TargetFragment::UnsafeMinecraftCommand(command) => {
+                if let Err(error) = UnsafeMinecraftCommandFragment::new(command.as_str()) {
+                    findings.push(Diagnostic::new(
+                        "core.invalid-target-fragment",
+                        format!("target fragment {fragment:?} is malformed: {error}"),
+                        OriginId::UNKNOWN,
+                    ));
+                }
+            }
+        }
+    }
+    for (operation, declaration) in program.minecraft_operations() {
+        let origins = declaration.origins();
+        for (role, origin) in [
+            ("call", origins.call()),
+            ("member", origins.member()),
+            ("receiver", origins.receiver()),
+            ("message", declaration.attributes().message_origin()),
+        ] {
+            if sources.origin(origin).is_none() {
+                findings.push(Diagnostic::new(
+                    "core.invalid-origin",
+                    format!(
+                        "Minecraft operation {operation:?} has invalid {role} origin {origin:?}"
+                    ),
+                    OriginId::UNKNOWN,
+                ));
+            }
+        }
+        let attributes_are_valid = match declaration.attributes() {
+            MinecraftOperationAttributes::Say { message, .. } => {
+                crate::ir::semantic::MessageLiteral::new(message.as_str()).is_ok()
+            }
+            MinecraftOperationAttributes::Teleport { .. }
+            | MinecraftOperationAttributes::MoveBy { .. } => true,
+        };
+        if !declaration.is_well_formed() || !attributes_are_valid {
+            findings.push(Diagnostic::new(
+                "core.invalid-minecraft-operation",
+                format!("Minecraft operation {operation:?} is malformed"),
+                origins.call(),
+            ));
+        }
+    }
+    for (scope, declaration) in program.run_scopes() {
+        if sources.origin(declaration.origin()).is_none() {
+            findings.push(Diagnostic::new(
+                "core.invalid-origin",
+                format!(
+                    "run scope {scope:?} has invalid origin {:?}",
+                    declaration.origin()
+                ),
+                OriginId::UNKNOWN,
+            ));
+        }
+        for modifier in declaration.modifiers().iter().cloned() {
+            let role = match modifier {
+                RunModifierInstance::AsEntityQuery { .. } => "run-as modifier",
+                RunModifierInstance::AtEntityQuery { .. } => "run-at modifier",
+                RunModifierInstance::AtExecutor { .. } => "run-at-executor modifier",
+                RunModifierInstance::Positioned { .. } => "run-positioned modifier",
+                RunModifierInstance::Rotated { .. } => "run-rotated modifier",
+                RunModifierInstance::In { .. } => "run-in modifier",
+                RunModifierInstance::Anchored { .. } => "run-anchored modifier",
+                RunModifierInstance::Align { .. } => "run-align modifier",
+            };
+            if sources.origin(modifier.origin()).is_none() {
+                findings.push(Diagnostic::new(
+                    "core.invalid-origin",
+                    format!(
+                        "{role} in run scope {scope:?} has invalid origin {:?}",
+                        modifier.origin()
+                    ),
+                    OriginId::UNKNOWN,
+                ));
+            }
+        }
+        let context_replays = program
+            .apply_run_scope_context(
+                scope,
+                crate::ir::core::CoreExecutionContext::function_entry(),
+            )
+            .is_some();
+        if !declaration.is_well_formed(program) || !context_replays {
+            findings.push(Diagnostic::new(
+                "core.invalid-run-scope",
+                format!("run scope {scope:?} has an invalid modifier, body, or invocation bound"),
+                declaration.origin(),
+            ));
+        }
+    }
+    for (operation, declaration) in program.external_ops() {
+        if sources.origin(declaration.origin()).is_none() {
+            findings.push(Diagnostic::new(
+                "core.invalid-origin",
+                format!(
+                    "external declaration {operation:?} has invalid origin {:?}",
+                    declaration.origin()
+                ),
+                OriginId::UNKNOWN,
+            ));
+        }
+        if !declaration.is_well_formed(program) {
+            findings.push(Diagnostic::new(
+                "core.invalid-external-declaration",
+                format!("external declaration {operation:?} has an invalid binding or signature"),
+                declaration.origin(),
+            ));
+        }
     }
 }
 
@@ -750,8 +903,9 @@ mod tests {
     use super::verify_program;
     use crate::entity::EntityVec;
     use crate::ir::core::{
-        BlockData, BlockId, BlockTarget, CoreOp, CoreProgram, CoreType, FunctionBody,
-        FunctionBuilder, InstData, InstId, Terminator, TerminatorKind, ValueId, verify_function,
+        BlockData, BlockId, BlockTarget, CoreOp, CoreProgram, CoreType, ExternalSemanticBinding,
+        FunctionBody, FunctionBuilder, InstData, InstId, TargetFragment, Terminator,
+        TerminatorKind, UnsafeMinecraftCommandFragment, ValueId, verify_function,
     };
     use crate::source::{OriginId, SourceContext};
 
@@ -897,5 +1051,50 @@ mod tests {
         let diagnostics = verify_function(&program, &sources, function, &body).unwrap_err();
         assert!(diagnostics.contains_code("core.duplicate-instruction-container"));
         assert!(!diagnostics.contains_code("core.duplicate-instruction-placement"));
+    }
+
+    #[test]
+    fn linked_inventory_corruption_is_reported_before_target_lowering() {
+        let sources = SourceContext::new();
+        let mut program = CoreProgram::new();
+        let fragment = program
+            .declare_target_fragment(TargetFragment::unsafe_minecraft_command("say valid").unwrap())
+            .unwrap();
+        let external = program
+            .declare_external_op(
+                ExternalSemanticBinding::UnsafeTargetFragment(fragment),
+                vec![],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let function = program
+            .declare_function(Some("raw"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
+        builder
+            .external(external, vec![], OriginId::UNKNOWN)
+            .unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        program
+            .define_function(function, builder.finish().unwrap())
+            .unwrap();
+        verify_program(&program, &sources).unwrap();
+
+        *program.target_fragments.get_mut(fragment).unwrap() =
+            TargetFragment::UnsafeMinecraftCommand(UnsafeMinecraftCommandFragment::from_unchecked(
+                "say\nbroken",
+            ));
+        program.external_ops.get_mut(external).unwrap().results = vec![CoreType::Bool];
+
+        let diagnostics = verify_program(&program, &sources).unwrap_err();
+        assert!(diagnostics.contains_code("core.invalid-target-fragment"));
+        assert!(diagnostics.contains_code("core.invalid-external-declaration"));
+        assert!(diagnostics.contains_code("core.invalid-operation"));
     }
 }

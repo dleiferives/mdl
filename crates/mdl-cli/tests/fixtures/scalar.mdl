@@ -1,4 +1,4 @@
-fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
+export fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
     var selected: Int32;
     if (flag) {
         selected = left;

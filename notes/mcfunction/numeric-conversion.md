@@ -25,7 +25,7 @@ execute store result storage mdl:runtime out float 0.001 run scoreboard players 
 This is the preferred boundary conversion candidate: one ordinary pre-parsed
 command, no macro.
 
-## NBT integer to NBT float
+## NBT number to NBT float through the result channel
 
 Use `data get` as the command result and store it using the target numeric type:
 
@@ -33,8 +33,11 @@ Use `data get` as the command result and store it using the target numeric type:
 execute store result storage mdl:runtime out float 1 run data get storage mdl:runtime input
 ```
 
-The exact rounding/truncation path for non-integral sources and large values must be
-tested on 26.2.
+This path is lossy. The 26.2 probes establish that `data get` multiplies and floors,
+then saturates into signed `i32`: `1.9 → 1`, `-1.9 → -2`, `1.25 × 10 → 12`, and
+`1e30 → INT_MAX`. The final store converts that integer result to the requested NBT
+type. Use `data modify ... set from` instead when the source is already the desired
+native numeric type and the value must be copied without this projection.
 
 ## Macro numeric retyping
 
@@ -45,16 +48,16 @@ template can potentially attach a new suffix:
 $data modify storage mdl:runtime out set value $(value)f
 ```
 
-Status: **Candidate**. Mojang documents suffix removal for macro numeric arguments,
-but this use still needs range, formatting, cache, and special-value tests. For a
-simple conversion, the ordinary `execute store` form is likely the better baseline.
+Status: **Measured on 26.2**. Double→float and float→double suffix templates worked,
+including expected binary32 narrowing at `16777217`. For a simple score conversion,
+the ordinary `execute store` form remains the better pre-parsed baseline.
 
 ## Do not implement general Float arithmetic in NBT
 
 NBT stores floats but does not provide a general arithmetic instruction set. Moving
 every addition through NBT would create expensive command sequences.
 
-Initial recommendation:
+Recommendation:
 
 - represent computation-heavy real numbers as fixed-point scoreboard integers;
 - carry a scale in the static type, such as `Fixed<1000>`;
@@ -70,18 +73,20 @@ detect possible 32-bit scoreboard overflow.
 Compile-time constants should be converted by the compiler and emitted in the final
 required syntax. They need no runtime command.
 
-## Required tests
+## Measured and remaining tests
 
-- negative values and zero;
-- integer boundaries and scoreboard overflow behavior;
-- float precision boundaries;
-- conversion scale and rounding direction;
-- NaN and infinities, if SNBT accepts or commands can produce them;
-- macro suffix conversion versus `execute store` cost;
-- fixed-point multiply/divide algorithms.
+- Measured: negative values, zero, float/double precision boundaries, scale,
+  floor/saturation, macro suffix conversion, underflow, overflow, NaN, and both
+  infinities produced through display transformations.
+- Remaining: every numeric target width, subnormal/tie boundaries, performance,
+  fixed-point multiply/divide algorithms, and an explicit source-language rounding
+  and non-finite-value policy.
+
+The full observations and representation alternatives are in
+[`ranges/floating-point-semantics.md`](ranges/floating-point-semantics.md) and
+[`ranges/floating-point-representations.md`](ranges/floating-point-representations.md).
 
 ## Sources
 
 - [Mojang's macro numeric suffix change](https://feedback.minecraft.net/hc/en-us/articles/19703470383757-Minecraft-Java-Edition-1-20-2)
 - [Mojang's documented scaled `data get` behavior](https://www.minecraft.net/en-us/article/minecraft-snapshot-17w45a)
-

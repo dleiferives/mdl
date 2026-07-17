@@ -135,6 +135,14 @@ fn render_command(
     match command.kind() {
         CommandKind::Score(command) => render_score(command, sink),
         CommandKind::Data(command) => render_data(command, sink),
+        CommandKind::Say(command) => {
+            sink.push_checked("say ")?;
+            sink.push_checked(command.message().as_str())
+        }
+        CommandKind::Teleport(command) => {
+            sink.push_checked("teleport @s ")?;
+            sink.write_arguments(format_args!("{}", command.destination()))
+        }
         CommandKind::Execute(command) => {
             sink.push_checked("execute")?;
             for modifier in command.modifiers().as_slice() {
@@ -298,6 +306,22 @@ fn render_modifier(
         ExecuteModifierKind::As(selector) => sink.write_arguments(format_args!("as {selector}")),
         ExecuteModifierKind::At(selector) => sink.write_arguments(format_args!("at {selector}")),
         ExecuteModifierKind::In(dimension) => sink.write_arguments(format_args!("in {dimension}")),
+        ExecuteModifierKind::Positioned(position) => {
+            sink.write_arguments(format_args!("positioned {position}"))
+        }
+        ExecuteModifierKind::Rotated(rotation) => {
+            sink.write_arguments(format_args!("rotated {rotation}"))
+        }
+        ExecuteModifierKind::Anchored(anchor) => sink.write_arguments(format_args!(
+            "anchored {}",
+            match anchor {
+                super::TargetAnchor::Feet => "feet",
+                super::TargetAnchor::Eyes => "eyes",
+            }
+        )),
+        ExecuteModifierKind::Align(axes) => {
+            sink.write_arguments(format_args!("align {}", axes.as_str()))
+        }
         ExecuteModifierKind::If(condition) => {
             sink.push_checked("if ")?;
             render_condition(program, condition, sink)
@@ -440,10 +464,13 @@ mod tests {
         CallableRef, CommandKind, CommandNode, Condition, DataCommand, DataModifyMode, DataSource,
         ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
         ExternalCallableRef, FakeScoreHolder, FiniteF64, FunctionCall, FunctionResourceId,
-        MinecraftProgramBuilder, NbtKey, NbtPath, NbtPathKey, NbtPathSegment, NbtValue,
-        NonNegativeI32, ObjectiveName, ReturnCommand, ScoreCommand, ScoreComparison, ScoreHolders,
-        ScoreOperation, ScoreRange, ScoreRef, ScoreSelection, SingleScoreHolder, StorageId,
-        StorageNumericType, StoragePath, StoreChannel, StoreDestination, UnboundedSelector,
+        JavaDecimal, MinecraftProgramBuilder, NbtKey, NbtPath, NbtPathKey, NbtPathSegment,
+        NbtValue, NonNegativeI32, ObjectiveName, ReturnCommand, SayCommand, SayMessage,
+        ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation, ScoreRange, ScoreRef,
+        ScoreSelection, SingleScoreHolder, StorageId, StorageNumericType, StoragePath,
+        StoreChannel, StoreDestination, TargetAnchor, TargetAxes, TargetLocalPosition,
+        TargetPosition, TargetRotation, TargetRotationAxis, TargetWorldAxis, TargetWorldPosition,
+        TeleportCommand, UnboundedSelector,
     };
     use crate::source::OriginId;
     use crate::target::JavaEditionTarget;
@@ -552,6 +579,62 @@ mod tests {
                 "data get storage mdl:state \"x\" 2.5\n",
                 "data modify storage mdl:state \"value\" set value {\"x\":1}\n"
             )
+        );
+    }
+
+    #[test]
+    fn structured_say_renders_literal_text_without_raw_command_ir() {
+        let say = node(CommandKind::Say(SayCommand::new(
+            SayMessage::new("hello  π 😀 \\\"quoted\\\"").unwrap(),
+        )));
+
+        assert_eq!(render(vec![say]), "say hello  π 😀 \\\"quoted\\\"\n");
+    }
+
+    #[test]
+    fn structured_spatial_commands_render_canonical_atoms() {
+        let decimal = |value| JavaDecimal::new(value).unwrap();
+        let destination = TargetPosition::World(TargetWorldPosition {
+            x: TargetWorldAxis::Relative(decimal("10.500")),
+            y: TargetWorldAxis::Relative(decimal("0")),
+            z: TargetWorldAxis::Absolute(decimal("-2")),
+        });
+        let teleport = node(CommandKind::Teleport(TeleportCommand::current_executor(
+            destination,
+        )));
+        let execute = node(CommandKind::Execute(ExecuteCommand::new(
+            ExecuteModifiers::new(
+                ExecuteModifier::new(
+                    ExecuteModifierKind::Positioned(TargetPosition::Local(TargetLocalPosition {
+                        left: decimal("0"),
+                        up: decimal("1"),
+                        forward: decimal("2"),
+                    })),
+                    OriginId::UNKNOWN,
+                ),
+                vec![
+                    ExecuteModifier::new(
+                        ExecuteModifierKind::Rotated(TargetRotation {
+                            yaw: TargetRotationAxis::Relative(decimal("90")),
+                            pitch: TargetRotationAxis::Relative(decimal("0")),
+                        }),
+                        OriginId::UNKNOWN,
+                    ),
+                    ExecuteModifier::new(
+                        ExecuteModifierKind::Anchored(TargetAnchor::Eyes),
+                        OriginId::UNKNOWN,
+                    ),
+                    ExecuteModifier::new(
+                        ExecuteModifierKind::Align(TargetAxes::new(5).unwrap()),
+                        OriginId::UNKNOWN,
+                    ),
+                ],
+            ),
+            teleport,
+        )));
+        assert_eq!(
+            render(vec![execute]),
+            "execute positioned ^ ^1 ^2 rotated ~90 ~ anchored eyes align xz run teleport @s ~10.5 ~ -2\n"
         );
     }
 

@@ -4,27 +4,47 @@ use std::error::Error;
 use std::fmt;
 
 mod ast;
+mod behavior;
 mod check;
 mod compile;
+mod context;
 mod hir;
+mod input;
 mod lexer;
 mod lower;
 mod parser;
 mod token;
 
+pub use crate::ir::semantic::{
+    AmbientContextRequirements, CommandOutcomeType, ContextRequirement, EntityCapabilities,
+    EntityCapability, EntityKind, EntityQueryType, EntityRefType, EntityTag, EntityTagError,
+    ExecutorType, ForkBound, FunctionBehavior, MessageLiteral, MessageLiteralError,
+    ObservableEffect, QueryCardinality, QueryCardinalityError, SemanticType, StaticEntityQuery,
+    TransitiveWork, WorldEffect,
+};
 pub use compile::{
     CompilationFailure, CompilationOptions, CompilationOutput, FrontendEntityKind,
-    FrontendInfrastructureFailure, FrontendInfrastructurePhase, SourceInput, compile_source,
+    FrontendInfrastructureFailure, FrontendInfrastructurePhase, compile_package, compile_source,
 };
-pub use hir::{CheckedFrontendOutput, FunctionResult, SourceFunctionId, ValueType};
+pub use hir::{
+    CheckedFrontendOutput, FunctionResult, FunctionVisibility, SourceExternalOpId,
+    SourceFunctionId, SourceModuleId, SourceRunId, ValueType,
+};
+pub use input::{
+    ImportName, ImportNameError, ModuleDependency, ModuleInput, ModuleKey, ModuleKeyError,
+    PackageInput, PackageInputError, SourceInput,
+};
 pub use lower::{
-    CoreGenerationFailure, CoreGenerationInvariant, CoreGenerationResource, SourceToCoreMap,
+    CoreGenerationFailure, CoreGenerationInvariant, CoreGenerationResource,
+    SourceSemanticCoreOccurrence, SourceToCoreMap,
 };
 
 /// Source-derived resource limits shared by lexing, parsing, checking, and Core generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrontendLimits {
     tokens: usize,
+    package_tokens: usize,
+    modules: usize,
     syntax_depth: usize,
     diagnostics: usize,
 }
@@ -36,6 +56,8 @@ impl FrontendLimits {
     /// Production limits for one source file.
     pub const DEFAULT: Self = Self {
         tokens: 1_000_000,
+        package_tokens: 1_000_000,
+        modules: 4_096,
         syntax_depth: 256,
         diagnostics: 100,
     };
@@ -71,6 +93,8 @@ impl FrontendLimits {
         }
         Ok(Self {
             tokens: max_tokens,
+            package_tokens: max_tokens,
+            modules: Self::DEFAULT.modules,
             syntax_depth: max_syntax_depth,
             diagnostics: max_diagnostics,
         })
@@ -83,6 +107,45 @@ impl FrontendLimits {
     #[must_use]
     pub const fn max_tokens(self) -> usize {
         self.tokens
+    }
+
+    /// Returns the maximum total token count across the canonical package,
+    /// including one EOF token for every module admitted to lexing.
+    #[must_use]
+    pub const fn max_package_tokens(self) -> usize {
+        self.package_tokens
+    }
+
+    /// Returns the maximum number of modules in one package compilation.
+    #[must_use]
+    pub const fn max_modules(self) -> usize {
+        self.modules
+    }
+
+    /// Selects whole-package module and token budgets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either limit is zero.
+    pub const fn with_package_limits(
+        mut self,
+        max_modules: usize,
+        max_package_tokens: usize,
+    ) -> Result<Self, FrontendLimitsError> {
+        if max_modules == 0 {
+            return Err(FrontendLimitsError::ModuleLimitMustBePositive);
+        }
+        if max_package_tokens == 0 {
+            return Err(FrontendLimitsError::PackageTokenLimitExcludesEndOfFile);
+        }
+        self.modules = max_modules;
+        self.package_tokens = max_package_tokens;
+        Ok(self)
+    }
+
+    pub(super) const fn with_module_token_budget(mut self, max_tokens: usize) -> Self {
+        self.tokens = max_tokens;
+        self
     }
 
     /// Returns the maximum number of nested syntax constructs.
@@ -111,6 +174,10 @@ impl Default for FrontendLimits {
 pub enum FrontendLimitsError {
     /// Token capacity must always include the required EOF token.
     TokenLimitExcludesEndOfFile,
+    /// A package must permit at least one module.
+    ModuleLimitMustBePositive,
+    /// A package token budget must reserve at least one EOF token.
+    PackageTokenLimitExcludesEndOfFile,
     /// Syntax parsing must permit at least one construct level.
     SyntaxDepthMustBePositive,
     /// Recursive syntax depth cannot exceed the reviewed host-stack cap.
@@ -127,6 +194,12 @@ impl fmt::Display for FrontendLimitsError {
         match self {
             Self::TokenLimitExcludesEndOfFile => {
                 formatter.write_str("frontend token limit must reserve one token for EOF")
+            }
+            Self::ModuleLimitMustBePositive => {
+                formatter.write_str("frontend package module limit must be positive")
+            }
+            Self::PackageTokenLimitExcludesEndOfFile => {
+                formatter.write_str("frontend package token limit must reserve one token for EOF")
             }
             Self::SyntaxDepthMustBePositive => {
                 formatter.write_str("frontend syntax-depth limit must be positive")
@@ -149,6 +222,8 @@ mod tests {
     fn defaults_match_the_frozen_frontend_contract() {
         let limits = FrontendLimits::DEFAULT;
         assert_eq!(limits.max_tokens(), 1_000_000);
+        assert_eq!(limits.max_package_tokens(), 1_000_000);
+        assert_eq!(limits.max_modules(), 4_096);
         assert_eq!(limits.max_syntax_depth(), 256);
         assert_eq!(limits.max_diagnostics(), 100);
         assert_eq!(FrontendLimits::default(), limits);
@@ -176,5 +251,19 @@ mod tests {
         assert_eq!(limits.max_tokens(), 1);
         assert_eq!(limits.max_syntax_depth(), 1);
         assert_eq!(limits.max_diagnostics(), 0);
+        assert_eq!(limits.max_package_tokens(), 1);
+        assert_eq!(limits.max_modules(), 4_096);
+
+        assert_eq!(
+            limits.with_package_limits(0, 1),
+            Err(FrontendLimitsError::ModuleLimitMustBePositive)
+        );
+        assert_eq!(
+            limits.with_package_limits(1, 0),
+            Err(FrontendLimitsError::PackageTokenLimitExcludesEndOfFile)
+        );
+        let package = limits.with_package_limits(2, 3).unwrap();
+        assert_eq!(package.max_modules(), 2);
+        assert_eq!(package.max_package_tokens(), 3);
     }
 }

@@ -5,8 +5,8 @@ use mdl_compiler::analysis::minecraft::{
 };
 use mdl_compiler::datapack::{DatapackArtifact, EmissionOptions, TraceMap, emit_datapack};
 use mdl_compiler::ir::core::{
-    BlockId, BlockTarget, CoreProgram, CoreType, FunctionBuilder, FunctionId, Terminator,
-    TerminatorKind, ValueId,
+    BlockId, BlockTarget, CoreFunctionLinkage, CoreProgram, CoreType, FunctionBuilder, FunctionId,
+    Terminator, TerminatorKind, ValueId,
 };
 use mdl_compiler::ir::minecraft::{MinecraftDebugDumper, ObjectiveName, PackNamespace};
 use mdl_compiler::lower::minecraft::{
@@ -465,6 +465,47 @@ fn baseline_handles_twenty_thousand_values_across_many_functions_without_dense_o
 }
 
 #[test]
+fn baseline_verifies_twenty_thousand_sparse_realizations() {
+    const FUNCTIONS: usize = 1_000;
+    const ADDITIONS: usize = 10;
+    const VALUES: usize = FUNCTIONS * (ADDITIONS * 2 + 1);
+
+    let sources = SourceContext::new();
+    let mut core = CoreProgram::new();
+    let functions = (0..FUNCTIONS)
+        .map(|index| {
+            declare(
+                &mut core,
+                &format!("sparse_scale_{index}"),
+                vec![],
+                vec![CoreType::I32],
+            )
+        })
+        .collect::<Vec<_>>();
+    for function in functions {
+        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
+        let mut sum = builder.i32_constant(0, OriginId::UNKNOWN).unwrap();
+        for value in 0..ADDITIONS {
+            let value = builder
+                .i32_constant(i32::try_from(value).unwrap(), OriginId::UNKNOWN)
+                .unwrap();
+            sum = builder
+                .i32_add_wrapping(sum, value, OriginId::UNKNOWN)
+                .unwrap();
+        }
+        return_values(&mut builder, vec![sum]);
+        core.define_function(function, builder.finish().unwrap())
+            .unwrap();
+    }
+
+    let output = lower_to_minecraft(&core, &sources, &baseline_options()).unwrap();
+    let statistics = output.report().statistics();
+    assert_eq!(statistics.realizations(), VALUES);
+    assert_eq!(statistics.materializations(), FUNCTIONS * (ADDITIONS + 1));
+    assert_eq!(statistics.homes(), VALUES + FUNCTIONS);
+}
+
+#[test]
 fn baseline_contracts_a_unique_then_arm_terminal_call_through_the_real_target_pipeline() {
     assert_terminal_call_contraction(TerminalCallArms::Then);
 }
@@ -727,8 +768,8 @@ fn terminal_call_fixture(
 ) -> TerminalCallFixture {
     let origins = terminal_call_origins(sources);
     let mut core = CoreProgram::new();
-    let terminal = declare(&mut core, "terminal_callee", vec![], vec![]);
-    let dispatcher = declare(
+    let terminal = declare_export(&mut core, "terminal_callee", vec![], vec![]);
+    let dispatcher = declare_export(
         &mut core,
         "terminal_dispatcher",
         vec![CoreType::Bool],
@@ -999,7 +1040,7 @@ fn target_analysis_limits(output: &LoweringOutput) -> TargetExecutionAnalysisLim
         .map()
         .execution_contract()
         .command_limits()
-        .assumptions();
+        .configured_assumptions();
     TargetExecutionAnalysisLimits::new(
         AnalysisArithmeticCaps::minimum_for(assumptions),
         100_000,
@@ -1234,6 +1275,22 @@ fn declare(
 ) -> FunctionId {
     core.declare_function(Some(name), parameters, results, OriginId::UNKNOWN)
         .unwrap()
+}
+
+fn declare_export(
+    core: &mut CoreProgram,
+    name: &str,
+    parameters: Vec<CoreType>,
+    results: Vec<CoreType>,
+) -> FunctionId {
+    core.declare_function_with_linkage(
+        Some(name),
+        CoreFunctionLinkage::DatapackExport,
+        parameters,
+        results,
+        OriginId::UNKNOWN,
+    )
+    .unwrap()
 }
 
 fn entry_parameters(builder: &FunctionBuilder<'_>) -> Vec<ValueId> {

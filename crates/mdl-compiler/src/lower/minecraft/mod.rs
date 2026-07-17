@@ -17,11 +17,16 @@ mod edge_transfer;
 mod emit;
 mod liveness;
 mod names;
+mod physical_preflight;
 mod placement;
 mod plan;
+mod preflight;
+mod query;
+mod realization;
 mod recipe;
 mod resources;
 mod scalar;
+mod support;
 mod transfer;
 
 use std::error::Error;
@@ -32,11 +37,15 @@ use crate::target::JavaEditionTarget;
 
 pub use crate::analysis::minecraft::{CommandLimitAssumptions, CommandLimitAssumptionsError};
 pub use api::{
-    ActivationContract, CommandLimitContract, ExecutionContract, LoweredFunction, LoweringFailure,
+    ActivationContract, ActivationDepthContract, CommandLimitContract, CommandLimitEvidence,
+    ExecutionContract, LoweredCommand, LoweredFunction, LoweredRunModifier, LoweringFailure,
     LoweringMap, LoweringOutput, LoweringPhase, RegisterSlot, lower_to_minecraft,
 };
 pub(crate) use names::GeneratedNames;
 pub use plan::{LoweringDecisionReport, LoweringDecisionStatistics};
+pub use preflight::{MinecraftRecipeId, RunModifierRecipeId};
+pub(crate) use preflight::{SelectedSemanticRecipe, TargetPreflight};
+pub use support::{MinecraftApiSupport, dump_supported_minecraft_api, supported_minecraft_api};
 
 /// Optimization policy for Core-to-Minecraft physical planning.
 ///

@@ -1,0 +1,6 @@
+// MDL: failure semantic frontend.check.unknown-member
+export fn unknown_method() {
+    run.as(mc.entities(ArmorStand).limit(1)) |speaker| {
+        speaker.shout("hello");
+    }
+}

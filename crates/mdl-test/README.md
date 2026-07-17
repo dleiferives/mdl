@@ -153,10 +153,140 @@ The separate =mdl= crate owns the command-line/filesystem boundary. Its ignored
 server test spawns the real binary, installs the safely materialized directory, and
 invokes the ABI printed by that process.
 
+## Stage 7A package compiler
+
+The Stage 7A server gate compiles a rooted two-module package under all four Core and
+Minecraft `None|Baseline` policy combinations. The root exports one function that
+calls a `pub` helper through a driver-provided local dependency name. One server
+startup installs all four packs and verifies both branch outcomes through the
+exported ABI:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test source_compilation \
+  stage7_cross_module_export_runs_all_four_policies_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+```
+
+The successful 2026-07-14 run used Homebrew OpenJDK 25.0.3 and the bundled official
+26.2 server artifact with SHA-256
+`cdacdfb25898de5e4b4b0e5ddcc2722f77067e46605709c2d886c000ebb63ec5`.
+The runnable artifact is the Mojang bundler JAR (`Main-Class:
+net.minecraft.bundler.Main`), not its extracted internal server JAR; the latter does
+not carry required libraries such as `joptsimple`. No client connection was used.
+
 The ordinary server harness is the initial path because compiler tests need direct
 function and command invocation. Mojang's dedicated GameTest entry point remains a
 useful later layer for tick-sensitive block and entity tests with JUnit-like XML
 reports.
+
+## Stage 7B unsafe-command boundary
+
+Two opt-in tests separate the compiler's deliberately narrow physical validation
+from vanilla Brigadier validation. The first compiles, loads, and executes two
+literal raw fragments under all four Core/Minecraft optimization combinations. Its
+first fragment is `return 1`, proving that raw control flow remains confined to the
+fragment's dedicated helper and cannot skip the following source statement. The
+second proves that an unknown but physically valid command remains compilable and is
+then rejected by the official server while loading the generated function:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test source_compilation \
+  stage7_literal_unsafe_command_runs_all_four_policies_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test source_compilation \
+  stage7_brigadier_invalid_unsafe_command_is_rejected_only_by_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+```
+
+These tests use the bundled server artifact described above and do not require a
+client connection.
+
+## Stage 7D typed `say`
+
+The typed-command gate compiles the canonical captured-executor program under all
+four Core/Minecraft optimization combinations. Before Java starts, it requires one
+structured `say` node and no raw command node in every target program. One server
+startup then force-loads an Overworld chunk, summons one uniquely named and tagged
+armor stand, and proves that each compiled export logs the message under that
+entity's name. The message deliberately includes repeated internal whitespace,
+quotes, a backslash, and Unicode so the same run proves their exact preservation.
+After removing the entity, it invokes every export again and proves the empty query
+emits no message. A separate handwritten
+`execute store result ... run say ...` probe records Java 26.2's native result as
+`1`; this intentionally does not confuse the nested command result with the
+compiled source function's `Void` ABI.
+
+The presence and absence observations use log checkpoints followed by unique
+console barriers, not sleeps. The server remains clientless throughout:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test source_compilation \
+  stage7_typed_say_runs_as_captured_executor_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+```
+
+The separate command-report audit runs the pinned distribution bundle in Mojang's
+data-generator mode and checks that the exact syntax leaf used by the typed recipe is
+still `say -> message: minecraft:message`. This is syntax evidence only; the server
+test above supplies the context, effect, multiplicity, and result evidence:
+
+```sh
+MDL_SERVER_JAR=/path/to/bundled-minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test official_command_report -- --ignored --nocapture
+```
+
+## Stage 7.5 spatial semantics
+
+The Stage 7.5 gate combines three independent forms of evidence. The official report
+test checks the selected `execute` and `teleport` Brigadier trees. A handwritten
+clientless probe measures frame changes, modifier order, local coordinates, anchors,
+dimension scaling, teleport outcome, and frame immutability. A compiler-generated
+probe then compiles the spatial source slice under all four optimization-policy
+combinations and executes every result in one server lifecycle:
+
+```sh
+MDL_SERVER_JAR=/path/to/bundled-minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test \
+  --test official_command_report \
+  --test spatial_command_semantics \
+  --test stage75_server \
+  -- --ignored --nocapture
+```
+
+The generated proof verifies frame-relative `teleport`, receiver-relative `move_by`,
+sequential teleport frame immutability, and structured output under Core/Minecraft
+`none|baseline`. Any behavioral drift preserves the sandbox for inspection.
+
+## Stage 8 activation and recursion
+
+The Stage 8 activation fixture is handwritten so it can measure Mojang behavior
+independently of compiler lowering. It covers empty, one, three, and nested 3×3
+contexts; complete child unwind; `return`; ordinary failure; typed command-storage
+tail frames; and command-limit residue followed by recovery. The compiler fixture
+then compiles direct/mutual recursion and recursion nested in a serial many-context
+run body under all four Core/Minecraft policy combinations. It checks distinct
+per-entity results, caller-live spill restoration, multiple results, balanced frames,
+and empty recovery state. Both run on the dedicated server without a client:
+
+```sh
+MDL_SERVER_JAR=/path/to/bundled-minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test \
+  --test stage8_activation_contract \
+  --test stage8_compiler_server \
+  -- --ignored --nocapture
+```
 
 ## Primary references
 

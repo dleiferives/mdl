@@ -1,0 +1,35 @@
+// MDL: success
+// HIR-COUNT-1: external @0 minecraft.Say receiver=Executor<ArmorStand> proof=run@1:modifier0 message="replaced executor"
+// HIR-ORDER: run @0
+// HIR-ORDER: as entities(ArmorStand).with_tag("outer").limit(1)
+// HIR-ORDER: capture outer: Executor<ArmorStand>
+// HIR-ORDER: run @1
+// HIR-ORDER: as entities(ArmorStand).with_tag("inner").limit(1)
+// HIR-ORDER: context ExecutionContext { executor: Established { value: ArmorStand, by: HirContextStep { run: SourceRunId(1), modifier_index: 0
+// HIR-ORDER: capture inner: Executor<ArmorStand> proof=HirContextStep { run: SourceRunId(1), modifier_index: 0
+// HIR-ORDER: external @0
+// CORE: query @query0 entities(ArmorStand).with_tag("outer").limit(1)
+// CORE: query @query1 entities(ArmorStand).with_tag("inner").limit(1)
+// CORE: run_scope @run0 [as @query0]
+// CORE: run_scope @run1 [as @query1]
+// LOWERING: derived_minimum_max_command_forks: 2
+// TARGET-COUNT-1: tags: ["outer"]
+// TARGET-COUNT-1: tags: ["inner"]
+// LOWERING-COUNT-1: semantic=Say recipe=Java26_2Say placement=direct
+// TARGET-COUNT-1: say message="replaced executor"
+// TARGET-NOT: raw.unknown
+// PACK-ORDER: == data/mdl_fixture/function/__mdl/f0/x0.mcfunction ==
+// PACK-ORDER: execute as @e[type=minecraft:armor_stand,tag=outer,limit=1] run function mdl_fixture:__mdl/f1/b0
+// PACK-ORDER: == data/mdl_fixture/function/__mdl/f1/b0.mcfunction ==
+// PACK-ORDER: function mdl_fixture:__mdl/f1/x0
+// PACK-ORDER: == data/mdl_fixture/function/__mdl/f1/x0.mcfunction ==
+// PACK-ORDER: execute as @e[type=minecraft:armor_stand,tag=inner,limit=1] run function mdl_fixture:__mdl/f2/b0
+// PACK-ORDER: == data/mdl_fixture/function/__mdl/f2/b0.mcfunction ==
+// PACK-ORDER: say replaced executor
+export fn nested_replaced_executor() {
+    run.as(mc.entities(ArmorStand).with_tag("outer").limit(1)) |outer| {
+        run.as(mc.entities(ArmorStand).with_tag("inner").limit(1)) |inner| {
+            inner.say("replaced executor");
+        }
+    }
+}

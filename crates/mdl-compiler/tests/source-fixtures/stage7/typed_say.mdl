@@ -1,0 +1,16 @@
+// MDL: success
+// HIR: minecraft.Say receiver=Executor<ArmorStand>
+// CORE: minecraft_op @mc0 Say receiver=ArmorStand message="hello from typed say"
+// CORE: external @ext1 minecraft.operation @mc0
+// LOWERING: semantic=Say recipe=Java26_2Say placement=direct
+// LOWERING: native-outcome=Exact(1)
+// LOWERING-COUNT-1: constructed-semantic-command
+// TARGET: say message="hello from typed say"
+// TARGET-NOT: raw.unknown
+// PACK-COUNT-1: execute as @e[type=minecraft:armor_stand,tag=stage7,limit=1] run function
+// PACK-COUNT-1: say hello from typed say
+export fn announce_typed() {
+    run.as(mc.entities(ArmorStand).with_tag("stage7").limit(1)) |speaker| {
+        speaker.say("hello from typed say");
+    }
+}

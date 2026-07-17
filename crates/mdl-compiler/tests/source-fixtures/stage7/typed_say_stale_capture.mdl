@@ -1,0 +1,8 @@
+// MDL: failure semantic frontend.check.scoped-capability-value
+export fn stale_capture() {
+    run.as(mc.entities(ArmorStand).with_tag("outer").limit(1)) |outer| {
+        run.as(mc.entities(ArmorStand).with_tag("inner").limit(1)) |inner| {
+            outer.say("stale");
+        }
+    }
+}

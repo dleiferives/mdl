@@ -22,8 +22,9 @@ data modify storage mdl:heap values append from storage mdl:runtime batch[]
 The `[]` path selects the elements rather than the list tag itself. Without it, the
 operation may append a nested list instead of extending the destination.
 
-Status: **Measured** for a non-empty homogeneous integer batch on vanilla 26.2.
-Empty, heterogeneous, and large-compound cases still require tests.
+Status: **Measured** for non-empty homogeneous and heterogeneous batches on vanilla
+26.2. An empty source selection leaves the target unchanged and returns
+success/result zero. Large-compound performance still requires benchmarks.
 
 ## Existing destination, ten literals
 
@@ -82,10 +83,7 @@ hitting a fork limit of one.
 
 ## Required tests
 
-- confirm `batch[]` extends instead of nesting;
-- empty source batch behavior and success/result values;
-- aliasing source and destination;
-- appending mixed element types in 26.2;
+- large nested-element copy cost;
 - batch size and element-size scaling;
 - ten individual appends versus staged bulk append;
 - newly constructed list versus repeated mutation.

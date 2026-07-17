@@ -3,10 +3,37 @@
 Each question below should eventually get its own file containing semantics,
 candidate implementations, optimization rules, failure behavior, and 26.2 tests.
 
+## Answered since this queue was opened
+
+- Native carriers and command domains: [`native-value-carriers.md`](native-value-carriers.md)
+- Scoreboard arithmetic, wildcard behavior, and regex boundary:
+  [`scoreboard-operations.md`](scoreboard-operations.md) and
+  [`scoreboard-wildcard.md`](scoreboard-wildcard.md)
+- Basal list operations, dynamic indices, exact NBT equality/count, matching,
+  stack/queue/reverse, and source-derived higher-order algorithms:
+  [`list-operation-algebra.md`](list-operation-algebra.md) and
+  [`lists/README.md`](lists/README.md)
+- Macro arguments and dynamic path safety: [`macro-composition.md`](macro-composition.md)
+- NBT compounds, dynamic keys, dictionary representations, reflection, references,
+  snapshots, schemas, and identity: [`nbt/README.md`](nbt/README.md)
+- Linear/cyclic ranges, runtime interval algebra, progressions, native float
+  conversion, and public float representations: [`ranges/README.md`](ranges/README.md)
+
+The exhaustive list research/test coverage ledger is
+[`lists/research-ledger.md`](lists/research-ledger.md). Consult it before repeating
+an experiment.
+
+The equivalent NBT/dictionary ledger is
+[`nbt/research-ledger.md`](nbt/research-ledger.md).
+
+The equivalent range/floating-point ledger is
+[`ranges/research-ledger.md`](ranges/research-ledger.md).
+
 ## Values and comparison
 
 - integer, fixed-point, NBT-number, string, and compound equality;
-- ordering and range comparison;
+- arbitrary native-float ordering remains open; integer, stopwatch, selector, and
+  predicate range domains are catalogued;
 - Boolean representation and negation;
 - `Option<T>` and `Result<T, E>` representation;
 - command success versus command result;
@@ -18,8 +45,9 @@ candidate implementations, optimization rules, failure behavior, and 26.2 tests.
 - add, subtract, multiply, divide, remainder, min, max, and swap;
 - constants without permanent scoreboard slots;
 - overflow detection and checked/saturating/wrapping modes;
-- fixed-point rescaling;
-- rounding, floor, ceiling, and absolute value;
+- fixed-point rescaling and overflow-safe multiply/divide;
+- a total rounding contract across fixed, decimal, native float, and command-result
+  boundaries;
 - powers, roots, trigonometry, logarithms, and lookup-table generation;
 - random numbers and deterministic sequences.
 
@@ -98,12 +126,12 @@ candidate implementations, optimization rules, failure behavior, and 26.2 tests.
 
 The next highest-leverage answers are:
 
-1. dynamic NBT equality;
-2. list get/set/remove by dynamic index;
-3. integer arithmetic and overflow;
-4. function arguments, return values, and frame layouts;
-5. if/match and finite-domain dispatch;
-6. string length/slice and exact Unicode semantics;
-7. selector/query planning;
-8. benchmarking methodology on the vanilla 26.2 server.
-
+1. representation-level benchmarks for tail, indexed, zipper, and ring list forms;
+2. fixed-point scale selection, overflow-safe multiplication/division, and rounding;
+3. typed function arguments, return values, effects, and frame layouts;
+4. if/match and finite-domain dispatch;
+5. exact Unicode semantics for string length/slice/iteration;
+6. selector/query planning;
+7. dictionary/index benchmarks for compound maps, record scans, buckets, and tries;
+8. benchmarking methodology on the vanilla 26.2 server;
+9. predicate interval edge cases and arbitrary float comparison policy.

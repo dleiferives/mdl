@@ -1,6 +1,13 @@
 # Stage 7A: Whole-Package Modules and Imports
 
-Status: **Accepted Stage 6I contract; implementation assigned to Stage 7A**
+Status: **Historical Stage 6I handoff; refined by
+[`stage-7-plan.md`](stage-7-plan.md)**
+
+The authoritative Stage 7 design replaces this plan's flat global `ModulePath` bag,
+absence of a root, and special `alias::function` grammar with a Zig-like rooted
+module graph, per-module dependency names, and uniform dotted postfix resolution.
+The deterministic ownership, visibility, cycle, diagnostic, and whole-package
+lessons below remain design input where they do not conflict with that refinement.
 
 This plan resolves the module/import contract during Stage 6I without prematurely
 creating a package manager, filesystem search algorithm, serialized interface

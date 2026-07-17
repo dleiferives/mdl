@@ -489,7 +489,10 @@ fn analyze_instruction(
                 None
             }
         }
-        CoreOp::BoolConstant(_) | CoreOp::I32Constant(_) | CoreOp::Call(_) => None,
+        CoreOp::BoolConstant(_)
+        | CoreOp::I32Constant(_)
+        | CoreOp::Call(_)
+        | CoreOp::External(_) => None,
     };
     if let Some(replacement) = replacement {
         return Ok(InstructionPlan::Replace(replacement));
@@ -610,7 +613,8 @@ fn constant_definition(body: &FunctionBody, value: ValueId) -> Option<TypedCoreC
         | CoreOp::I32AddOverflowing
         | CoreOp::I32Compare(_)
         | CoreOp::BoolNot
-        | CoreOp::Call(_) => None,
+        | CoreOp::Call(_)
+        | CoreOp::External(_) => None,
     }
 }
 

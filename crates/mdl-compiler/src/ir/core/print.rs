@@ -5,7 +5,8 @@ use std::fmt;
 use std::fmt::Write;
 
 use super::{
-    BlockTarget, CoreOp, CoreProgram, Diagnostics, FunctionBody, FunctionId, TerminatorKind,
+    BlockTarget, CoreOp, CoreProgram, Diagnostics, ExternalSemanticBinding, FunctionBody,
+    FunctionId, MinecraftOperationAttributes, RunModifierInstance, TargetFragment, TerminatorKind,
     ValueId, verify_program,
 };
 use crate::entity::EntityId;
@@ -61,8 +62,9 @@ impl<'a> CanonicalPrinter<'a> {
     #[must_use]
     pub fn render(&self) -> String {
         let mut output = String::new();
+        render_linked_inventories(&mut output, self.program);
         for (index, (function, declaration)) in self.program.functions().enumerate() {
-            if index != 0 {
+            if index != 0 || !output.is_empty() {
                 output.push('\n');
             }
             if let Some(body) = declaration.body() {
@@ -107,13 +109,9 @@ impl<'a> DebugDumper<'a> {
     }
 
     fn render_into(&self, output: &mut CappedDebugOutput) {
+        render_linked_inventories_debug(output, self.program);
         for (function, declaration) in self.program.functions() {
-            let _ = writeln!(
-                output,
-                "function @fn{} {:?}",
-                function.index(),
-                declaration.name_hint
-            );
+            write_debug_function_header(output, function, declaration);
             let Some(body) = declaration.body() else {
                 output.push_str("  <undefined>\n");
                 continue;
@@ -210,6 +208,44 @@ impl<'a> DebugDumper<'a> {
     }
 }
 
+fn render_linked_inventories_debug(output: &mut CappedDebugOutput, program: &CoreProgram) {
+    for (query, data) in program.entity_queries() {
+        let _ = writeln!(
+            output,
+            "query {query:?} {} steps={:?}",
+            data.semantic(),
+            data.steps()
+        );
+    }
+    for (scope, data) in program.run_scopes() {
+        let _ = writeln!(
+            output,
+            "run scope {scope:?} modifiers={:?} callee={:?} bounds={} origin={:?}",
+            data.modifiers(),
+            data.callee(),
+            data.invocation_bounds(),
+            data.origin()
+        );
+    }
+    for (fragment, data) in program.target_fragments() {
+        let _ = writeln!(output, "fragment {fragment:?} {data:?}");
+    }
+    for (operation, data) in program.minecraft_operations() {
+        let _ = writeln!(output, "minecraft operation {operation:?} {data:?}");
+    }
+    for (operation, declaration) in program.external_ops() {
+        let _ = writeln!(
+            output,
+            "external {:?} binding={:?} params={:?} results={:?} origin={:?}",
+            operation,
+            declaration.binding(),
+            declaration.parameters(),
+            declaration.results(),
+            declaration.origin()
+        );
+    }
+}
+
 /// Internal result used to construct public, typed optimizer failure snapshots.
 pub(crate) struct BoundedDebugRender {
     pub(crate) text: String,
@@ -292,6 +328,20 @@ impl fmt::Write for CappedDebugOutput {
     }
 }
 
+fn write_debug_function_header(
+    output: &mut CappedDebugOutput,
+    function: FunctionId,
+    declaration: &super::Function,
+) {
+    let _ = writeln!(
+        output,
+        "function @fn{} {:?} linkage={}",
+        function.index(),
+        declaration.name_hint,
+        declaration.linkage,
+    );
+}
+
 impl fmt::Display for DebugDumper<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.render())
@@ -304,6 +354,9 @@ fn render_function(
     declaration: &super::Function,
     body: &FunctionBody,
 ) {
+    if declaration.linkage == super::CoreFunctionLinkage::DatapackExport {
+        output.push_str("export ");
+    }
     let _ = write!(output, "func @fn{}(", function.index());
     let entry = body
         .block(body.entry)
@@ -405,7 +458,124 @@ fn render_operation(output: &mut String, op: &CoreOp) {
         CoreOp::Call(function) => {
             let _ = write!(output, " @fn{}", function.index());
         }
+        CoreOp::External(operation) => {
+            let _ = write!(output, " @ext{}", operation.index());
+        }
         CoreOp::I32AddWrapping | CoreOp::I32AddOverflowing | CoreOp::BoolNot => {}
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "canonical inventory rendering is intentionally exhaustive and centralized"
+)]
+fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
+    for (query, data) in program.entity_queries() {
+        let _ = writeln!(output, "query @query{} {}", query.index(), data.semantic());
+    }
+    for (scope, data) in program.run_scopes() {
+        let _ = write!(output, "run_scope @run{} [", scope.index());
+        for (index, modifier) in data.modifiers().iter().cloned().enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            match modifier {
+                RunModifierInstance::AsEntityQuery { query, .. } => {
+                    let _ = write!(output, "as @query{}", query.index());
+                }
+                RunModifierInstance::AtEntityQuery { query, .. } => {
+                    let _ = write!(output, "at @query{}", query.index());
+                }
+                RunModifierInstance::AtExecutor { kind, .. } => {
+                    let _ = write!(output, "at_executor {kind}");
+                }
+                RunModifierInstance::Positioned { position, .. } => {
+                    let _ = write!(output, "positioned {position:?}");
+                }
+                RunModifierInstance::Rotated { rotation, .. } => {
+                    let _ = write!(output, "rotated {rotation:?}");
+                }
+                RunModifierInstance::In { dimension, .. } => {
+                    let _ = write!(output, "in {dimension:?}");
+                }
+                RunModifierInstance::Anchored { anchor, .. } => {
+                    let _ = write!(output, "anchored {anchor:?}");
+                }
+                RunModifierInstance::Align { axes, .. } => {
+                    let _ = write!(output, "align {}", axes.as_str());
+                }
+            }
+        }
+        let _ = writeln!(
+            output,
+            "] invoke @fn{} bounds {}",
+            data.callee().index(),
+            data.invocation_bounds()
+        );
+    }
+    for (fragment, data) in program.target_fragments() {
+        match data {
+            TargetFragment::UnsafeMinecraftCommand(command) => {
+                let _ = writeln!(
+                    output,
+                    "fragment @frag{} unsafe.minecraft {:?}",
+                    fragment.index(),
+                    command.as_str()
+                );
+            }
+        }
+    }
+    for (operation, data) in program.minecraft_operations() {
+        let _ = write!(
+            output,
+            "minecraft_op @mc{} {:?} receiver={} ",
+            operation.index(),
+            data.key(),
+            data.receiver_kind()
+        );
+        match data.attributes() {
+            MinecraftOperationAttributes::Say {
+                message,
+                message_origin: _,
+            } => {
+                let _ = writeln!(output, "message={:?}", message.as_str());
+            }
+            MinecraftOperationAttributes::Teleport { position, .. } => {
+                let _ = writeln!(output, "position={position:?}");
+            }
+            MinecraftOperationAttributes::MoveBy { offset, .. } => {
+                let _ = writeln!(output, "offset={offset:?}");
+            }
+        }
+    }
+    for (operation, declaration) in program.external_ops() {
+        let _ = write!(output, "external @ext{} ", operation.index());
+        match declaration.binding() {
+            ExternalSemanticBinding::UnsafeTargetFragment(fragment) => {
+                let _ = write!(output, "unsafe.fragment @frag{}", fragment.index());
+            }
+            ExternalSemanticBinding::MinecraftRunScope(scope) => {
+                let _ = write!(output, "minecraft.run_scope @run{}", scope.index());
+            }
+            ExternalSemanticBinding::MinecraftOperation(semantic) => {
+                let _ = write!(output, "minecraft.operation @mc{}", semantic.index());
+            }
+        }
+        output.push_str(" : (");
+        for (index, ty) in declaration.parameters().iter().enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            let _ = write!(output, "{ty}");
+        }
+        output.push_str(") -> (");
+        for (index, ty) in declaration.results().iter().enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            let _ = write!(output, "{ty}");
+        }
+        output.push_str(")\n");
     }
 }
 
@@ -476,6 +646,31 @@ mod tests {
     use crate::entity::EntityId;
     use crate::ir::core::{BlockId, FunctionBuilder, InstId, Terminator, ValueDef};
     use crate::source::OriginId;
+
+    #[test]
+    fn linked_inventories_have_stable_canonical_and_debug_forms() {
+        let sources = SourceContext::new();
+        let mut program = CoreProgram::new();
+        let fragment = program
+            .declare_target_fragment(TargetFragment::unsafe_minecraft_command("say π").unwrap())
+            .unwrap();
+        program
+            .declare_external_op(
+                ExternalSemanticBinding::UnsafeTargetFragment(fragment),
+                vec![],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+
+        assert_eq!(
+            CanonicalPrinter::new(&program, &sources).unwrap().render(),
+            "fragment @frag0 unsafe.minecraft \"say π\"\nexternal @ext0 unsafe.fragment @frag0 : () -> ()\n"
+        );
+        let debug = DebugDumper::new(&program).render();
+        assert!(debug.contains("fragment TargetFragmentId(0)"));
+        assert!(debug.contains("external ExternalOpId(0)"));
+    }
 
     #[test]
     fn bounded_dump_is_prefix_exact_for_dangling_ids() {

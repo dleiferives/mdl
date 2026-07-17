@@ -1,0 +1,6 @@
+// MDL: failure semantic frontend.check.invalid-message-literal
+export fn interpolated_message() {
+    run.as(mc.entities(ArmorStand).limit(1)) |speaker| {
+        speaker.say("hello @s");
+    }
+}

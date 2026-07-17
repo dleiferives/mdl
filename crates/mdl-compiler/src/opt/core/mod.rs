@@ -621,9 +621,12 @@ mod tests {
     };
     use crate::entity::EntityId;
     use crate::ir::core::{
-        BlockTarget, CanonicalPrinter, CoreProgram, CoreType, FunctionBuilder, FunctionId,
-        I32Predicate, Terminator, TerminatorKind, reset_verifier_counters, verifier_counters,
+        BlockTarget, CanonicalPrinter, CoreOp, CoreProgram, CoreType, ExternalSemanticBinding,
+        FunctionBuilder, FunctionId, I32Predicate, MinecraftOperationAttributes,
+        MinecraftOperationOrigins, TargetFragment, Terminator, TerminatorKind,
+        reset_verifier_counters, verifier_counters,
     };
+    use crate::ir::semantic::{EntityKind, MessageLiteral, MinecraftSemanticKey};
     use crate::source::{OriginId, SourceContext};
 
     fn empty_return_program(sources: &SourceContext) -> (CoreProgram, FunctionId) {
@@ -642,6 +645,105 @@ mod tests {
             .define_function(function, builder.finish().unwrap())
             .unwrap();
         (program, function)
+    }
+
+    #[test]
+    fn baseline_preserves_ordered_opaque_external_operations_and_inventories() {
+        let sources = SourceContext::new();
+        let mut program = CoreProgram::new();
+        let fragment = program
+            .declare_target_fragment(
+                TargetFragment::unsafe_minecraft_command("say barrier").unwrap(),
+            )
+            .unwrap();
+        let external = program
+            .declare_external_op(
+                ExternalSemanticBinding::UnsafeTargetFragment(fragment),
+                vec![],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let semantic_operation = program
+            .declare_minecraft_operation(
+                MinecraftSemanticKey::Say,
+                EntityKind::ArmorStand,
+                MinecraftOperationAttributes::Say {
+                    message: MessageLiteral::new("typed barrier").unwrap(),
+                    message_origin: OriginId::UNKNOWN,
+                },
+                MinecraftOperationOrigins::new(
+                    OriginId::UNKNOWN,
+                    OriginId::UNKNOWN,
+                    OriginId::UNKNOWN,
+                ),
+            )
+            .unwrap();
+        let semantic_external = program
+            .declare_external_op(
+                ExternalSemanticBinding::MinecraftOperation(semantic_operation),
+                vec![],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let function = program
+            .declare_function(Some("barriers"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&program, &sources, function).unwrap();
+        let body = builder.create_block(OriginId::UNKNOWN).unwrap();
+        builder.i32_constant(1, OriginId::UNKNOWN).unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Jump(BlockTarget::new(body, vec![])),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        builder.switch_to_block(body).unwrap();
+        builder
+            .external(external, vec![], OriginId::UNKNOWN)
+            .unwrap();
+        builder
+            .external(semantic_external, vec![], OriginId::UNKNOWN)
+            .unwrap();
+        builder
+            .external(semantic_external, vec![], OriginId::UNKNOWN)
+            .unwrap();
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        program
+            .define_function(function, builder.finish().unwrap())
+            .unwrap();
+
+        let output = optimize_core(
+            program,
+            &sources,
+            &CoreOptimizationOptions::new(CoreOptimizationLevel::Baseline),
+        )
+        .unwrap();
+        assert_eq!(output.program().target_fragments().len(), 1);
+        assert_eq!(output.program().minecraft_operations().len(), 1);
+        assert_eq!(output.program().external_ops().len(), 2);
+        let body = output.program().function(function).unwrap().body().unwrap();
+        assert_eq!(body.block_order().len(), 1);
+        let operations = body
+            .block_order()
+            .iter()
+            .flat_map(|block| body.block(*block).unwrap().instructions())
+            .map(|instruction| body.instruction(*instruction).unwrap().op().clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations,
+            [
+                CoreOp::External(external),
+                CoreOp::External(semantic_external),
+                CoreOp::External(semantic_external),
+            ]
+        );
     }
 
     #[test]

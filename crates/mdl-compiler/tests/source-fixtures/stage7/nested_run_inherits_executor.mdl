@@ -1,0 +1,29 @@
+// MDL: success
+// HIR-COUNT-1: external @0 minecraft.Say receiver=Executor<ArmorStand> proof=run@0:modifier0 message="inherited executor"
+// HIR-ORDER: run @0
+// HIR-ORDER: as entities(ArmorStand).with_tag("outer").limit(1)
+// HIR-ORDER: capture outer: Executor<ArmorStand>
+// HIR-ORDER: run @1
+// HIR-ORDER: context ExecutionContext { executor: Established { value: ArmorStand, by: HirContextStep { run: SourceRunId(0), modifier_index: 0
+// HIR-ORDER: capture inherited: Executor<ArmorStand> proof=HirContextStep { run: SourceRunId(0), modifier_index: 0
+// HIR-ORDER: external @0
+// CORE-COUNT-1: run_scope @run0 [as @query0]
+// CORE: query @query0 entities(ArmorStand).with_tag("outer").limit(1)
+// LOWERING: derived_minimum_max_command_forks: 2
+// TARGET-COUNT-1: tags: ["outer"]
+// LOWERING-COUNT-1: semantic=Say recipe=Java26_2Say placement=direct
+// TARGET-COUNT-1: say message="inherited executor"
+// TARGET-NOT: raw.unknown
+// PACK-ORDER: == data/mdl_fixture/function/__mdl/f0/x0.mcfunction ==
+// PACK-ORDER: execute as @e[type=minecraft:armor_stand,tag=outer,limit=1] run function mdl_fixture:__mdl/f1/b0
+// PACK-ORDER: == data/mdl_fixture/function/__mdl/f1/b0.mcfunction ==
+// PACK-ORDER: function mdl_fixture:__mdl/f2/b0
+// PACK-ORDER: == data/mdl_fixture/function/__mdl/f2/b0.mcfunction ==
+// PACK-ORDER: say inherited executor
+export fn nested_inherited_executor() {
+    run.as(mc.entities(ArmorStand).with_tag("outer").limit(1)) |outer| {
+        run |inherited| {
+            inherited.say("inherited executor");
+        }
+    }
+}

@@ -1,9 +1,10 @@
 #[cfg(test)]
 use crate::entity::EntityLimitError;
 use crate::entity::{EntityId, EntityVec, entity_id};
-#[cfg(test)]
-use crate::ir::core::CoreProgram;
-use crate::ir::core::{BlockId, CoreType, FunctionId, InstId, ValueId};
+use crate::ir::core::{
+    BlockId, CoreAmbientAnalysis, CoreFunctionLinkage, CoreProgram, CoreType, ExternalOpId,
+    FunctionId, InstId, ValueId,
+};
 use crate::ir::minecraft::{
     FakeScoreHolder, FunctionResourceId, ObjectiveName, PackNamespace, ScoreRef, StoragePath,
 };
@@ -13,11 +14,18 @@ use crate::target::JavaEditionTarget;
 #[cfg(test)]
 use super::LoweringOptions;
 pub(crate) use super::analysis::BranchArm;
+#[cfg(test)]
+use super::assignment::HomeAssignment;
 use super::coalescing::CoalescingFallbackReason;
+use super::physical_preflight::PhysicalPreflight;
 #[cfg(test)]
 use super::placement::RecipeDecisionReason;
 use super::placement::{BlockPlacement, BranchArmRecipe, BranchRecipe, ControlRecipeStatistics};
-use super::{CommandLimitAssumptions, GeneratedNames, MinecraftOptimizationLevel};
+use super::realization::PhysicalRealizationPlan;
+use super::{
+    GeneratedNames, MinecraftOptimizationLevel, MinecraftRecipeId, SelectedSemanticRecipe,
+    TargetPreflight,
+};
 
 mod assemble;
 #[cfg(test)]
@@ -121,6 +129,10 @@ impl PlannedFunction {
 pub(crate) enum PlannedFunctionRole {
     Load,
     InitTryCreate,
+    ExternalHelper {
+        function: FunctionId,
+        instruction: InstId,
+    },
     Block {
         function: FunctionId,
         block: BlockId,
@@ -166,6 +178,18 @@ impl CallResultDestination {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum InstructionPlan {
     OmittedPure,
+    /// One retained declaration-backed operation outside the scalar vocabulary.
+    External {
+        /// Dedicated one-line helper that contains the opaque target fragment.
+        helper: PlannedFunctionId,
+    },
+    /// One target-preflight-selected typed Minecraft command emitted in place.
+    Minecraft {
+        /// Core external declaration whose semantic instance was selected.
+        external: ExternalOpId,
+        /// Exact target construction recipe selected before resource allocation.
+        recipe: MinecraftRecipeId,
+    },
     Scalar {
         operands: Box<[HomeId]>,
         results: Box<[ScalarResultPlacement]>,
@@ -284,6 +308,7 @@ pub(crate) enum EdgeTransfer {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FunctionLayout {
+    linkage: CoreFunctionLinkage,
     diagnostic_name_hint: Option<Box<str>>,
     parameter_types: Box<[CoreType]>,
     result_types: Box<[CoreType]>,
@@ -291,12 +316,35 @@ pub(crate) struct FunctionLayout {
     block_placements: Box<[Option<BlockPlacement>]>,
     branch_recipes: Box<[Option<BranchRecipe>]>,
     block_functions: Box<[Option<PlannedFunctionId>]>,
+    /// Final identities corresponding index-for-index to assignment homes.
+    assigned_homes: Box<[HomeId]>,
     value_homes: Box<[Option<HomeId>]>,
     parallel_copy_temp: Option<HomeId>,
     edge_temporaries: Box<[HomeId]>,
     instruction_plans: Box<[Option<InstructionPlan>]>,
     edge_transfers: Box<[Option<EdgeTransfer>]>,
     coalescing: Option<FunctionCoalescingPlan>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RecursiveSpill {
+    home: HomeId,
+    storage_ordinal: u32,
+    ty: CoreType,
+}
+
+impl RecursiveSpill {
+    pub(crate) const fn home(self) -> HomeId {
+        self.home
+    }
+
+    pub(crate) const fn storage_ordinal(self) -> u32 {
+        self.storage_ordinal
+    }
+
+    pub(crate) const fn ty(self) -> CoreType {
+        self.ty
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,6 +383,7 @@ impl FunctionCoalescingPlan {
 #[cfg(test)]
 #[derive(Clone, Debug)]
 pub(super) struct FunctionLayoutBuilder {
+    pub(super) linkage: CoreFunctionLinkage,
     pub(super) diagnostic_name_hint: Option<Box<str>>,
     pub(super) parameter_types: Box<[CoreType]>,
     pub(super) result_types: Box<[CoreType]>,
@@ -357,7 +406,10 @@ pub(crate) struct PackAbi {
 pub(crate) struct LoweringPlan {
     optimization_level: MinecraftOptimizationLevel,
     target: JavaEditionTarget,
-    command_limit_assumptions: CommandLimitAssumptions,
+    preflight: TargetPreflight,
+    physical: PhysicalRealizationPlan,
+    physical_preflight: PhysicalPreflight,
+    ambient: CoreAmbientAnalysis,
     namespace: PackNamespace,
     pack_abi: PackAbi,
     load: PlannedFunctionId,
@@ -369,12 +421,31 @@ pub(crate) struct LoweringPlan {
 }
 
 impl LoweringPlan {
-    pub(crate) fn report(&self) -> LoweringDecisionReport {
-        LoweringDecisionReport::from_plan(self)
+    pub(crate) fn report(&self, core: &CoreProgram) -> LoweringDecisionReport {
+        LoweringDecisionReport::from_plan(core, self)
     }
 
     pub(crate) const fn target(&self) -> JavaEditionTarget {
         self.target
+    }
+
+    pub(crate) fn selected_semantic_recipe(
+        &self,
+        external: ExternalOpId,
+    ) -> Option<&SelectedSemanticRecipe> {
+        self.preflight.selected_recipe(external)
+    }
+
+    pub(crate) const fn preflight(&self) -> &TargetPreflight {
+        &self.preflight
+    }
+
+    pub(crate) const fn physical_preflight(&self) -> PhysicalPreflight {
+        self.physical_preflight
+    }
+
+    pub(crate) const fn ambient(&self) -> &CoreAmbientAnalysis {
+        &self.ambient
     }
 
     #[allow(
@@ -413,6 +484,43 @@ impl LoweringPlan {
             holder.into(),
             self.pack_abi.register_objective.clone(),
         ))
+    }
+
+    pub(crate) fn recursive_spill_homes(
+        &self,
+        function: FunctionId,
+        instruction: InstId,
+    ) -> Option<impl ExactSizeIterator<Item = RecursiveSpill> + '_> {
+        let layout = self.functions.get(function)?;
+        let spills = self.physical.recursive_call_spills(function, instruction)?;
+        Some(
+            spills.map(|(assigned, storage_ordinal, ty)| RecursiveSpill {
+                home: layout.assigned_homes
+                    [usize::try_from(assigned.index()).expect("assigned home indices fit usize")],
+                storage_ordinal,
+                ty,
+            }),
+        )
+    }
+
+    pub(crate) fn call_is_recursive(&self, caller: FunctionId, instruction: InstId) -> bool {
+        self.physical.call_is_recursive(caller, instruction)
+    }
+
+    pub(crate) fn has_recursive_activation(&self) -> bool {
+        self.physical.has_recursive_activation()
+    }
+
+    pub(crate) fn activation_frames(&self) -> StoragePath {
+        GeneratedNames::activation_frames_for(&self.namespace)
+    }
+
+    pub(crate) fn activation_frame_spill(&self, storage_ordinal: u32) -> StoragePath {
+        GeneratedNames::activation_frame_spill_for(&self.activation_frames(), storage_ordinal)
+    }
+
+    pub(crate) fn activation_frame(&self) -> StoragePath {
+        GeneratedNames::activation_frame_for(&self.activation_frames())
     }
 
     pub(crate) fn home_type(&self, home: HomeId) -> Option<CoreType> {
@@ -546,6 +654,7 @@ impl PlanBuilder {
                 .ok_or(PlanBuildError::MissingDefinition { function })?;
             let planned_function = functions
                 .push(FunctionLayoutBuilder {
+                    linkage: declaration.linkage(),
                     diagnostic_name_hint: declaration.name_hint().map(Into::into),
                     parameter_types: declaration.parameters().into(),
                     result_types: declaration.results().into(),
@@ -624,6 +733,10 @@ impl PlanBuilder {
         let resource = match role {
             PlannedFunctionRole::Load => names.load_function(),
             PlannedFunctionRole::InitTryCreate => names.init_try_create_function(),
+            PlannedFunctionRole::ExternalHelper {
+                function,
+                instruction,
+            } => names.external_helper_function(function, instruction),
             PlannedFunctionRole::Block { function, block } => names.block_function(function, block),
             PlannedFunctionRole::BranchHelper { function, edge } => {
                 names.branch_helper_function(function, edge.source(), edge.arm())
@@ -640,11 +753,34 @@ impl PlanBuilder {
             })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the cfg(test) legacy planner oracle freezes its complete mutable state at one boundary"
+    )]
     pub(crate) fn finish(
         mut self,
         core: &CoreProgram,
         analyses: &super::analysis::SemanticInventory,
     ) -> Result<LoweringPlan, PlanFinishError> {
+        let command_limit_evidence = super::audit::audit_legality(
+            core,
+            analyses,
+            self.options.target(),
+            self.options.command_limit_assumptions(),
+        )
+        .map_err(PlanFinishError::Invalid)?;
+        let preflight = TargetPreflight::new(
+            core,
+            analyses,
+            self.options.target(),
+            command_limit_evidence,
+        )
+        .map_err(PlanFinishError::Invalid)?;
+        let ambient =
+            CoreAmbientAnalysis::analyze(core).map_err(|_| PlanBuildError::InvalidPhaseInput {
+                phase: PlanInputPhase::ControlRecipes,
+                function: None,
+            })?;
         self.populate_legacy_instruction_plans(core, analyses)?;
         let load = self.load.ok_or(PlanBuildError::MissingScaffolding {
             role: ScaffoldingRole::Load,
@@ -701,6 +837,7 @@ impl PlanBuilder {
             }
             let frozen_function = functions
                 .push(FunctionLayout {
+                    linkage: layout.linkage,
                     diagnostic_name_hint: layout.diagnostic_name_hint,
                     parameter_types: layout.parameter_types,
                     result_types: layout.result_types,
@@ -708,6 +845,7 @@ impl PlanBuilder {
                     block_placements: block_placements.into_boxed_slice(),
                     branch_recipes: branch_recipes.into_boxed_slice(),
                     block_functions: layout.block_functions.into_boxed_slice(),
+                    assigned_homes: Box::new([]),
                     value_homes: layout.value_homes.into_boxed_slice(),
                     parallel_copy_temp: layout.parallel_copy_temp,
                     edge_temporaries,
@@ -724,10 +862,37 @@ impl PlanBuilder {
             register_objective: self.options.register_objective().clone(),
             init_sentinel: self.options.generated_names().init_sentinel(),
         };
+        let compatibility_assignment = HomeAssignment::for_none(core, analyses).map_err(|_| {
+            PlanBuildError::InvalidPhaseInput {
+                phase: PlanInputPhase::Assignment,
+                function: None,
+            }
+        })?;
+        let physical = PhysicalRealizationPlan::for_score_compatibility(
+            core,
+            analyses,
+            &compatibility_assignment,
+            None,
+            super::realization::PhysicalPlanningLimits::DEFAULT,
+        )
+        .map_err(|_| PlanBuildError::InvalidPhaseInput {
+            phase: PlanInputPhase::Assignment,
+            function: None,
+        })?;
+        let physical_preflight =
+            PhysicalPreflight::new(self.options.target(), &physical).map_err(|_| {
+                PlanBuildError::InvalidPhaseInput {
+                    phase: PlanInputPhase::Assignment,
+                    function: None,
+                }
+            })?;
         let plan = LoweringPlan {
             optimization_level: self.options.optimization_level(),
             target: self.options.target(),
-            command_limit_assumptions: self.options.command_limit_assumptions(),
+            preflight,
+            physical,
+            physical_preflight,
+            ambient,
             namespace: self.options.namespace().clone(),
             pack_abi,
             load,
@@ -763,14 +928,16 @@ impl PlanBuilder {
                 let data = body
                     .instruction(instruction)
                     .ok_or(PlanBuildError::InvalidCoreEntity { function })?;
-                let operands = data
-                    .operands()
-                    .iter()
-                    .copied()
-                    .map(|value| legacy_value_home(layout, function, value))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_boxed_slice();
-                let plan = if matches!(data.op(), crate::ir::core::CoreOp::Call(_)) {
+                let plan = if matches!(data.op(), crate::ir::core::CoreOp::External(_)) {
+                    return Err(PlanBuildError::InvalidCoreEntity { function });
+                } else if matches!(data.op(), crate::ir::core::CoreOp::Call(_)) {
+                    let operands = data
+                        .operands()
+                        .iter()
+                        .copied()
+                        .map(|value| legacy_value_home(layout, function, value))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_boxed_slice();
                     let result_destinations = data
                         .results()
                         .iter()
@@ -790,6 +957,13 @@ impl PlanBuilder {
                         result_destinations,
                     }
                 } else {
+                    let operands = data
+                        .operands()
+                        .iter()
+                        .copied()
+                        .map(|value| legacy_value_home(layout, function, value))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_boxed_slice();
                     let results = data
                         .results()
                         .iter()

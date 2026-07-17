@@ -9,6 +9,8 @@ use crate::frontend::token::{Token, TokenBuffer, TokenKind};
 use crate::source::{FileId, Origin, OriginError, SourceContext, SourceError, Span};
 
 const UNKNOWN_CHARACTER_CODE: &str = "frontend.lex.unknown-character";
+const INVALID_STRING_ESCAPE_CODE: &str = "frontend.lex.invalid-string-escape";
+const UNTERMINATED_STRING_CODE: &str = "frontend.lex.unterminated-string";
 const TRUNCATED_CODE: &str = "frontend.lex.truncated";
 
 /// Tokens and recoverable lexical diagnostics for one source file.
@@ -200,18 +202,45 @@ fn scan_source(
                 while index < bytes.len() && bytes[index].is_ascii_digit() {
                     index += 1;
                 }
+                let kind = if bytes.get(index) == Some(&b'.')
+                    && bytes.get(index + 1).is_some_and(u8::is_ascii_digit)
+                {
+                    index += 1;
+                    while index < bytes.len() && bytes[index].is_ascii_digit() {
+                        index += 1;
+                    }
+                    TokenKind::DecimalNumber
+                } else {
+                    TokenKind::DecimalInteger
+                };
                 let span = span(sources, file, start, index, bytes.len())?;
+                if !push_token(&mut tokens, kind, span, non_eof_capacity, &mut truncation) {
+                    break;
+                }
+            }
+            b'"' => {
+                let start = index;
+                index = scan_string_literal(
+                    sources,
+                    file,
+                    text,
+                    index,
+                    &mut findings,
+                    &mut truncation,
+                    limits.max_diagnostics(),
+                )?;
+                let string_span = span(sources, file, start, index, bytes.len())?;
                 if !push_token(
                     &mut tokens,
-                    TokenKind::DecimalInteger,
-                    span,
+                    TokenKind::StringLiteral,
+                    string_span,
                     non_eof_capacity,
                     &mut truncation,
                 ) {
                     break;
                 }
             }
-            byte => {
+            _ => {
                 let (kind, width) = punctuation(bytes, index);
                 if let Some(kind) = kind {
                     let start = index;
@@ -221,42 +250,138 @@ fn scan_source(
                         break;
                     }
                 } else {
-                    let character =
-                        if byte.is_ascii() {
-                            index += 1;
-                            char::from(byte)
-                        } else {
-                            let character = text[index..].chars().next().ok_or(
-                                SourceError::NotCharBoundary {
-                                    file,
-                                    offset: u32::try_from(index).unwrap_or(u32::MAX),
-                                },
-                            )?;
-                            index += character.len_utf8();
-                            character
-                        };
-                    let character_start = index - character.len_utf8();
-                    let character_span = span(sources, file, character_start, index, bytes.len())?;
-                    record_unknown(
+                    index = scan_unknown_character(
+                        sources,
+                        file,
+                        text,
+                        index,
                         &mut findings,
                         &mut truncation,
-                        character,
-                        character_span,
                         limits.max_diagnostics(),
-                    );
+                    )?;
                 }
             }
         }
     }
 
+    finish_scan(sources, file, file_end, tokens, findings, truncation)
+}
+
+fn finish_scan(
+    sources: &SourceContext,
+    file: FileId,
+    file_end: u32,
+    mut tokens: Vec<Token>,
+    findings: Vec<PendingDiagnostic>,
+    truncation: Option<Truncation>,
+) -> Result<ScanOutput, SourceError> {
     let eof_span = sources.span(file, file_end, file_end)?;
     tokens.push(Token::new(TokenKind::EndOfFile, eof_span));
-
     Ok(ScanOutput {
         tokens,
         findings,
         truncation,
     })
+}
+
+fn scan_unknown_character(
+    sources: &SourceContext,
+    file: FileId,
+    text: &str,
+    start: usize,
+    findings: &mut Vec<PendingDiagnostic>,
+    truncation: &mut Option<Truncation>,
+    max_diagnostics: usize,
+) -> Result<usize, SourceError> {
+    let character = text[start..]
+        .chars()
+        .next()
+        .ok_or(SourceError::NotCharBoundary {
+            file,
+            offset: u32::try_from(start).unwrap_or(u32::MAX),
+        })?;
+    let end = start + character.len_utf8();
+    let character_span = span(sources, file, start, end, text.len())?;
+    record_unknown(
+        findings,
+        truncation,
+        character,
+        character_span,
+        max_diagnostics,
+    );
+    Ok(end)
+}
+
+fn scan_string_literal(
+    sources: &SourceContext,
+    file: FileId,
+    text: &str,
+    start: usize,
+    findings: &mut Vec<PendingDiagnostic>,
+    truncation: &mut Option<Truncation>,
+    max_diagnostics: usize,
+) -> Result<usize, SourceError> {
+    let bytes = text.as_bytes();
+    let mut index = start + 1;
+    let mut terminated = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                index += 1;
+                terminated = true;
+                break;
+            }
+            b'\n' | b'\r' => break,
+            b'\\' => {
+                let escape_start = index;
+                index += 1;
+                if index >= bytes.len() || matches!(bytes[index], b'\n' | b'\r') {
+                    break;
+                }
+                let escaped = bytes[index];
+                if matches!(escaped, b'"' | b'\\' | b'n' | b'r' | b't' | b'0') {
+                    index += 1;
+                    continue;
+                }
+                index = next_scalar_end(text, file, index)?;
+                let escape_span = span(sources, file, escape_start, index, bytes.len())?;
+                record_finding(
+                    findings,
+                    truncation,
+                    INVALID_STRING_ESCAPE_CODE,
+                    "invalid string escape; expected `\\\"`, `\\\\`, `\\n`, `\\r`, `\\t`, or `\\0`",
+                    escape_span,
+                    max_diagnostics,
+                );
+            }
+            byte if byte.is_ascii() => index += 1,
+            _ => index = next_scalar_end(text, file, index)?,
+        }
+    }
+
+    if !terminated {
+        let string_span = span(sources, file, start, index, bytes.len())?;
+        record_finding(
+            findings,
+            truncation,
+            UNTERMINATED_STRING_CODE,
+            "unterminated string literal",
+            string_span,
+            max_diagnostics,
+        );
+    }
+    Ok(index)
+}
+
+fn next_scalar_end(text: &str, file: FileId, index: usize) -> Result<usize, SourceError> {
+    let character = text[index..]
+        .chars()
+        .next()
+        .ok_or(SourceError::NotCharBoundary {
+            file,
+            offset: u32::try_from(index).unwrap_or(u32::MAX),
+        })?;
+    Ok(index + character.len_utf8())
 }
 
 fn push_token(
@@ -285,10 +410,28 @@ fn record_unknown(
     span: Span,
     max_diagnostics: usize,
 ) {
+    record_finding(
+        findings,
+        truncation,
+        UNKNOWN_CHARACTER_CODE,
+        format!("unknown character {character:?}"),
+        span,
+        max_diagnostics,
+    );
+}
+
+fn record_finding(
+    findings: &mut Vec<PendingDiagnostic>,
+    truncation: &mut Option<Truncation>,
+    code: &'static str,
+    message: impl Into<String>,
+    span: Span,
+    max_diagnostics: usize,
+) {
     if findings.len() < max_diagnostics {
         findings.push(PendingDiagnostic {
-            code: UNKNOWN_CHARACTER_CODE,
-            message: format!("unknown character {character:?}"),
+            code,
+            message: message.into(),
             span,
         });
         return;
@@ -341,10 +484,15 @@ fn punctuation(bytes: &[u8], index: usize) -> (Option<TokenKind>, usize) {
         (b':', _) => (Some(TokenKind::Colon), 1),
         (b';', _) => (Some(TokenKind::Semicolon), 1),
         (b',', _) => (Some(TokenKind::Comma), 1),
+        (b'.', _) => (Some(TokenKind::Dot), 1),
+        (b'|', _) => (Some(TokenKind::Pipe), 1),
         (b'=', _) => (Some(TokenKind::Equal), 1),
         (b'!', _) => (Some(TokenKind::Bang), 1),
         (b'<', _) => (Some(TokenKind::Less), 1),
         (b'>', _) => (Some(TokenKind::Greater), 1),
+        (b'-', _) => (Some(TokenKind::Minus), 1),
+        (b'~', _) => (Some(TokenKind::Tilde), 1),
+        (b'^', _) => (Some(TokenKind::Caret), 1),
         _ => (None, 1),
     }
 }
@@ -360,6 +508,12 @@ const fn is_identifier_continue(byte: u8) -> bool {
 fn identifier_kind(identifier: &str) -> TokenKind {
     match identifier {
         "fn" => TokenKind::KeywordFn,
+        "pub" => TokenKind::KeywordPub,
+        "export" => TokenKind::KeywordExport,
+        "import" => TokenKind::KeywordImport,
+        "unsafe" => TokenKind::KeywordUnsafe,
+        "minecraft" => TokenKind::KeywordMinecraft,
+        "run" => TokenKind::KeywordRun,
         "const" => TokenKind::KeywordConst,
         "var" => TokenKind::KeywordVar,
         "if" => TokenKind::KeywordIf,
@@ -389,7 +543,10 @@ fn span(
 
 #[cfg(test)]
 mod tests {
-    use super::{LexOutput, LexerError, TRUNCATED_CODE, UNKNOWN_CHARACTER_CODE, lex};
+    use super::{
+        INVALID_STRING_ESCAPE_CODE, LexOutput, LexerError, TRUNCATED_CODE, UNKNOWN_CHARACTER_CODE,
+        UNTERMINATED_STRING_CODE, lex,
+    };
     use crate::frontend::FrontendLimits;
     use crate::frontend::token::TokenKind;
     use crate::source::{FileId, Origin, SourceContext, SourceError, Span};
@@ -444,11 +601,13 @@ mod tests {
 
     #[test]
     fn recognizes_every_keyword_and_identifier_boundaries() {
-        let text =
-            "fn const var if else return true false Bool Int32 Void fn_ _if bool int32 void x X1 _";
+        let text = "fn pub export import const var if else return true false Bool Int32 Void fn_ _if bool int32 void x X1 _";
         let (_, _, output) = default_lex(text);
         let expected_kinds = [
             TokenKind::KeywordFn,
+            TokenKind::KeywordPub,
+            TokenKind::KeywordExport,
+            TokenKind::KeywordImport,
             TokenKind::KeywordConst,
             TokenKind::KeywordVar,
             TokenKind::KeywordIf,
@@ -509,7 +668,7 @@ mod tests {
 
     #[test]
     fn recognizes_all_punctuation_with_maximal_munch_and_exact_ranges() {
-        let text = "(){}:;,=->! == != < <= > >=";
+        let text = "(){}:;,.=->! == != < <= > >=";
         let (_, _, output) = default_lex(text);
         assert_eq!(
             token_table(&output),
@@ -521,16 +680,17 @@ mod tests {
                 (TokenKind::Colon, 4, 5),
                 (TokenKind::Semicolon, 5, 6),
                 (TokenKind::Comma, 6, 7),
-                (TokenKind::Equal, 7, 8),
-                (TokenKind::Arrow, 8, 10),
-                (TokenKind::Bang, 10, 11),
-                (TokenKind::EqualEqual, 12, 14),
-                (TokenKind::BangEqual, 15, 17),
-                (TokenKind::Less, 18, 19),
-                (TokenKind::LessEqual, 20, 22),
-                (TokenKind::Greater, 23, 24),
-                (TokenKind::GreaterEqual, 25, 27),
-                (TokenKind::EndOfFile, 27, 27),
+                (TokenKind::Dot, 7, 8),
+                (TokenKind::Equal, 8, 9),
+                (TokenKind::Arrow, 9, 11),
+                (TokenKind::Bang, 11, 12),
+                (TokenKind::EqualEqual, 13, 15),
+                (TokenKind::BangEqual, 16, 18),
+                (TokenKind::Less, 19, 20),
+                (TokenKind::LessEqual, 21, 23),
+                (TokenKind::Greater, 24, 25),
+                (TokenKind::GreaterEqual, 26, 28),
+                (TokenKind::EndOfFile, 28, 28),
             ]
         );
         assert!(output.diagnostics().is_none());
@@ -610,37 +770,54 @@ mod tests {
 
     #[test]
     fn unknown_ascii_and_malformed_operators_recover_at_one_scalar_each() {
-        let text = "- / + & | . => && ||";
+        let text = "- / + & | ? => && ||";
         let (sources, file, output) = default_lex(text);
         assert_eq!(
             token_table(&output),
             [
+                (TokenKind::Minus, 0, 1),
+                (TokenKind::Pipe, 8, 9),
                 (TokenKind::Equal, 12, 13),
                 (TokenKind::Greater, 13, 14),
+                (TokenKind::Pipe, 18, 19),
+                (TokenKind::Pipe, 19, 20),
                 (TokenKind::EndOfFile, 20, 20),
             ]
         );
         assert_eq!(
             diagnostic_spans(&sources, &output),
-            [
-                0..1,
-                2..3,
-                4..5,
-                6..7,
-                8..9,
-                10..11,
-                15..16,
-                16..17,
-                18..19,
-                19..20
-            ]
-            .map(|range| sources.span(file, range.start, range.end).unwrap())
+            [2..3, 4..5, 6..7, 10..11, 15..16, 16..17]
+                .map(|range| sources.span(file, range.start, range.end).unwrap())
         );
         assert!(
             diagnostic_codes(&output)
                 .iter()
                 .all(|code| *code == UNKNOWN_CHARACTER_CODE)
         );
+    }
+
+    #[test]
+    fn string_literals_preserve_utf8_and_validate_the_closed_escape_set() {
+        let text =
+            r#""cells" "héllo" "quote: \" slash: \\ line: \n tab: \t zero: \0" "bad: \q" "open"#;
+        let (sources, file, output) = default_lex(text);
+        let strings = output
+            .tokens()
+            .iter()
+            .filter(|token| token.kind() == TokenKind::StringLiteral)
+            .map(|token| sources.files().slice(token.span()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(strings.len(), 5);
+        assert_eq!(strings[0], "\"cells\"");
+        assert_eq!(strings[1], "\"héllo\"");
+        assert_eq!(
+            diagnostic_codes(&output),
+            [INVALID_STRING_ESCAPE_CODE, UNTERMINATED_STRING_CODE]
+        );
+        let spans = diagnostic_spans(&sources, &output);
+        assert_eq!(sources.files().slice(spans[0]).unwrap(), "\\q");
+        assert_eq!(spans[1].end(), u32::try_from(text.len()).unwrap());
+        assert_eq!(spans[1].file(), file);
     }
 
     #[test]

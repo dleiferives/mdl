@@ -3,14 +3,16 @@
 use crate::analysis::minecraft::{CommandStepCounts, classify_constructed_command};
 use crate::diagnostic::Diagnostics;
 use crate::entity::EntityId;
-use crate::ir::core::{BlockId, CoreProgram, FunctionId, TerminatorKind};
+use crate::ir::core::{BlockId, CoreOp, CoreProgram, FunctionId, TerminatorKind};
 use crate::ir::minecraft::{
     CallableRef, CommandKind, Condition, ExecuteModifierKind, InternalCallableRef, McFunctionId,
     MinecraftProgram, ReturnCommand, ScoreRange,
 };
+use crate::ir::semantic::minecraft_descriptor;
 
-use super::{BranchArm, EdgeTransfer, LoweringPlan, PlannedFunctionId};
+use super::{BranchArm, EdgeTransfer, InstructionPlan, LoweringPlan, PlannedFunctionId};
 use crate::lower::minecraft::construct::invariant_diagnostics;
+use crate::lower::minecraft::emit::ConstructionMap;
 use crate::lower::minecraft::placement::BranchArmRecipe;
 
 /// Recounts every selected recipe from the immutable target syntax.
@@ -23,7 +25,9 @@ pub(crate) fn verify_constructed_control_recipes(
     core: &CoreProgram,
     plan: &LoweringPlan,
     program: &MinecraftProgram,
+    construction: &ConstructionMap,
 ) -> Result<(), Diagnostics> {
+    reconcile_semantic_commands(core, plan, program, construction)?;
     for (function, layout) in plan.functions.iter() {
         for (source_index, branch_recipe) in layout.branch_recipes.iter().enumerate() {
             let Some(branch_recipe) = branch_recipe else {
@@ -57,6 +61,143 @@ pub(crate) fn verify_constructed_control_recipes(
                 *branch_recipe,
             )?;
         }
+    }
+    Ok(())
+}
+
+fn reconcile_semantic_commands(
+    core: &CoreProgram,
+    plan: &LoweringPlan,
+    program: &MinecraftProgram,
+    construction: &ConstructionMap,
+) -> Result<(), Diagnostics> {
+    for (function, declaration) in core.functions() {
+        let body = declaration
+            .body()
+            .ok_or_else(|| recipe_mismatch("semantic reconciliation lost a Core definition"))?;
+        for block in body.block_order().iter().copied() {
+            let Some(block_data) = body.block(block) else {
+                continue;
+            };
+            for instruction in block_data.instructions().iter().copied() {
+                let planned = plan.instruction_plan(function, instruction);
+                let location = construction.location(function, instruction);
+                let expects_direct_command =
+                    matches!(planned, Some(InstructionPlan::Minecraft { .. }));
+                if expects_direct_command != location.is_some() {
+                    return Err(recipe_mismatch(format!(
+                        "post-construction command correlation disagrees for {function:?} {instruction:?}"
+                    )));
+                }
+                let (Some(InstructionPlan::Minecraft { external, recipe }), Some(location)) =
+                    (planned, location)
+                else {
+                    continue;
+                };
+                let expected_function = plan
+                    .block_function(function, block)
+                    .map(|planned| McFunctionId::from_index(planned.index()))
+                    .ok_or_else(|| {
+                        recipe_mismatch(
+                            "direct semantic command has no materialized containing block",
+                        )
+                    })?;
+                if location.function() != expected_function {
+                    return Err(recipe_mismatch(
+                        "direct semantic command was correlated to the wrong target function",
+                    ));
+                }
+                let data = body.instruction(instruction).ok_or_else(|| {
+                    recipe_mismatch("direct semantic command lost its Core instruction")
+                })?;
+                if !matches!(data.op(), CoreOp::External(actual) if actual == external) {
+                    return Err(recipe_mismatch(
+                        "direct semantic command no longer names its planned external declaration",
+                    ));
+                }
+                let selected = plan.selected_semantic_recipe(*external).ok_or_else(|| {
+                    recipe_mismatch("direct semantic command lost its selected preflight recipe")
+                })?;
+                if selected.recipe_id() != *recipe {
+                    return Err(recipe_mismatch(
+                        "direct semantic command recipe differs from retained preflight",
+                    ));
+                }
+                let command = program
+                    .function(location.function())
+                    .and_then(|function| function.body().command(location.command()))
+                    .ok_or_else(|| recipe_mismatch("correlated target command does not exist"))?;
+                if command.origin() != data.origin() {
+                    return Err(recipe_mismatch(
+                        "direct semantic command lost its exact occurrence origin",
+                    ));
+                }
+                reconcile_selected_semantic_command(core, selected, command)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_selected_semantic_command(
+    core: &CoreProgram,
+    selected: &crate::lower::minecraft::SelectedSemanticRecipe,
+    command: &crate::ir::minecraft::CommandNode,
+) -> Result<(), Diagnostics> {
+    let declaration = core
+        .minecraft_operation(selected.operation())
+        .ok_or_else(|| recipe_mismatch("selected recipe lost its semantic declaration"))?;
+    if declaration.key() != selected.semantic_key() {
+        return Err(recipe_mismatch(
+            "selected recipe semantic key differs from its Core declaration",
+        ));
+    }
+    let projection = selected.contract_projection(declaration);
+    if !projection.matches_semantic_descriptor(
+        minecraft_descriptor(declaration.key()),
+        declaration.receiver_kind(),
+    ) {
+        return Err(recipe_mismatch(
+            "selected recipe differs from its instantiated semantic descriptor",
+        ));
+    }
+
+    match (selected, command.kind()) {
+        (
+            crate::lower::minecraft::SelectedSemanticRecipe::Java26_2Say { message, .. },
+            CommandKind::Say(command),
+        ) if command.message() == message => {}
+        (
+            crate::lower::minecraft::SelectedSemanticRecipe::Java26_2Teleport {
+                destination, ..
+            },
+            CommandKind::Teleport(command),
+        ) if command.destination() == destination => {}
+        (
+            crate::lower::minecraft::SelectedSemanticRecipe::Java26_2MoveBy { destination, .. },
+            CommandKind::Execute(execute),
+        ) if matches!(execute.modifiers().as_slice(), [modifier]
+            if matches!(modifier.kind(), crate::ir::minecraft::ExecuteModifierKind::At(_)))
+            && matches!(execute.run().kind(), CommandKind::Teleport(command) if command.destination() == destination) =>
+            {}
+        _ => {
+            return Err(recipe_mismatch(
+                "constructed semantic command differs from its exact selected recipe",
+            ));
+        }
+    }
+    if !projection.matches_target_contract(command.contract()) {
+        return Err(recipe_mismatch(
+            "constructed semantic command contract differs from the selected recipe",
+        ));
+    }
+    let cost = classify_constructed_command(command.kind()).ok_or_else(|| {
+        recipe_mismatch("constructed semantic command has no local cost classification")
+    })?;
+    if !projection.matches_local_cost(&cost) {
+        return Err(recipe_mismatch(
+            "constructed semantic command cost differs from the selected recipe",
+        ));
     }
     Ok(())
 }
@@ -366,6 +507,8 @@ fn command_node_count(command: &crate::ir::minecraft::CommandNode) -> u64 {
         CommandKind::Return(ReturnCommand::Run(nested)) => command_node_count(nested),
         CommandKind::Score(_)
         | CommandKind::Data(_)
+        | CommandKind::Say(_)
+        | CommandKind::Teleport(_)
         | CommandKind::Function(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Raw(_) => 0,
@@ -396,14 +539,13 @@ mod tests {
     use crate::lower::minecraft::assignment::HomeAssignment;
     use crate::lower::minecraft::demand::{RuntimeDemand, RuntimeDemandLimits};
     use crate::lower::minecraft::edge_transfer::EdgeTransferPlan;
+    use crate::lower::minecraft::emit::{ConstructionMap, construct_program};
     use crate::lower::minecraft::placement::{
         BranchArmRecipe, ControlRecipePlan, InlineZeroAbiTerminalCall,
     };
     use crate::lower::minecraft::plan::{BranchArm, LoweringPlan};
     use crate::lower::minecraft::resources::ResourceInventory;
-    use crate::lower::minecraft::{
-        LoweringOptions, MinecraftOptimizationLevel, emit::construct_program,
-    };
+    use crate::lower::minecraft::{LoweringOptions, MinecraftOptimizationLevel};
     use crate::source::{Origin, OriginId, SourceContext};
     use crate::target::JavaEditionTarget;
 
@@ -411,6 +553,7 @@ mod tests {
         core: CoreProgram,
         plan: LoweringPlan,
         target: MinecraftProgram,
+        construction: ConstructionMap,
         dispatcher: FunctionId,
         source: BlockId,
         wrong_origin: OriginId,
@@ -430,7 +573,12 @@ mod tests {
         );
 
         assert_reconciliation_error(
-            verify_constructed_control_recipes(&fixture.core, &fixture.plan, &corrupted),
+            verify_constructed_control_recipes(
+                &fixture.core,
+                &fixture.plan,
+                &corrupted,
+                &fixture.construction,
+            ),
             "differs from planned",
         );
     }
@@ -461,7 +609,12 @@ mod tests {
             rebuild_with_replaced_command(&fixture.target, source_target, 0, changed_guard);
 
         assert_reconciliation_error(
-            verify_constructed_control_recipes(&fixture.core, &fixture.plan, &corrupted),
+            verify_constructed_control_recipes(
+                &fixture.core,
+                &fixture.plan,
+                &corrupted,
+                &fixture.construction,
+            ),
             "branch guard lost its recorded semantic origin",
         );
     }
@@ -476,7 +629,12 @@ mod tests {
         let corrupted = rebuild_with_replaced_command(&fixture.target, source_target, 1, bare_call);
 
         assert_reconciliation_error(
-            verify_constructed_control_recipes(&fixture.core, &fixture.plan, &corrupted),
+            verify_constructed_control_recipes(
+                &fixture.core,
+                &fixture.plan,
+                &corrupted,
+                &fixture.construction,
+            ),
             "recipe target is not `return run`",
         );
     }
@@ -527,13 +685,14 @@ mod tests {
     fn selected_terminal_call_fixture() -> Fixture {
         let (core, dispatcher, source, wrong_origin) = terminal_call_core();
         let plan = selected_baseline_plan(&core);
-        let target = construct_program(&core, &plan).unwrap();
-        verify_constructed_control_recipes(&core, &plan, &target).unwrap();
+        let (target, construction) = construct_program(&core, &plan).unwrap().into_parts();
+        verify_constructed_control_recipes(&core, &plan, &target, &construction).unwrap();
 
         Fixture {
             core,
             plan,
             target,
+            construction,
             dispatcher,
             source,
             wrong_origin,
@@ -614,6 +773,21 @@ mod tests {
         .unwrap()
         .with_optimization_level(MinecraftOptimizationLevel::Baseline);
         let inventory = SemanticInventory::new(core).unwrap();
+        let command_limit_evidence = crate::lower::minecraft::audit::audit_legality(
+            core,
+            &inventory,
+            options.target(),
+            options.command_limit_assumptions(),
+        )
+        .unwrap();
+        let preflight = crate::lower::minecraft::TargetPreflight::new(
+            core,
+            &inventory,
+            options.target(),
+            command_limit_evidence,
+        )
+        .unwrap();
+        let ambient = crate::ir::core::CoreAmbientAnalysis::analyze(core).unwrap();
         let demand = RuntimeDemand::for_level(
             core,
             &inventory,
@@ -623,6 +797,21 @@ mod tests {
         .unwrap();
         let assignment =
             HomeAssignment::for_baseline_derived_liveness(core, &inventory, &demand).unwrap();
+        let physical =
+            crate::lower::minecraft::realization::PhysicalRealizationPlan::for_score_compatibility(
+                core,
+                &inventory,
+                &assignment,
+                None,
+                crate::lower::minecraft::realization::PhysicalPlanningLimits::DEFAULT,
+            )
+            .unwrap();
+        let physical_preflight =
+            crate::lower::minecraft::physical_preflight::PhysicalPreflight::new(
+                options.target(),
+                &physical,
+            )
+            .unwrap();
         let transfers = EdgeTransferPlan::for_baseline(core, &inventory, &assignment).unwrap();
         let control = ControlRecipePlan::new(
             core,
@@ -632,11 +821,23 @@ mod tests {
             MinecraftOptimizationLevel::Baseline,
         )
         .unwrap();
-        let resources =
-            ResourceInventory::for_control_plan(core, &inventory, &transfers, &control, &options)
-                .unwrap();
-        LoweringPlan::from_selected_parts(core, &options, assignment, transfers, control, resources)
-            .unwrap()
+        let resources = ResourceInventory::for_control_plan(
+            core, &inventory, &transfers, &control, &preflight, &options,
+        )
+        .unwrap();
+        LoweringPlan::from_selected_parts(
+            core,
+            &options,
+            preflight,
+            ambient,
+            assignment,
+            physical,
+            physical_preflight,
+            transfers,
+            control,
+            resources,
+        )
+        .unwrap()
     }
 
     fn source_target(fixture: &Fixture) -> McFunctionId {

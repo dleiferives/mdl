@@ -11,8 +11,10 @@ mod nbt;
 mod number;
 mod program;
 mod render;
+mod say;
 mod score;
 mod selector;
+mod spatial;
 mod verify;
 
 pub use builder::{BuildError, FunctionBodyBuilder, FunctionTagBuilder, MinecraftProgramBuilder};
@@ -22,6 +24,7 @@ pub use command::{
 };
 pub use contract::{
     CommandContract, ContextMask, ContextSummary, EffectCategories, EffectSummary, ForkClass,
+    NativeCommandOutcome,
 };
 pub use data::{DataCommand, DataModifyMode, DataSource};
 pub use dump::MinecraftDebugDumper;
@@ -43,12 +46,20 @@ pub use program::{
     FunctionTagEntry, FunctionTagEntryKind, FunctionTagId, FunctionTagMerge, InternalCallableRef,
     McFunction, McFunctionId, MinecraftProgram,
 };
+pub use say::{MAX_SAY_MESSAGE_UTF16_UNITS, SayCommand, SayMessage, SayMessageError};
 pub use score::{
     BackwardsScoreRange, FakeScoreHolder, NegativeScoreAmount, NonNegativeI32, ObjectiveName,
     ScoreCommand, ScoreHolders, ScoreNameError, ScoreNameErrorReason, ScoreNameKind,
     ScoreOperation, ScoreRange, ScoreRangeKind, ScoreRef, ScoreSelection, SingleScoreHolder,
 };
-pub use selector::{AtMostOneSelector, Cardinality, Selector, UnboundedSelector};
+pub use selector::{
+    AtMostOneSelector, Cardinality, EntitySelector, EntitySelectorError, SelectedEntityKind,
+    Selector, UnboundedSelector,
+};
+pub use spatial::{
+    JavaDecimal, JavaDecimalError, TargetAnchor, TargetAxes, TargetLocalPosition, TargetPosition,
+    TargetRotation, TargetRotationAxis, TargetWorldAxis, TargetWorldPosition, TeleportCommand,
+};
 pub use verify::verify_program;
 
 pub(crate) use render::{RenderError, render_function};

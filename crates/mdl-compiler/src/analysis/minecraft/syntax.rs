@@ -109,6 +109,10 @@ pub enum ExecuteModifierClass {
     As(Cardinality),
     At(Cardinality),
     In,
+    Positioned,
+    Rotated,
+    Anchored,
+    Align,
     If(ConditionClass),
     Unless(ConditionClass),
     Store(StoreChannel, StoreDestinationClass),
@@ -122,6 +126,10 @@ impl ExecuteModifierClass {
             ExecuteModifierKind::As(selector) => Self::As(selector.cardinality()),
             ExecuteModifierKind::At(selector) => Self::At(selector.cardinality()),
             ExecuteModifierKind::In(_) => Self::In,
+            ExecuteModifierKind::Positioned(_) => Self::Positioned,
+            ExecuteModifierKind::Rotated(_) => Self::Rotated,
+            ExecuteModifierKind::Anchored(_) => Self::Anchored,
+            ExecuteModifierKind::Align(_) => Self::Align,
             ExecuteModifierKind::If(condition) => Self::If(ConditionClass::classify(condition)),
             ExecuteModifierKind::Unless(condition) => {
                 Self::Unless(ConditionClass::classify(condition))
@@ -221,6 +229,8 @@ impl ReturnCommandClass {
 pub enum CommandStepClass {
     Score(ScoreCommandClass),
     Data(DataCommandClass),
+    Say,
+    Teleport,
     Execute {
         modifiers: Box<[ExecuteModifierClass]>,
         run: Box<CommandStepClass>,
@@ -237,6 +247,8 @@ impl CommandStepClass {
         match kind {
             CommandKind::Score(command) => Self::Score(ScoreCommandClass::classify(command)),
             CommandKind::Data(command) => Self::Data(DataCommandClass::classify(command)),
+            CommandKind::Say(_) => Self::Say,
+            CommandKind::Teleport(_) => Self::Teleport,
             CommandKind::Execute(command) => Self::Execute {
                 modifiers: command
                     .modifiers()
@@ -260,8 +272,9 @@ impl CommandStepClass {
 mod tests {
     use crate::entity::EntityId;
     use crate::ir::minecraft::{
-        AtMostOneSelector, CommandNode, ExecuteModifier, ExternalCallableRef, FunctionResourceId,
-        FunctionTagEntry, FunctionTagResourceId, Selector, UnboundedSelector, UnsafeRawCommand,
+        AtMostOneSelector, CommandNode, EntitySelector, ExecuteModifier, ExternalCallableRef,
+        FunctionResourceId, FunctionTagEntry, FunctionTagResourceId, SayCommand, SayMessage,
+        Selector, UnboundedSelector, UnsafeRawCommand,
     };
     use crate::source::OriginId;
 
@@ -323,17 +336,35 @@ mod tests {
             ReturnCommandClass::classify(&ReturnCommand::Value(-1)),
             ReturnCommandClass::Value(ReturnValueClass::NonZero)
         );
+        assert_eq!(
+            CommandStepClass::classify(&CommandKind::Say(SayCommand::new(
+                SayMessage::new("hello").unwrap(),
+            ))),
+            CommandStepClass::Say
+        );
 
         let classes = [
             ExecuteModifierKind::As(Selector::from(UnboundedSelector::AllEntities)),
             ExecuteModifierKind::At(Selector::from(AtMostOneSelector::SelfExecutor)),
+            ExecuteModifierKind::As(
+                EntitySelector::armor_stands(vec![], Some(2))
+                    .unwrap()
+                    .into(),
+            ),
             ExecuteModifierKind::If(Condition::Function(function)),
         ]
         .map(|modifier| ExecuteModifierClass::classify(&modifier));
-        assert_eq!(classes[0], ExecuteModifierClass::As(Cardinality::Unbounded));
-        assert_eq!(classes[1], ExecuteModifierClass::At(Cardinality::AtMostOne));
+        assert_eq!(classes[0], ExecuteModifierClass::As(Cardinality::UNBOUNDED));
         assert_eq!(
-            classes[2],
+            classes[1],
+            ExecuteModifierClass::At(Cardinality::AT_MOST_ONE)
+        );
+        let ExecuteModifierClass::As(bounded) = classes[2] else {
+            panic!("expected bounded as modifier class");
+        };
+        assert_eq!(bounded.maximum(), Some(2));
+        assert_eq!(
+            classes[3],
             ExecuteModifierClass::If(ConditionClass::InternalFunction(function))
         );
 
@@ -345,7 +376,7 @@ mod tests {
         );
         assert_eq!(
             ExecuteModifierClass::classify(modifier.kind()),
-            ExecuteModifierClass::Unless(ConditionClass::EntityExists(Cardinality::Unbounded))
+            ExecuteModifierClass::Unless(ConditionClass::EntityExists(Cardinality::UNBOUNDED))
         );
     }
 }

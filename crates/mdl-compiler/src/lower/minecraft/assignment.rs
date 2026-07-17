@@ -103,6 +103,8 @@ pub(crate) enum AssignedInstructionPlan {
         arguments: Box<[AssignedHomeId]>,
         result_destinations: Box<[Option<AssignedCallResultDestination>]>,
     },
+    /// One retained declaration-backed operation outside the scalar vocabulary.
+    External,
 }
 
 /// One result position required by a fixed scalar recipe.
@@ -135,6 +137,7 @@ pub(super) const PHYSICAL_TYPE_ORDER: [CoreType; 2] = [CoreType::Bool, CoreType:
 #[derive(Clone, Debug)]
 enum DraftInstructionPlan {
     OmittedPure,
+    External,
     Scalar {
         operands: Box<[AssignedHomeId]>,
         results: Box<[DraftScalarResult]>,
@@ -153,6 +156,7 @@ impl DraftInstructionPlan {
     ) -> Result<AssignedInstructionPlan, AssignmentError> {
         match self {
             Self::OmittedPure => Ok(AssignedInstructionPlan::OmittedPure),
+            Self::External => Ok(AssignedInstructionPlan::External),
             Self::Call {
                 arguments,
                 result_destinations,
@@ -664,6 +668,64 @@ impl AssignedCallResultDestination {
     }
 }
 
+impl AssignedInstructionPlan {
+    pub(crate) fn scalar_operands(&self) -> Option<&[AssignedHomeId]> {
+        match self {
+            Self::Scalar { operands, .. } => Some(operands),
+            Self::OmittedPure | Self::Call { .. } | Self::External => None,
+        }
+    }
+
+    pub(crate) fn scalar_results(&self) -> Option<&[AssignedScalarResult]> {
+        match self {
+            Self::Scalar { results, .. } => Some(results),
+            Self::OmittedPure | Self::Call { .. } | Self::External => None,
+        }
+    }
+
+    pub(crate) fn call_arguments(&self) -> Option<&[AssignedHomeId]> {
+        match self {
+            Self::Call { arguments, .. } => Some(arguments),
+            Self::OmittedPure | Self::Scalar { .. } | Self::External => None,
+        }
+    }
+
+    pub(crate) fn call_result_destinations(
+        &self,
+    ) -> Option<&[Option<AssignedCallResultDestination>]> {
+        match self {
+            Self::Call {
+                result_destinations,
+                ..
+            } => Some(result_destinations),
+            Self::OmittedPure | Self::Scalar { .. } | Self::External => None,
+        }
+    }
+}
+
+impl AssignedScalarResult {
+    pub(crate) const fn result_index(self) -> usize {
+        match self {
+            Self::Semantic { result_index, .. } | Self::RecipeTemporary { result_index, .. } => {
+                result_index
+            }
+        }
+    }
+
+    pub(crate) const fn semantic_value(self) -> Option<ValueId> {
+        match self {
+            Self::Semantic { value, .. } => Some(value),
+            Self::RecipeTemporary { .. } => None,
+        }
+    }
+
+    pub(crate) const fn home(self) -> AssignedHomeId {
+        match self {
+            Self::Semantic { home, .. } | Self::RecipeTemporary { home, .. } => home,
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "physical allocation consumes the immutable semantic, demand, and coalescing authorities"
@@ -796,6 +858,7 @@ fn plan_none_instructions(
                     .into_boxed_slice();
                 AssignedInstructionPlan::Scalar { operands, results }
             }
+            CoreOp::External(_) => AssignedInstructionPlan::External,
         };
         set_indexed_slot(&mut plans, instruction, plan, function)?;
     }
@@ -885,6 +948,9 @@ fn draft_retained_instruction(
     assignments: &[Option<ValueAssignment>],
     recipe_requirements: &mut RecipeRequirements,
 ) -> Result<DraftInstructionPlan, AssignmentError> {
+    if matches!(data.op(), CoreOp::External(_)) {
+        return Ok(DraftInstructionPlan::External);
+    }
     let operands = assigned_operands(function, data, assignments)?;
     if matches!(data.op(), CoreOp::Call(_)) {
         let result_destinations = data

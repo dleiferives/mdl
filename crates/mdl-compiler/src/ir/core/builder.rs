@@ -4,9 +4,9 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    BlockData, BlockId, BlockParam, CoreOp, CoreProgram, CoreType, Diagnostics, FunctionBody,
-    FunctionId, I32Predicate, InstData, InstId, Terminator, ValueData, ValueDef, ValueId,
-    verify_function,
+    BlockData, BlockId, BlockParam, CoreOp, CoreProgram, CoreType, Diagnostics, ExternalOpId,
+    FunctionBody, FunctionId, I32Predicate, InstData, InstId, Terminator, ValueData, ValueDef,
+    ValueId, verify_function,
 };
 use crate::entity::{EntityLimitError, EntityVec};
 use crate::source::{OriginId, SourceContext};
@@ -179,9 +179,20 @@ impl<'a> FunctionBuilder<'a> {
         operands: Vec<ValueId>,
         origin: OriginId,
     ) -> Result<Vec<ValueId>, BuildError> {
+        self.insert_with_identity(op, operands, origin)
+            .map(|(_, results)| results)
+    }
+
+    fn insert_with_identity(
+        &mut self,
+        op: CoreOp,
+        operands: Vec<ValueId>,
+        origin: OriginId,
+    ) -> Result<(InstId, Vec<ValueId>), BuildError> {
         self.validate_origin(origin)?;
         let signature = op.signature(self.program).ok_or(match op {
             CoreOp::Call(function) => BuildError::InvalidFunction { function },
+            CoreOp::External(operation) => BuildError::InvalidExternalOperation { operation },
             _ => BuildError::InvalidOperationContract,
         })?;
         if signature.operands.len() != operands.len() {
@@ -259,7 +270,7 @@ impl<'a> FunctionBuilder<'a> {
             })?
             .instructions
             .push(instruction);
-        Ok(results)
+        Ok((instruction, results))
     }
 
     /// Inserts a Boolean constant.
@@ -354,6 +365,34 @@ impl<'a> FunctionBuilder<'a> {
         self.insert(CoreOp::Call(function), arguments, origin)
     }
 
+    /// Inserts one linked external operation and returns its declared results.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error or an invalid declaration error.
+    pub fn external(
+        &mut self,
+        operation: ExternalOpId,
+        operands: Vec<ValueId>,
+        origin: OriginId,
+    ) -> Result<Vec<ValueId>, BuildError> {
+        self.insert(CoreOp::External(operation), operands, origin)
+    }
+
+    /// Inserts one linked external operation and returns both its exact instruction
+    /// identity and declared result values.
+    ///
+    /// This crate-private form lets source correlation capture construction identity
+    /// directly rather than reconstructing it from allocation order or provenance.
+    pub(crate) fn external_with_identity(
+        &mut self,
+        operation: ExternalOpId,
+        operands: Vec<ValueId>,
+        origin: OriginId,
+    ) -> Result<(InstId, Vec<ValueId>), BuildError> {
+        self.insert_with_identity(CoreOp::External(operation), operands, origin)
+    }
+
     /// Sets the current block's terminator exactly once.
     ///
     /// # Errors
@@ -412,6 +451,8 @@ impl<'a> FunctionBuilder<'a> {
 pub enum BuildError {
     /// No declaration with this function ID exists.
     InvalidFunction { function: FunctionId },
+    /// No declaration with this external-operation ID exists.
+    InvalidExternalOperation { operation: ExternalOpId },
     /// The declared function already has a body.
     AlreadyDefined { function: FunctionId },
     /// A block is absent or detached.

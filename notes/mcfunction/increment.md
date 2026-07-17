@@ -34,15 +34,16 @@ consumer needs the serialized structure.
 
 ## Increment several values together
 
-When multiple logical integers use different score holders in one dedicated
-objective, Minecraft can increment all existing holders with one native command:
+Minecraft can increment globally tracked score holders with one native command:
 
 ```mcfunction
 scoreboard players add * mdl.vector 1
 ```
 
-Entity-backed values can instead use a selector directly. These are true bulk
-scoreboard operations and are developed in [bulk-operations.md](bulk-operations.md).
+This also creates the objective score for holders tracked through other objectives,
+so a dedicated objective is not sufficient to define vector membership. Entity-backed
+values can instead use a selector directly. These are true bulk scoreboard operations
+and are developed in [bulk-operations.md](bulk-operations.md).
 
 ## Compiler rule
 
@@ -71,17 +72,19 @@ Normal compiler transformations matter greatly:
 
 ## Overflow semantics
 
-The language must choose whether integer overflow wraps, traps, saturates, or is
-statically rejected. The backend cannot safely apply algebraic rewrites until that
-choice matches the scoreboard's actual 32-bit behavior. This is a required server
-test and language-design decision.
+Vanilla 26.2 score arithmetic is measured wrapping signed 32-bit arithmetic:
+`2147483647 + 1` became `-2147483648`, `-2147483648 - 1` became `2147483647`, and
+`50000 * 50000` became `-1794967296`. `INT_MIN / -1` also wrapped to `INT_MIN`.
+
+The language must still choose whether source integer overflow wraps, traps,
+saturates, or is statically rejected. If it chooses another policy, lowering must
+insert checks and the optimizer must preserve them.
 
 ## Required tests
 
-- scoreboard minimum/maximum behavior;
-- absent score initialization semantics;
+- checked and saturating arithmetic recipes;
+- exact command results for multi-target overflow;
 - NBT byte/short/int/long write-back overflow;
 - increment fusion across branches and raw commands;
 - split struct field synchronization;
 - scoreboard versus NBT round-trip cost.
-

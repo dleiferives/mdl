@@ -70,7 +70,7 @@ pub(super) const fn scalar_access_contract(operation: &CoreOp) -> Option<ScalarA
         CoreOp::I32Constant(_) => (I32_OUTPUT, ONE_NO_REUSE),
         CoreOp::I32AddWrapping => (I32_OUTPUT, WRAPPING_ADD_REUSE),
         CoreOp::I32AddOverflowing => (OVERFLOWING_ADD_OUTPUTS, TWO_NO_REUSE),
-        CoreOp::Call(_) => return None,
+        CoreOp::Call(_) | CoreOp::External(_) => return None,
     };
     Some(ScalarAccessContract {
         output: ScalarOutputContract { result_types },
@@ -130,6 +130,7 @@ pub(crate) fn lower_scalar_operation(
             lower_bool_not(context, *result, *operand, origin)?;
         }
         CoreOp::Call(_) => return Ok(ScalarLowering::Call),
+        CoreOp::External(_) => return Err(invalid_scalar_shape(operation, origin)),
     }
     Ok(ScalarLowering::Lowered)
 }

@@ -9,13 +9,14 @@ use mdl_compiler::datapack::{EmissionOptions, TraceMap};
 use mdl_compiler::diagnostic::render_diagnostics;
 use mdl_compiler::frontend::{
     CompilationFailure, CompilationOptions, CompilationOutput, FrontendLimits, FrontendLimitsError,
-    SourceFunctionId, SourceInput, compile_source,
+    FunctionVisibility, ImportName, ModuleDependency, ModuleInput, ModuleKey, PackageInput,
+    SourceFunctionId, SourceInput, compile_package, compile_source,
 };
-use mdl_compiler::ir::core::{CanonicalPrinter, CoreType};
+use mdl_compiler::ir::core::{CanonicalPrinter, CoreFunctionLinkage, CoreType};
 use mdl_compiler::ir::minecraft::{MinecraftDebugDumper, ObjectiveName, PackNamespace};
 use mdl_compiler::lower::minecraft::{
-    LoweredFunction, LoweringOptions, LoweringOptionsError, LoweringPhase,
-    MinecraftOptimizationLevel, RegisterSlot,
+    LoweredFunction, LoweringOptions, LoweringOptionsError, MinecraftOptimizationLevel,
+    RegisterSlot, RunModifierRecipeId,
 };
 use mdl_compiler::opt::core::{CoreOptimizationLevel, CoreOptimizationOptions};
 use mdl_compiler::target::JavaEditionTarget;
@@ -23,6 +24,11 @@ use mdl_test::{ServerConfig, ServerSandbox, TestServer};
 
 const SCALAR_SOURCE_NAME: &str = "stage6_scalar.mdl";
 const SCALAR_SOURCE: &str = include_str!("fixtures/stage6_scalar.mdl");
+const STAGE7_TYPED_SAY_MESSAGE: &str =
+    "MDL_STAGE7_TYPED_SAY  two spaces, \"quoted\", \\backslash, π";
+const STAGE7_TYPED_SAY_SPEAKER: &str = "MDL_STAGE7_SPEAKER";
+const STAGE7_NATIVE_SAY_MESSAGE: &str = "MDL_STAGE7_NATIVE_SAY";
+const STAGE75_SPATIAL_SOURCE: &str = include_str!("fixtures/stage75_spatial.mdl");
 
 #[derive(Clone, Copy, Debug)]
 struct SourceConfiguration {
@@ -64,6 +70,41 @@ const CONFIGURATIONS: [SourceConfiguration; 4] = [
         pack_name: "mdl_stage6_bb",
         namespace: "mdl_stage6_bb",
         objective: "mdl6.bb",
+        core: CoreOptimizationLevel::Baseline,
+        minecraft: MinecraftOptimizationLevel::Baseline,
+    },
+];
+
+const STAGE7_CONFIGURATIONS: [SourceConfiguration; 4] = [
+    SourceConfiguration {
+        label: "stage7-core-none-minecraft-none",
+        pack_name: "mdl_stage7_nn",
+        namespace: "mdl_stage7_nn",
+        objective: "mdl7.nn",
+        core: CoreOptimizationLevel::None,
+        minecraft: MinecraftOptimizationLevel::None,
+    },
+    SourceConfiguration {
+        label: "stage7-core-none-minecraft-baseline",
+        pack_name: "mdl_stage7_nb",
+        namespace: "mdl_stage7_nb",
+        objective: "mdl7.nb",
+        core: CoreOptimizationLevel::None,
+        minecraft: MinecraftOptimizationLevel::Baseline,
+    },
+    SourceConfiguration {
+        label: "stage7-core-baseline-minecraft-none",
+        pack_name: "mdl_stage7_bn",
+        namespace: "mdl_stage7_bn",
+        objective: "mdl7.bn",
+        core: CoreOptimizationLevel::Baseline,
+        minecraft: MinecraftOptimizationLevel::None,
+    },
+    SourceConfiguration {
+        label: "stage7-core-baseline-minecraft-baseline",
+        pack_name: "mdl_stage7_bb",
+        namespace: "mdl_stage7_bb",
+        objective: "mdl7.bb",
         core: CoreOptimizationLevel::Baseline,
         minecraft: MinecraftOptimizationLevel::Baseline,
     },
@@ -176,38 +217,28 @@ fn invalid_sources_stop_at_the_expected_owned_boundary() {
 }
 
 #[test]
-fn recursion_reaches_the_typed_minecraft_lowering_failure() {
-    let source = "fn again(flag: Bool) -> Bool { if (flag) { return again(false); } return flag; }";
-    let first = compile_invalid("recursive.mdl", source);
-    let second = compile_invalid("recursive.mdl", source);
-
-    for failure in [&first, &second] {
-        assert!(failure.checked_frontend().is_some());
-        assert!(failure.source_to_core().is_some());
-        assert!(failure.core_optimization().is_some());
-        assert!(failure.lowering().is_none());
-        let lowering = failure
-            .minecraft_lowering_failure()
-            .expect("recursion must fail at Minecraft lowering");
-        assert_eq!(lowering.phase(), LoweringPhase::Legality);
-        assert!(
-            lowering
-                .diagnostics()
-                .contains_code("lower.recursive-call-abi")
-        );
-        let sources = failure.sources().expect("frontend completed");
-        assert!(
-            lowering
-                .diagnostics()
-                .findings()
-                .iter()
-                .all(|finding| sources.resolve_origin_span(finding.origin()).is_some())
-        );
+fn scalar_recursion_uses_balanced_activation_frames_under_all_policies() {
+    let source =
+        "export fn again(flag: Bool) -> Bool { if (flag) { return again(false); } return flag; }";
+    for configuration in CONFIGURATIONS {
+        let output = compile_source(
+            SourceInput::new("recursive.mdl", source),
+            &compilation_options(configuration),
+        )
+        .unwrap_or_else(|error| panic!("{} failed: {error}", configuration.label));
+        let functions = output
+            .emission()
+            .pack()
+            .files()
+            .iter()
+            .filter(|file| file.path().as_str().ends_with(".mcfunction"))
+            .filter_map(|file| std::str::from_utf8(file.bytes()).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(functions.contains("\"frames\" append value {}"));
+        assert!(functions.contains("\"frames\"[-1]"));
+        assert!(functions.contains("\"frames\" set value []"));
     }
-    assert_eq!(
-        rendered_failure(&first, "lower.recursive-call-abi"),
-        rendered_failure(&second, "lower.recursive-call-abi")
-    );
 }
 
 #[test]
@@ -227,9 +258,121 @@ fn invalid_options_are_rejected_before_the_compilation_facade() {
 }
 
 #[test]
+fn stage75_spatial_slice_compiles_structurally_under_all_four_policies() {
+    for configuration in STAGE7_CONFIGURATIONS {
+        let output = compile_source(
+            SourceInput::new("stage75_spatial.mdl", STAGE75_SPATIAL_SOURCE),
+            &compilation_options(configuration),
+        )
+        .unwrap_or_else(|error| panic!("{} failed: {error}", configuration.label));
+        let analysis = output.target_analysis().as_ref().unwrap();
+        assert_eq!(
+            analysis.census().say_commands(),
+            1,
+            "{}",
+            configuration.label
+        );
+        assert_eq!(
+            analysis.census().teleport_commands(),
+            2,
+            "{}",
+            configuration.label
+        );
+        assert_eq!(
+            analysis.census().raw_commands(),
+            0,
+            "{}",
+            configuration.label
+        );
+        let functions = output
+            .emission()
+            .pack()
+            .files()
+            .iter()
+            .filter(|file| file.path().as_str().ends_with(".mcfunction"))
+            .filter_map(|file| std::str::from_utf8(file.bytes()).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(functions.contains("positioned ~10 ~ ~ rotated ~90 ~"));
+        assert!(functions.contains("anchored eyes align xz"));
+        assert!(functions.contains("teleport @s ~ ~1 ~"));
+        assert!(functions.contains("execute at @s run teleport @s ~ ~2 ~"));
+        let run = output.checked_frontend().run_scope_ids().next().unwrap();
+        let expected = [
+            RunModifierRecipeId::Java26_2As,
+            RunModifierRecipeId::Java26_2AtExecutor,
+            RunModifierRecipeId::Java26_2Positioned,
+            RunModifierRecipeId::Java26_2Rotated,
+            RunModifierRecipeId::Java26_2In,
+            RunModifierRecipeId::Java26_2Anchored,
+            RunModifierRecipeId::Java26_2Align,
+        ];
+        let mut placement = None;
+        for (modifier_index, expected_recipe) in expected.into_iter().enumerate() {
+            let (_, lowered) = output
+                .source_run_modifier(run, modifier_index)
+                .expect("every source modifier must retain exact correlation");
+            assert_eq!(lowered.recipe(), expected_recipe);
+            assert_eq!(lowered.modifier_index(), modifier_index);
+            let current = (lowered.function(), lowered.command());
+            assert_eq!(*placement.get_or_insert(current), current);
+        }
+    }
+}
+
+#[test]
+fn stage75_spatial_literals_remain_contextual_and_reject_mixed_families() {
+    for source in [
+        "fn bad() { const x: Int32 = ~1; }",
+        "fn bad() { run.positioned(^1, ~, ^3) {} }",
+        "fn bad() { run.rotated(^1, 0) {} }",
+        "fn bad() { run.at_executor() {} }",
+    ] {
+        let failure = compile_source(
+            SourceInput::new("stage75_invalid.mdl", source),
+            &compilation_options(STAGE7_CONFIGURATIONS[0]),
+        )
+        .expect_err("invalid Stage 7.5 source unexpectedly compiled");
+        assert!(matches!(failure, CompilationFailure::Semantic { .. }));
+    }
+}
+
+#[test]
 #[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
 fn source_compilation_runs_all_four_policies_on_vanilla_26_2() {
     if let Err(error) = run_official_server_conformance() {
+        panic!("{error}");
+    }
+}
+
+#[test]
+#[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
+fn stage7_cross_module_export_runs_all_four_policies_on_vanilla_26_2() {
+    if let Err(error) = run_stage7_package_server_conformance() {
+        panic!("{error}");
+    }
+}
+
+#[test]
+#[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
+fn stage7_typed_say_runs_as_captured_executor_on_vanilla_26_2() {
+    if let Err(error) = run_stage7_typed_say_server_conformance() {
+        panic!("{error}");
+    }
+}
+
+#[test]
+#[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
+fn stage7_literal_unsafe_command_runs_all_four_policies_on_vanilla_26_2() {
+    if let Err(error) = run_stage7_unsafe_server_conformance() {
+        panic!("{error}");
+    }
+}
+
+#[test]
+#[ignore = "requires the official Minecraft 26.2 server JAR and Java 25"]
+fn stage7_brigadier_invalid_unsafe_command_is_rejected_only_by_vanilla_26_2() {
+    if let Err(error) = run_stage7_invalid_unsafe_server_conformance() {
         panic!("{error}");
     }
 }
@@ -245,6 +388,75 @@ fn compile_fixture(
 ) -> Result<CompilationOutput, CompilationFailure> {
     compile_source(
         SourceInput::new(SCALAR_SOURCE_NAME, SCALAR_SOURCE),
+        &compilation_options(configuration),
+    )
+}
+
+fn compile_stage7_package(
+    configuration: SourceConfiguration,
+) -> Result<CompilationOutput, CompilationFailure> {
+    let api = ModuleKey::new("stage7-api").unwrap();
+    let root = ModuleKey::new("stage7-root").unwrap();
+    let package = PackageInput::new(
+        root.clone(),
+        vec![
+            ModuleInput::new(
+                root,
+                SourceInput::new(
+                    "stage7_root.mdl",
+                    r#"const math = import("math");
+export fn run(flag: Bool, left: Int32, right: Int32) -> Int32 {
+    return math.choose(flag, left, right);
+}"#,
+                ),
+                vec![ModuleDependency::new(
+                    ImportName::new("math").unwrap(),
+                    api.clone(),
+                )],
+            ),
+            ModuleInput::new(
+                api,
+                SourceInput::new(
+                    "stage7_api.mdl",
+                    r"pub fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
+    if (flag) { return left; }
+    return right;
+}",
+                ),
+                vec![],
+            ),
+        ],
+    );
+    compile_package(package, &compilation_options(configuration))
+}
+
+fn compile_stage7_unsafe(
+    configuration: SourceConfiguration,
+) -> Result<CompilationOutput, CompilationFailure> {
+    compile_source(
+        SourceInput::new(
+            "stage7_unsafe.mdl",
+            r#"export fn run() {
+    unsafe minecraft("return 1");
+    unsafe minecraft("say MDL_STAGE7_UNSAFE_EXECUTED");
+}"#,
+        ),
+        &compilation_options(configuration),
+    )
+}
+
+fn compile_stage7_typed_say(
+    configuration: SourceConfiguration,
+) -> Result<CompilationOutput, CompilationFailure> {
+    compile_source(
+        SourceInput::new(
+            "stage7_typed_say.mdl",
+            r#"export fn announce() {
+    run.as(mc.entities(ArmorStand).with_tag("stage7").limit(1)) |speaker| {
+        speaker.say("MDL_STAGE7_TYPED_SAY  two spaces, \"quoted\", \\backslash, π");
+    }
+}"#,
+        ),
         &compilation_options(configuration),
     )
 }
@@ -428,11 +640,7 @@ fn rendered_failure(failure: &CompilationFailure, expected_code: &str) -> String
     reason = "one server lifecycle owns the complete four-policy Stage 6 vertical proof"
 )]
 fn run_official_server_conformance() -> Result<(), String> {
-    let server_jar = env::var_os("MDL_SERVER_JAR")
-        .map(PathBuf::from)
-        .ok_or_else(|| "set MDL_SERVER_JAR to the official Minecraft 26.2 server JAR".to_owned())?;
-    let java = env::var_os("MDL_JAVA").map_or_else(|| PathBuf::from("java"), PathBuf::from);
-    let server_config = ServerConfig::new(java, server_jar);
+    let server_config = official_server_config()?;
 
     let compiled = CONFIGURATIONS
         .into_iter()
@@ -507,6 +715,390 @@ fn run_official_server_conformance() -> Result<(), String> {
         ));
     }
     server.shutdown().map_err(|error| error.to_string())
+}
+
+fn run_stage7_package_server_conformance() -> Result<(), String> {
+    let server_config = official_server_config()?;
+    let compiled = STAGE7_CONFIGURATIONS
+        .into_iter()
+        .map(|configuration| {
+            compile_stage7_package(configuration)
+                .map(|output| (configuration, output))
+                .map_err(|error| format!("{} compilation failed: {error}", configuration.label))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (configuration, output) in &compiled {
+        if output.lowering().map().export_count() != 1 {
+            return Err(format!(
+                "{} published {} exports instead of one",
+                configuration.label,
+                output.lowering().map().export_count()
+            ));
+        }
+        let export = stage7_export(output)?;
+        if export.linkage() != CoreFunctionLinkage::DatapackExport {
+            return Err(format!("{} export lost its linkage", configuration.label));
+        }
+    }
+
+    let preserve_success = env::var_os("MDL_KEEP_TEST_DIR").is_some();
+    let sandbox = ServerSandbox::create(preserve_success).map_err(|error| error.to_string())?;
+    for (configuration, output) in &compiled {
+        sandbox
+            .install_datapack(
+                configuration.pack_name,
+                output
+                    .emission()
+                    .pack()
+                    .files()
+                    .iter()
+                    .map(|file| (file.path().as_str(), file.bytes())),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let mut server = sandbox
+        .start(&server_config)
+        .map_err(|error| error.to_string())?;
+    let root = server.root().to_path_buf();
+    let result = compiled.iter().try_for_each(|(configuration, output)| {
+        let prefix = configuration.label.replace('-', "_");
+        let export = stage7_export(output)?;
+        invoke(
+            &mut server,
+            export,
+            &[1, i32::MIN, i32::MAX],
+            &[i32::MIN],
+            &format!("{prefix}_true"),
+        )?;
+        invoke(
+            &mut server,
+            export,
+            &[0, i32::MIN, i32::MAX],
+            &[i32::MAX],
+            &format!("{prefix}_false"),
+        )
+    });
+    if let Err(error) = result {
+        server.preserve_sandbox();
+        return Err(format!(
+            "{error}\nStage 7 package conformance sandbox preserved at {}",
+            root.display()
+        ));
+    }
+    server.shutdown().map_err(|error| error.to_string())
+}
+
+fn run_stage7_typed_say_server_conformance() -> Result<(), String> {
+    let server_config = official_server_config()?;
+    let compiled = STAGE7_CONFIGURATIONS
+        .into_iter()
+        .map(|configuration| {
+            compile_stage7_typed_say(configuration)
+                .map(|output| (configuration, output))
+                .map_err(|error| format!("{} compilation failed: {error}", configuration.label))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (configuration, output) in &compiled {
+        let analysis = output
+            .target_analysis()
+            .as_ref()
+            .map_err(|error| format!("{} target analysis failed: {error}", configuration.label))?;
+        if analysis.census().say_commands() != 1 || analysis.census().raw_commands() != 0 {
+            return Err(format!(
+                "{} emitted {} typed say and {} raw commands; expected one and zero",
+                configuration.label,
+                analysis.census().say_commands(),
+                analysis.census().raw_commands()
+            ));
+        }
+        let export = stage7_export(output)?;
+        if export.linkage() != CoreFunctionLinkage::DatapackExport
+            || !export.parameter_homes().is_empty()
+            || !export.result_homes().is_empty()
+        {
+            return Err(format!(
+                "{} did not retain the expected exported Void ABI",
+                configuration.label
+            ));
+        }
+    }
+
+    let preserve_success = env::var_os("MDL_KEEP_TEST_DIR").is_some();
+    let sandbox = ServerSandbox::create(preserve_success).map_err(|error| error.to_string())?;
+    for (configuration, output) in &compiled {
+        sandbox
+            .install_datapack(
+                configuration.pack_name,
+                output
+                    .emission()
+                    .pack()
+                    .files()
+                    .iter()
+                    .map(|file| (file.path().as_str(), file.bytes())),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let mut server = sandbox
+        .start(&server_config)
+        .map_err(|error| error.to_string())?;
+    let root = server.root().to_path_buf();
+    if let Err(error) = exercise_stage7_typed_say(&mut server, &compiled) {
+        server.preserve_sandbox();
+        return Err(format!(
+            "{error}\nStage 7 typed-say conformance sandbox preserved at {}",
+            root.display()
+        ));
+    }
+    server.shutdown().map_err(|error| error.to_string())
+}
+
+fn exercise_stage7_typed_say(
+    server: &mut TestServer,
+    compiled: &[(SourceConfiguration, CompilationOutput)],
+) -> Result<(), String> {
+    server
+        .command("execute in minecraft:overworld run forceload add 0 0")
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log("force loaded")
+        .map_err(|error| error.to_string())?;
+    server
+        .command(concat!(
+            "execute in minecraft:overworld run summon minecraft:armor_stand 0 5 0 ",
+            "{Tags:[\"stage7\"],CustomName:'\"MDL_STAGE7_SPEAKER\"',NoGravity:1b}"
+        ))
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log("Summoned new \"MDL_STAGE7_SPEAKER\"")
+        .map_err(|error| error.to_string())?;
+    server
+        .command(concat!(
+            "execute in minecraft:overworld if entity ",
+            "@e[type=minecraft:armor_stand,tag=stage7,limit=1] ",
+            "run say MDL_STAGE7_ENTITY_READY"
+        ))
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log("MDL_STAGE7_ENTITY_READY")
+        .map_err(|error| error.to_string())?;
+
+    for (configuration, output) in compiled {
+        observe_typed_say(server, stage7_export(output)?, configuration.label, true)?;
+    }
+
+    server
+        .command("kill @e[type=minecraft:armor_stand,tag=stage7]")
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log("Killed \"MDL_STAGE7_SPEAKER\"")
+        .map_err(|error| error.to_string())?;
+    server
+        .command(concat!(
+            "execute in minecraft:overworld unless entity ",
+            "@e[type=minecraft:armor_stand,tag=stage7] ",
+            "run say MDL_STAGE7_ENTITY_REMOVED"
+        ))
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log("MDL_STAGE7_ENTITY_REMOVED")
+        .map_err(|error| error.to_string())?;
+
+    for (configuration, output) in compiled {
+        observe_typed_say(server, stage7_export(output)?, configuration.label, false)?;
+    }
+
+    observe_native_say_result(server)
+}
+
+fn observe_typed_say(
+    server: &mut TestServer,
+    export: &LoweredFunction,
+    configuration: &str,
+    expect_message: bool,
+) -> Result<(), String> {
+    let checkpoint = server.log_checkpoint();
+    server
+        .command(&format!("function {}", export.entry_resource()))
+        .map_err(|error| error.to_string())?;
+    let state = if expect_message { "present" } else { "absent" };
+    let barrier = format!(
+        "MDL_STAGE7_TYPED_BARRIER_{}_{}",
+        configuration.replace('-', "_").to_ascii_uppercase(),
+        state.to_ascii_uppercase()
+    );
+    server
+        .command(&format!("say {barrier}"))
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log(&barrier)
+        .map_err(|error| error.to_string())?;
+    let lines = server
+        .matching_log_lines_since(checkpoint, STAGE7_TYPED_SAY_MESSAGE)
+        .map_err(|error| error.to_string())?;
+
+    if !expect_message {
+        return if lines.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{configuration} emitted typed say for an empty entity query: {lines:?}"
+            ))
+        };
+    }
+    if lines.len() != 1 || !lines[0].contains(STAGE7_TYPED_SAY_SPEAKER) {
+        return Err(format!(
+            "{configuration} did not emit exactly one executor-attributed typed say: {lines:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn observe_native_say_result(server: &mut TestServer) -> Result<(), String> {
+    server
+        .command("scoreboard objectives add mdl7.result dummy")
+        .map_err(|error| error.to_string())?;
+    server
+        .command(&format!(
+            "execute store result score #native mdl7.result run say {STAGE7_NATIVE_SAY_MESSAGE}"
+        ))
+        .map_err(|error| error.to_string())?;
+    server
+        .wait_for_command_log(STAGE7_NATIVE_SAY_MESSAGE)
+        .map_err(|error| error.to_string())?;
+    server
+        .command("scoreboard players get #native mdl7.result")
+        .map_err(|error| error.to_string())?;
+    let line = server
+        .wait_for_command_log("#native has")
+        .map_err(|error| error.to_string())?;
+    let expected = "#native has 1 [mdl7.result]";
+    if line.contains(expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Java 26.2 native say result changed: expected {expected:?}, got {line:?}"
+        ))
+    }
+}
+
+fn official_server_config() -> Result<ServerConfig, String> {
+    let server_jar = env::var_os("MDL_SERVER_JAR")
+        .map(PathBuf::from)
+        .ok_or_else(|| "set MDL_SERVER_JAR to the official Minecraft 26.2 server JAR".to_owned())?;
+    let java = env::var_os("MDL_JAVA").map_or_else(|| PathBuf::from("java"), PathBuf::from);
+    Ok(ServerConfig::new(java, server_jar))
+}
+
+fn run_stage7_unsafe_server_conformance() -> Result<(), String> {
+    let server_config = official_server_config()?;
+    let compiled = STAGE7_CONFIGURATIONS
+        .into_iter()
+        .map(|configuration| {
+            compile_stage7_unsafe(configuration)
+                .map(|output| (configuration, output))
+                .map_err(|error| format!("{} compilation failed: {error}", configuration.label))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (configuration, output) in &compiled {
+        let analysis = output
+            .target_analysis()
+            .as_ref()
+            .map_err(|error| format!("{} target analysis failed: {error}", configuration.label))?;
+        if analysis.census().raw_commands() != 2 {
+            return Err(format!(
+                "{} emitted {} raw commands instead of two isolated fragments",
+                configuration.label,
+                analysis.census().raw_commands()
+            ));
+        }
+    }
+
+    let preserve_success = env::var_os("MDL_KEEP_TEST_DIR").is_some();
+    let sandbox = ServerSandbox::create(preserve_success).map_err(|error| error.to_string())?;
+    for (configuration, output) in &compiled {
+        sandbox
+            .install_datapack(
+                configuration.pack_name,
+                output
+                    .emission()
+                    .pack()
+                    .files()
+                    .iter()
+                    .map(|file| (file.path().as_str(), file.bytes())),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    let mut server = sandbox
+        .start(&server_config)
+        .map_err(|error| error.to_string())?;
+    for (_, output) in &compiled {
+        server
+            .command(&format!(
+                "function {}",
+                stage7_export(output)?.entry_resource()
+            ))
+            .map_err(|error| error.to_string())?;
+        server
+            .wait_for_command_log("MDL_STAGE7_UNSAFE_EXECUTED")
+            .map_err(|error| error.to_string())?;
+    }
+    server.shutdown().map_err(|error| error.to_string())
+}
+
+fn run_stage7_invalid_unsafe_server_conformance() -> Result<(), String> {
+    let server_config = official_server_config()?;
+    let configuration = STAGE7_CONFIGURATIONS[0];
+    let output = compile_source(
+        SourceInput::new(
+            "stage7_invalid_unsafe.mdl",
+            r#"export fn run() {
+    unsafe minecraft("mdl_this_command_does_not_exist");
+}"#,
+        ),
+        &compilation_options(configuration),
+    )
+    .map_err(|error| format!("unsafe text should compile before Brigadier validation: {error}"))?;
+    let sandbox = ServerSandbox::create(false).map_err(|error| error.to_string())?;
+    sandbox
+        .install_datapack(
+            configuration.pack_name,
+            output
+                .emission()
+                .pack()
+                .files()
+                .iter()
+                .map(|file| (file.path().as_str(), file.bytes())),
+        )
+        .map_err(|error| error.to_string())?;
+    let error = sandbox
+        .start(&server_config)
+        .expect_err("vanilla unexpectedly accepted an unknown unsafe command");
+    let rendered = error.to_string();
+    if rendered.contains(".mcfunction") || rendered.contains("function") {
+        Ok(())
+    } else {
+        Err(format!(
+            "vanilla rejected the pack without an attributable function diagnostic: {rendered}"
+        ))
+    }
+}
+
+fn stage7_export(output: &CompilationOutput) -> Result<&LoweredFunction, String> {
+    let source = output
+        .checked_frontend()
+        .function_ids()
+        .find(|function| {
+            output.checked_frontend().function_visibility(*function)
+                == Some(FunctionVisibility::DatapackExport)
+        })
+        .ok_or_else(|| "Stage 7 package has no source export".to_owned())?;
+    output
+        .source_function_abi(source)
+        .ok_or_else(|| "Stage 7 source export has no generated ABI".to_owned())
 }
 
 fn exercise_all_policies(

@@ -8,7 +8,7 @@ use super::{
     CallableRef, CommandKind, CommandNode, Condition, DataCommand, DataSource, ExecuteModifierKind,
     ExternalCallableRef, FunctionTagEntryKind, FunctionTagId, FunctionTagMerge,
     FunctionTagResourceId, InternalCallableRef, MAX_COMMAND_DEPTH, MAX_NBT_DEPTH, McFunctionId,
-    MinecraftProgram, NbtValue, NbtValueRef, PackPath, ReturnCommand, UnsafeRawCommand,
+    MinecraftProgram, NbtValue, NbtValueRef, PackPath, ReturnCommand, SayMessage, UnsafeRawCommand,
 };
 
 #[derive(Default)]
@@ -62,13 +62,19 @@ fn verify_local_shapes(program: &MinecraftProgram, verifier: &mut Verifier) {
             verify_command_shape(
                 node,
                 &format!("function {function:?} command {command:?}"),
+                program.target(),
                 verifier,
             );
         }
     }
 }
 
-fn verify_command_shape(command: &CommandNode, location: &str, verifier: &mut Verifier) {
+fn verify_command_shape(
+    command: &CommandNode,
+    location: &str,
+    target: crate::target::JavaEditionTarget,
+    verifier: &mut Verifier,
+) {
     let depth = command.depth();
     if depth > MAX_COMMAND_DEPTH {
         verifier.report(
@@ -88,16 +94,26 @@ fn verify_command_shape(command: &CommandNode, location: &str, verifier: &mut Ve
                     command.origin(),
                 );
             }
-            verify_command_shape(execute.run(), "nested execute command", verifier);
+            verify_command_shape(execute.run(), "nested execute command", target, verifier);
         }
         CommandKind::Return(ReturnCommand::Run(nested)) => {
-            verify_command_shape(nested, "nested return-run command", verifier);
+            verify_command_shape(nested, "nested return-run command", target, verifier);
         }
         CommandKind::Score(_)
+        | CommandKind::Teleport(_)
         | CommandKind::Function(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail) => {}
+        CommandKind::Say(say) => {
+            if let Err(error) = SayMessage::new_for_target(say.message().as_str(), target) {
+                verifier.report(
+                    "minecraft.invalid-say-message",
+                    format!("{location} contains invalid say message: {error}"),
+                    command.origin(),
+                );
+            }
+        }
         CommandKind::Raw(raw) => {
-            if let Err(error) = UnsafeRawCommand::new(raw.as_str()) {
+            if let Err(error) = UnsafeRawCommand::new_for_target(raw.as_str(), target) {
                 verifier.report(
                     "minecraft.invalid-raw-line",
                     format!("{location} contains invalid raw command: {error}"),
@@ -296,6 +312,10 @@ fn verify_command_references(
                     ExecuteModifierKind::As(_)
                     | ExecuteModifierKind::At(_)
                     | ExecuteModifierKind::In(_)
+                    | ExecuteModifierKind::Positioned(_)
+                    | ExecuteModifierKind::Rotated(_)
+                    | ExecuteModifierKind::Anchored(_)
+                    | ExecuteModifierKind::Align(_)
                     | ExecuteModifierKind::Store(_, _) => {}
                 }
             }
@@ -316,6 +336,8 @@ fn verify_command_references(
         ),
         CommandKind::Score(_)
         | CommandKind::Data(_)
+        | CommandKind::Say(_)
+        | CommandKind::Teleport(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Raw(_) => {}
     }
@@ -541,6 +563,8 @@ fn verify_command_origins(
         }
         CommandKind::Score(_)
         | CommandKind::Data(_)
+        | CommandKind::Say(_)
+        | CommandKind::Teleport(_)
         | CommandKind::Function(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Raw(_) => {}
@@ -570,7 +594,7 @@ mod tests {
         ExecuteModifierKind, ExecuteModifiers, FunctionBody, FunctionCall, FunctionResourceId,
         FunctionTag, FunctionTagEntry, FunctionTagMerge, FunctionTagResourceId,
         InternalCallableRef, McFunction, McFunctionId, MinecraftProgram, MinecraftProgramBuilder,
-        RawCommandError, ReturnCommand, UnsafeRawCommand,
+        RawCommandError, ReturnCommand, SayCommand, SayMessage, UnsafeRawCommand,
     };
     use crate::source::{OriginId, SourceContext};
     use crate::target::JavaEditionTarget;
@@ -635,6 +659,19 @@ mod tests {
         assert!(diagnostics.contains_code("minecraft.empty-execute"));
         assert!(diagnostics.contains_code("minecraft.invalid-raw-line"));
         assert!(diagnostics.contains_code("minecraft.invalid-origin"));
+    }
+
+    #[test]
+    fn malformed_say_message_is_reported_without_rendering() {
+        let message = SayMessage::from_unchecked("hello @s");
+        let command = CommandNode::from_unchecked(
+            CommandKind::Say(SayCommand::new(message)),
+            OriginId::UNKNOWN,
+        );
+
+        let diagnostics =
+            verify_program(&program_with(command), &SourceContext::new()).unwrap_err();
+        assert!(diagnostics.contains_code("minecraft.invalid-say-message"));
     }
 
     #[test]

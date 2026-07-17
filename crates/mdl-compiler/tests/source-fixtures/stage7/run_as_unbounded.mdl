@@ -1,0 +1,4 @@
+// MDL: failure minecraft-lowering lower.unbounded-command-forks
+export fn run_all() {
+    run.as(mc.entities(ArmorStand)) {}
+}

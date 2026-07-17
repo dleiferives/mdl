@@ -1,10 +1,14 @@
 use crate::diagnostic::Diagnostics;
-use crate::ir::core::FunctionId;
-use crate::ir::minecraft::{CommandKind, FunctionCall, InternalCallableRef, ScoreOperation};
+use crate::ir::core::{CoreType, FunctionId, InstId};
+use crate::ir::minecraft::{
+    CommandKind, DataCommand, DataModifyMode, DataSource, ExecuteCommand, ExecuteModifier,
+    ExecuteModifierKind, ExecuteModifiers, FiniteF64, FunctionCall, InternalCallableRef, NbtValue,
+    ScoreCommand, ScoreOperation, StoreChannel, StoreDestination,
+};
 use crate::source::OriginId;
 
 use super::construct::{FunctionLoweringCx, command, invariant_diagnostics};
-use super::plan::{CallResultDestination, HomeId};
+use super::plan::{CallResultDestination, HomeId, RecursiveSpill};
 use super::scalar::score_operation;
 
 #[cfg(test)]
@@ -17,6 +21,7 @@ pub(crate) fn lower_call(
 ) -> Result<(), Diagnostics> {
     lower_call_with_destinations(
         context,
+        None,
         callee,
         arguments,
         &results.iter().copied().map(Some).collect::<Vec<_>>(),
@@ -27,7 +32,9 @@ pub(crate) fn lower_call(
 /// Emits one call from its verified indexed physical plan.
 pub(crate) fn lower_planned_call(
     context: &mut FunctionLoweringCx<'_, '_>,
-    callee: FunctionId,
+    calling_function: FunctionId,
+    instruction: InstId,
+    called_function: FunctionId,
     arguments: &[HomeId],
     results: &[Option<CallResultDestination>],
     origin: OriginId,
@@ -47,24 +54,52 @@ pub(crate) fn lower_planned_call(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    lower_call_with_destinations(context, callee, arguments, &destinations, origin)
+    lower_call_with_destinations(
+        context,
+        Some((calling_function, instruction)),
+        called_function,
+        arguments,
+        &destinations,
+        origin,
+    )
 }
 
 fn lower_call_with_destinations(
     context: &mut FunctionLoweringCx<'_, '_>,
-    callee: FunctionId,
+    occurrence: Option<(FunctionId, InstId)>,
+    called_function: FunctionId,
     arguments: &[HomeId],
     results: &[Option<HomeId>],
     origin: OriginId,
 ) -> Result<(), Diagnostics> {
+    let recursive = occurrence
+        .is_some_and(|(caller, instruction)| context.plan().call_is_recursive(caller, instruction));
+    let spill_homes = if recursive {
+        let (calling_function, instruction) = occurrence.expect("recursive call has an occurrence");
+        context
+            .plan()
+            .recursive_spill_homes(calling_function, instruction)
+            .ok_or_else(|| {
+                invariant_diagnostics("recursive call has no frozen spill plan", origin)
+            })?
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    if recursive {
+        push_recursive_frame(context, origin)?;
+        for spill in spill_homes.iter().copied() {
+            store_score_in_frame(context, spill, origin)?;
+        }
+    }
     let parameter_count = context
         .plan()
-        .function_parameters(callee)
+        .function_parameters(called_function)
         .ok_or_else(|| invariant_diagnostics("call has no planned callee ABI", origin))?
         .len();
     let result_count = context
         .plan()
-        .function_results(callee)
+        .function_results(called_function)
         .ok_or_else(|| invariant_diagnostics("call has no planned result ABI", origin))?
         .len();
     if parameter_count != arguments.len() || result_count != results.len() {
@@ -76,7 +111,7 @@ fn lower_call_with_destinations(
     for (index, argument) in arguments.iter().copied().enumerate() {
         let parameter = context
             .plan()
-            .function_parameters(callee)
+            .function_parameters(called_function)
             .and_then(|parameters| parameters.get(index))
             .copied()
             .ok_or_else(|| invariant_diagnostics("planned call parameter disappeared", origin))?;
@@ -85,7 +120,7 @@ fn lower_call_with_destinations(
     }
     let entry = context
         .plan()
-        .function_entry(callee)
+        .function_entry(called_function)
         .ok_or_else(|| invariant_diagnostics("callee has no planned entry function", origin))?;
     let target = context.function(entry)?;
     context.push(command(
@@ -94,20 +129,119 @@ fn lower_call_with_destinations(
         )),
         origin,
     )?)?;
+    if recursive {
+        for spill in spill_homes.iter().copied() {
+            load_score_from_frame(context, spill, origin)?;
+        }
+    }
     for (index, destination) in results.iter().copied().enumerate() {
         let Some(destination) = destination else {
             continue;
         };
         let result = context
             .plan()
-            .function_results(callee)
+            .function_results(called_function)
             .and_then(|results| results.get(index))
             .copied()
             .ok_or_else(|| invariant_diagnostics("planned call result disappeared", origin))?;
         context.require_same_type(destination, result)?;
         score_operation(context, destination, ScoreOperation::Assign, result, origin)?;
     }
+    if recursive {
+        context.push(command(
+            CommandKind::Data(DataCommand::Remove {
+                target: context.plan().activation_frame(),
+            }),
+            origin,
+        )?)?;
+    }
     Ok(())
+}
+
+fn push_recursive_frame(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    let empty = NbtValue::compound(Vec::new()).map_err(|error| {
+        invariant_diagnostics(
+            format!("recursive frame literal is invalid: {error}"),
+            origin,
+        )
+    })?;
+    context.push(command(
+        CommandKind::Data(DataCommand::Modify {
+            target: context.plan().activation_frames(),
+            mode: DataModifyMode::Append,
+            source: DataSource::Value(empty),
+        }),
+        origin,
+    )?)
+}
+
+fn store_score_in_frame(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    spill: RecursiveSpill,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    let score = context.score(spill.home())?;
+    let numeric_type = match spill.ty() {
+        CoreType::Bool => crate::ir::minecraft::StorageNumericType::Byte,
+        CoreType::I32 => crate::ir::minecraft::StorageNumericType::Int,
+    };
+    let get = command(
+        CommandKind::Score(ScoreCommand::PlayersGet { score }),
+        origin,
+    )?;
+    let modifier = ExecuteModifier::new(
+        ExecuteModifierKind::Store(
+            StoreChannel::Result,
+            StoreDestination::Storage {
+                target: context
+                    .plan()
+                    .activation_frame_spill(spill.storage_ordinal()),
+                numeric_type,
+                scale: FiniteF64::new(1.0).expect("one is finite"),
+            },
+        ),
+        origin,
+    );
+    context.push(command(
+        CommandKind::Execute(ExecuteCommand::new(
+            ExecuteModifiers::new(modifier, Vec::new()),
+            get,
+        )),
+        origin,
+    )?)
+}
+
+fn load_score_from_frame(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    spill: RecursiveSpill,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    let get = command(
+        CommandKind::Data(DataCommand::Get {
+            source: context
+                .plan()
+                .activation_frame_spill(spill.storage_ordinal()),
+            scale: None,
+        }),
+        origin,
+    )?;
+    let modifier = ExecuteModifier::new(
+        ExecuteModifierKind::Store(
+            StoreChannel::Result,
+            StoreDestination::Score(context.score(spill.home())?),
+        ),
+        origin,
+    );
+    context.push(command(
+        CommandKind::Execute(ExecuteCommand::new(
+            ExecuteModifiers::new(modifier, Vec::new()),
+            get,
+        )),
+        origin,
+    )?)
 }
 
 #[cfg(test)]

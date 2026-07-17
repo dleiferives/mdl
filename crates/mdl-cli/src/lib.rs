@@ -15,7 +15,8 @@ use mdl_compiler::analysis::minecraft::{AnalysisArithmeticCaps, TargetExecutionA
 use mdl_compiler::datapack::EmissionOptions;
 use mdl_compiler::diagnostic::{Diagnostics, render_diagnostics};
 use mdl_compiler::frontend::{
-    CompilationFailure, CompilationOptions, FrontendLimits, SourceInput, compile_source,
+    CompilationFailure, CompilationOptions, FrontendLimits, FunctionVisibility, SourceInput,
+    compile_source,
 };
 use mdl_compiler::ir::minecraft::{ObjectiveName, PackNamespace};
 use mdl_compiler::lower::minecraft::{LoweringOptions, MinecraftOptimizationLevel};
@@ -102,9 +103,39 @@ fn success_report(
         Err(failure) => writeln!(report, "target analysis: unavailable: {failure}")
             .expect("writing to a String cannot fail"),
     }
+    let command_limits = output
+        .lowering()
+        .map()
+        .execution_contract()
+        .command_limits();
+    let execution = output.lowering().map().execution_contract();
+    writeln!(
+        report,
+        "activation: discipline={:?} depth={:?}",
+        execution.activation(),
+        execution.activation_depth(),
+    )
+    .expect("writing to a String cannot fail");
+    let configured = command_limits.configured_assumptions();
+    let target_defaults = command_limits.target_defaults();
+    writeln!(
+        report,
+        "command limits: configured_max_command_sequence_length={} configured_max_command_forks={} target_default_max_command_sequence_length={} target_default_max_command_forks={} derived_minimum_max_command_forks={}",
+        configured.max_command_sequence_length(),
+        configured.max_command_forks(),
+        target_defaults.max_command_sequence_length(),
+        target_defaults.max_command_forks(),
+        command_limits.minimum_max_command_forks(),
+    )
+    .expect("writing to a String cannot fail");
     report.push_str("source function ABI:\n");
 
     for function in output.checked_frontend().function_ids() {
+        if output.checked_frontend().function_visibility(function)
+            != Some(FunctionVisibility::DatapackExport)
+        {
+            continue;
+        }
         let name =
             output
                 .source_function_name(function)
@@ -126,6 +157,28 @@ fn success_report(
         .expect("writing to a String cannot fail");
         write_homes(&mut report, "parameter", abi.parameter_homes());
         write_homes(&mut report, "result", abi.result_homes());
+        writeln!(
+            report,
+            "    generated required_ambient_context={:?}",
+            abi.generated_entry_requirement(),
+        )
+        .expect("writing to a String cannot fail");
+        let behavior = output.source_function_behavior(function).ok_or_else(|| {
+            CliError::InternalAbiMismatch {
+                function: function.index(),
+            }
+        })?;
+        writeln!(
+            report,
+            "    source behavior required_ambient_context={:?} world_effect={:?} observable_effect={:?} fork_bound={:?} transitive_work={:?} contains_unsafe_unknown={}",
+            behavior.required_ambient_context(),
+            behavior.world_effect(),
+            behavior.observable_effect(),
+            behavior.fork_bound(),
+            behavior.transitive_work(),
+            behavior.contains_unsafe_unknown(),
+        )
+        .expect("writing to a String cannot fail");
     }
 
     Ok(report.trim_end().to_owned())

@@ -13,6 +13,32 @@ Typed value
   -> commands
 ```
 
+## Compiler integration boundary
+
+Stage 8 does not assign one permanent representation to each SSA value. A semantic
+value may need no runtime storage, one score realization, or several equivalent
+realizations across a score and recursive activation frame. Conversely, one physical
+home stores different values over nonoverlapping live intervals.
+
+The compiler therefore separates:
+
+```text
+semantic value
+proven/rematerializable fact
+mutable physical storage
+value-in-storage realization
+per-use accepted storage classes
+explicit materialization recipe
+physical call ABI
+activation lifetime
+```
+
+The first Stage 8 implementation is intentionally scalar: score and activation-NBT
+realizations for `Bool`/`Int32`, serial many-context reuse, and recursive SCC frames.
+Aggregate layout search in the remainder of this note is research for a later
+representation-client stage, after this boundary is executable and measured. See
+[`../compiler/stage-8-plan.md`](../compiler/stage-8-plan.md).
+
 ## Initial representation matrix
 
 | Source value | Likely primary representation | Alternatives |
@@ -136,4 +162,3 @@ rejected: direct NBT update (3 commands per decrement)
 ```
 
 That makes aggressive optimization understandable rather than magical.
-

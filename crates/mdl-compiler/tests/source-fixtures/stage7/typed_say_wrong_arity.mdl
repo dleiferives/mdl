@@ -1,0 +1,6 @@
+// MDL: failure semantic frontend.check.argument-count
+export fn wrong_arity() {
+    run.as(mc.entities(ArmorStand).limit(1)) |speaker| {
+        speaker.say();
+    }
+}

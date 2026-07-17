@@ -1,7 +1,7 @@
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
 use crate::ir::core::{
-    BlockId, ControlFlowGraph, CoreOp, CoreProgram, FunctionId, InstId, Reachability,
-    TerminatorKind, ValueId,
+    BlockId, ControlFlowGraph, CoreProgram, FunctionId, FunctionReferenceKind, InstId,
+    Reachability, TerminatorKind, ValueId,
 };
 use crate::source::OriginId;
 
@@ -12,6 +12,7 @@ pub(crate) struct CallSite {
     instruction: InstId,
     callee: FunctionId,
     origin: OriginId,
+    reference_kind: FunctionReferenceKind,
 }
 
 impl CallSite {
@@ -29,6 +30,10 @@ impl CallSite {
 
     pub(crate) const fn origin(self) -> OriginId {
         self.origin
+    }
+
+    pub(crate) const fn reference_kind(self) -> FunctionReferenceKind {
+        self.reference_kind
     }
 }
 
@@ -269,12 +274,16 @@ impl FunctionSemanticInventory {
                 for result in instruction_data.results().iter().copied() {
                     record_value(&mut reachable_values, &mut reachable_value_bits, result);
                 }
-                if let CoreOp::Call(callee) = instruction_data.op() {
+                for reference in instruction_data
+                    .op()
+                    .function_references(core, instruction_data.origin())
+                {
                     call_sites.push(CallSite {
                         block,
                         instruction,
-                        callee: *callee,
-                        origin: instruction_data.origin(),
+                        callee: reference.function(),
+                        origin: reference.origin(),
+                        reference_kind: reference.kind(),
                     });
                 }
             }

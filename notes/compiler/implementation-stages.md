@@ -22,6 +22,7 @@ end-to-end path does not count.
 | 5 | Baseline optimization pipeline and measurable lowering alternatives |
 | 6 | Minimal typed source language and useful diagnostics |
 | 7 | Whole-package modules, then typed Minecraft context/entities/command APIs |
+| 7.5 | Ordered execution frames and static spatial semantics |
 | 8 | Calling convention and multiple runtime representations |
 | 9 | Loops, bounded work analysis, and static multi-tick scheduling |
 | 10 | Typed compile-time macros and disciplined Minecraft macro lowering |
@@ -357,32 +358,60 @@ This is the first minimal user-facing compiler.
 
 ## Stage 7: Typed Minecraft programming model
 
-Stage 7A first implements the accepted whole-package prerequisite:
+Status: **complete and gated.**
+
+Authoritative design and execution order:
+[`stage-7-plan.md`](stage-7-plan.md) and
+[`stage-7-todo.md`](stage-7-todo.md). The audited implementation order is retained in
+[`stage-7-remainder-plan.md`](stage-7-remainder-plan.md), and the exact boundary for
+Stage 7.5 and Stage 8 is in [`stage-7-handoff.md`](stage-7-handoff.md).
+
+Stage 7A implemented the rooted whole-package prerequisite:
 
 - complete owned module inputs independent of diagnostic filenames;
-- explicit module imports/aliases and canonical logical module paths;
+- one root and Zig-like per-module dependency names;
+- compile-time namespace values with uniform dotted member/call resolution;
 - private, package-visible, and datapack-exported functions; and
 - deterministic whole-package resolution and lowering without filesystem discovery,
   dependencies, or a stable cross-package ABI.
 
-Stage 7B then introduces the types and APIs that make Minecraft commands pleasant and
-safe:
+Stage 7B implemented the conservative external Core operation and literal-only
+`unsafe minecraft("...")` boundary. Stage 7C implemented the first semantic and
+structured-context slice:
 
-- a verified external Core operation with compiler-owned semantic descriptors and
-  fixed conservative optimization behavior;
-- `Entity<T>` and `Player`;
+- semantic identities distinguishing entity references, possibly-many queries, and
+  bound executors, plus the first `ArmorStand` kind; the runnable slice currently
+  constructs queries and scoped executors rather than physical entity references;
 - selectors with known or bounded cardinality;
 - executor, position, rotation, dimension, and anchor context;
-- locations and coordinate spaces;
-- structured `Text` distinct from runtime `String`;
-- typed scoreboard, storage, NBT, block, item, and predicate access;
-- method/context forms such as `player.say(text)`;
-- command success, command result, absence, and failure as explicit semantics.
+- ordered `.as(query)` run scopes with exact query/modifier provenance, strict fork
+  assumptions, and one outlined body edge; and
+- source-owned inferred context/effect/fork/work function summaries.
 
-Stage 7B also adds the literal-only `unsafe minecraft("...")` statement as a fixed
-unknown-effect/context/fork barrier. Users cannot assert purity or effect precision,
-and safe typed operations lower through structured Minecraft IR rather than raw
-text. Runtime interpolation remains Stage 10.
+Additional frame modifiers and static coordinate values are the bounded Stage 7.5
+work; Stage 7 does not pretend they exist merely because its context lattice has a
+slot for them.
+
+Stage 7D implements the first method-oriented operation and complete vertical proof:
+
+```mdl
+export fn announce() {
+    run.as(mc.entities(ArmorStand).with_tag("stage7").limit(1)) |speaker| {
+        speaker.say("hello");
+    }
+}
+```
+
+The implementation preserves every modifier and query refinement in semantic order
+and carries context, multiplicity, effect, outcome, recipe, placement, and provenance
+facts. Typed operations resolve through one compiler-owned semantic registry and
+lower through one reconciled Java 26.2 structured recipe. Stage 7.5 owns its selected
+static frame modifiers and spatial commands. Conditions, stores, `on`, `summon`, and
+multi-version recipes remain deliberately deferred; target dependence still stays
+out of semantic HIR/Core.
+
+Users cannot assert purity or effect precision for unsafe text. Runtime interpolation
+remains Stage 10.
 
 The compiler should be able to type-check an expression in the spirit of:
 
@@ -399,35 +428,78 @@ Exit criteria:
   datapack exports pass the Stage 7A package/server gates;
 - context-invalid operations fail during type checking;
 - cardinality-changing operations are visible to analysis;
-- nested context operations lower correctly and can share/fuse prefixes;
+- nested execute plans lower correctly without leaking context;
 - typed APIs and raw commands interoperate through explicit boundaries.
 
-## Stage 8: Calling convention and representation selection
+## Stage 7.5: Execution frames and static spatial semantics
 
-Define how values cross function boundaries and how one source type may use several
-Minecraft representations.
+Status: **complete and gated.**
 
-Research and implement candidates for:
+Authoritative design and execution order:
+[`stage-7-5-plan.md`](stage-7-5-plan.md) and
+[`stage-7-5-todo.md`](stage-7-5-todo.md).
 
-- constants, scoreboard values, and NBT numeric values;
-- deferred conditions and normalized Boolean scores;
-- entity values as active context, selectors, UUIDs, or handles;
-- structs split across scores versus stored as NBT;
-- fixed and dynamic lists;
-- enums and interned strings;
-- locations and structured text;
-- arguments, returns, temporaries, recursion, and reentrancy.
+Stage 7.5 broadens the typed Minecraft programming model without selecting runtime
+representations. It adds exact ordered `at`, `at_executor`, `positioned`, `rotated`,
+`in`, `anchored`, and `align` transforms around the existing `as` scope; immutable
+absolute/relative/local coordinate and rotation attributes; and two spatial methods
+whose difference is source-visible:
 
-Representation choice belongs to an analysis/lowering pass. The frontend should not
-commit every `Int`, struct, or list to one physical form.
+```mdl
+executor.teleport(~, ~10, ~); // current execution frame
+executor.move_by(0, 10, 0);   // receiver's own frame
+```
+
+These arguments remain compiler-known operation attributes. They are not ordinary
+locals, SSA values, function parameters, or storage carriers. This gives Stage 8
+concrete pressure from ambient behavior, ordered frame transformation, frame-relative
+commands, and receiver-relative recipes without prematurely designing a universal
+value system.
 
 Exit criteria:
 
-- calling conventions are documented and verified;
-- alternative representations can be compared without changing source semantics;
-- conversion/bridging costs are explicit;
-- repeated dynamic access can be cached or specialized when legal;
-- unused runtime support is eliminated.
+- modifier order and exact frame provenance survive source, HIR, Core, preflight,
+  structured target IR, and emitted datapacks;
+- HIR and Core independently agree on ambient requirements for world/relative/local
+  coordinate instances;
+- every modifier and spatial operation consumes a retained Java 26.2 recipe;
+- teleport and move-by remain semantically distinct and pass clientless vanilla
+  differentials; and
+- coordinates and entity identities still cannot escape into runtime values.
+
+## Stage 8: Calling convention and representation selection
+
+Status: **complete for the frozen scalar synchronous scope.**
+
+Detailed design and execution order:
+[`stage-8-plan.md`](stage-8-plan.md) and
+[`stage-8-todo.md`](stage-8-todo.md).
+
+Define how the existing scalar values cross synchronous function boundaries without
+committing semantic Core to one Minecraft carrier. Stage 8 separates facts, mutable
+storage, zero-or-more realizations of one SSA value, per-use requirements,
+materializations, physical ABI modes, and activation lifetime.
+
+The bounded implementation covers:
+
+- compatibility migration of current `Bool`/`Int32` score homes;
+- explicit score/frame/score realization transfers;
+- measured serial reuse for synchronous many-context run bodies;
+- recursive-SCC-only command-storage activation frames; and
+- arguments, results, spills, cleanup, abnormal termination, and caller-bounded
+  recursion depth.
+
+Deferred conditions, structs, lists, entity references, runtime locations, strings,
+and alternative aggregate layouts are follow-on representation clients, not Stage 8
+exit requirements. This keeps the framework driven by executable scalar evidence.
+
+Exit criteria:
+
+- physical realization, ABI, and activation contracts are documented and verified;
+- many-context run bodies and direct/mutual scalar recursion execute correctly;
+- one semantic scalar can cross score -> frame -> score through explicit recipes;
+- acyclic functions retain the static-score fast path; and
+- unused frames, wrappers, transfers, and storage paths are eliminated.
 
 ## Stage 9: Loops and static multi-tick scheduling
 
@@ -435,7 +507,7 @@ Add structured loops and lower them according to bounds and target budgets:
 
 - constant folding and complete unrolling for tiny known loops;
 - partial unrolling;
-- recursive same-tick functions;
+- normalization and optimization of already-correct same-tick recursion;
 - selector/native bulk transformations;
 - bounded dynamic iteration;
 - static continuation phases across ticks;
@@ -542,16 +614,16 @@ installation.
 
 ## Immediate implementation tranche
 
-Stages 1 through 6 have completed and gated the first human-usable optimized vertical
-slice. The next engineering tranche is Stage 7A's whole-package module layer:
-
-```text
-complete owned module inputs -> imports/visibility/exports -> typed HIR -> Core
-```
-
-The completed single-source scalar compiler remains the reference path while Stage 7A
-adds canonical logical module ordering without filesystem discovery, dependency
-resolution, or a stable cross-package ABI.
+Stages 1 through 8 are complete for their frozen scopes. Stage 8's fixed-score
+compatibility path, zero-or-more scalar realizations, exact sparse lifetimes, serial
+many-context reuse, recursive-SCC-only typed spill frames, recovery contract,
+physical recipe accounting, corruption/determinism gates, and clientless Java 26.2
+proofs are complete. See [`stage-8-handoff.md`](stage-8-handoff.md). Stage 9 must
+preserve Stage 7.5's context boundaries and must not suspend Stage 8's synchronous
+tail frames across ticks.
+Module ordering remains in-memory and logical; filesystem discovery, package
+distribution, and stable cross-package ABI are still Stage 12 work. See
+[`stage-8-plan.md`](stage-8-plan.md).
 
 ## Cross-cutting rules
 

@@ -1,0 +1,9 @@
+// MDL: success
+// CORE-NOT: run_scope
+// CORE-NOT: minecraft.run_scope
+// PACK-COUNT-1: say direct outlined body
+export fn direct_scope() {
+    run {
+        unsafe minecraft("say direct outlined body");
+    }
+}

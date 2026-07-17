@@ -16,6 +16,10 @@ use mdl_compiler::lower::minecraft::{
 use mdl_compiler::source::{OriginId, SourceContext};
 use mdl_compiler::target::JavaEditionTarget;
 
+mod support;
+
+use support::assert_golden;
+
 const STAGE4_LOWERING_GOLDEN: &str = include_str!("golden/stage4/lowering.txt");
 const STAGE4_TARGET_GOLDEN: &str = include_str!("golden/stage4/target.txt");
 const STAGE4_PACK_GOLDEN: &str = include_str!("golden/stage4/pack.txt");
@@ -61,14 +65,14 @@ fn public_lowering_boundary_returns_only_verified_output_and_read_only_abi() {
     assert_eq!(mapped.result_homes()[0].1.holder().to_string(), "#f0r0");
     assert_eq!(
         output.map().execution_contract().activation(),
-        ActivationContract::SingleContextNonReentrant
+        ActivationContract::SynchronousSerial
     );
     assert_eq!(
         output
             .map()
             .execution_contract()
             .command_limits()
-            .assumptions(),
+            .configured_assumptions(),
         mdl_compiler::lower::minecraft::CommandLimitAssumptions::for_target(
             JavaEditionTarget::V26_2
         )
@@ -120,7 +124,7 @@ fn command_limit_assumptions_do_not_change_stage4_target_or_artifact() {
             .map()
             .execution_contract()
             .command_limits()
-            .assumptions(),
+            .configured_assumptions(),
         assumptions
     );
     assert_eq!(
@@ -128,7 +132,7 @@ fn command_limit_assumptions_do_not_change_stage4_target_or_artifact() {
             .map()
             .execution_contract()
             .command_limits()
-            .assumptions(),
+            .configured_assumptions(),
         assumptions
     );
     assert_eq!(
@@ -163,7 +167,7 @@ fn structured_census_reconciles_with_trace_and_emitted_artifact() {
         .map()
         .execution_contract()
         .command_limits()
-        .assumptions();
+        .configured_assumptions();
     let report = output
         .analyze_target_execution(TargetExecutionAnalysisLimits::new(
             AnalysisArithmeticCaps::minimum_for(assumptions),
@@ -252,8 +256,16 @@ fn explicit_none_is_the_complete_stage4_compatibility_oracle() {
     let explicit_none_target = MinecraftDebugDumper::program(explicit_none.program());
     assert_eq!(legacy_lowering, explicit_none_lowering);
     assert_eq!(legacy_target, explicit_none_target);
-    assert_eq!(legacy_lowering, STAGE4_LOWERING_GOLDEN);
-    assert_eq!(legacy_target, STAGE4_TARGET_GOLDEN);
+    assert_golden(
+        "golden/stage4/lowering.txt",
+        STAGE4_LOWERING_GOLDEN,
+        &legacy_lowering,
+    );
+    assert_golden(
+        "golden/stage4/target.txt",
+        STAGE4_TARGET_GOLDEN,
+        &legacy_target,
+    );
     assert_eq!(legacy.map(), explicit_none.map());
     assert_eq!(
         legacy.map().execution_contract(),
@@ -266,7 +278,7 @@ fn explicit_none_is_the_complete_stage4_compatibility_oracle() {
                 .map()
                 .execution_contract()
                 .command_limits()
-                .assumptions(),
+                .configured_assumptions(),
         ),
         100_000,
         100_000,
@@ -319,7 +331,7 @@ fn explicit_none_is_the_complete_stage4_compatibility_oracle() {
     let legacy_pack = pack_dump(legacy_emission.pack());
     let explicit_none_pack = pack_dump(explicit_none_emission.pack());
     assert_eq!(legacy_pack, explicit_none_pack);
-    assert_eq!(legacy_pack, STAGE4_PACK_GOLDEN);
+    assert_golden("golden/stage4/pack.txt", STAGE4_PACK_GOLDEN, &legacy_pack);
     let paths = legacy_emission
         .pack()
         .files()
@@ -357,7 +369,11 @@ fn explicit_none_is_the_complete_stage4_compatibility_oracle() {
     let legacy_trace = trace_dump(legacy_emission.trace());
     let explicit_none_trace = trace_dump(explicit_none_emission.trace());
     assert_eq!(legacy_trace, explicit_none_trace);
-    assert_eq!(legacy_trace, STAGE4_TRACE_GOLDEN);
+    assert_golden(
+        "golden/stage4/trace.txt",
+        STAGE4_TRACE_GOLDEN,
+        &legacy_trace,
+    );
     assert!(
         legacy_emission
             .trace()
@@ -397,14 +413,11 @@ fn public_failures_stop_before_output_and_report_the_exact_phase() {
     recursive
         .define_function(function, builder.finish().unwrap())
         .unwrap();
-    let failure = lower_to_minecraft(&recursive, &sources, &options()).unwrap_err();
-    assert_eq!(failure.phase(), LoweringPhase::Legality);
-    assert!(
-        failure
-            .diagnostics()
-            .contains_code("lower.recursive-call-abi")
+    let recursive_output = lower_to_minecraft(&recursive, &sources, &options()).unwrap();
+    assert_eq!(
+        recursive_output.map().execution_contract().activation(),
+        ActivationContract::SynchronousRecursiveStack
     );
-    assert_eq!(failure.dump_lowering(), None);
 
     let mut unsupported = CoreProgram::new();
     let function = unsupported

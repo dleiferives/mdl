@@ -1,7 +1,9 @@
 //! Flattening of immutable planning phase records into the final plan identity space.
 
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
-use crate::ir::core::{BlockId, CoreProgram, CoreType, FunctionId, InstId, ValueId};
+use crate::ir::core::{
+    BlockId, CoreAmbientAnalysis, CoreOp, CoreProgram, CoreType, FunctionId, InstId, ValueId,
+};
 
 use super::super::analysis::CoreEdgeKind;
 use super::super::assignment::{
@@ -11,9 +13,13 @@ use super::super::assignment::{
 use super::super::edge_transfer::{
     BlockTransfer, EdgeTemporaryKind, EdgeTransferPlan, FunctionEdgeTransferPlan, TransferLocation,
 };
+use super::super::physical_preflight::PhysicalPreflight;
 use super::super::placement::{ControlRecipePlan, FunctionControlRecipePlan};
+#[cfg(test)]
+use super::super::realization::PhysicalPlanningLimits;
+use super::super::realization::PhysicalRealizationPlan;
 use super::super::resources::{FunctionResourceInventory, ResourceInventory};
-use super::super::{LoweringOptions, MinecraftOptimizationLevel};
+use super::super::{LoweringOptions, MinecraftOptimizationLevel, TargetPreflight};
 use super::{
     BranchTransfer, CallResultDestination, EdgeTransfer, FunctionAbi, FunctionCoalescingPlan,
     FunctionLayout, Home, HomeId, HomeRole, InstructionPlan, LoweringPlan, MoveStep, PackAbi,
@@ -69,10 +75,18 @@ impl LoweringPlan {
         clippy::needless_pass_by_value,
         reason = "publication consumes one-shot immutable phase results at the final ownership boundary"
     )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "publication consumes each independently verified immutable phase product exactly once"
+    )]
     pub(crate) fn from_selected_parts(
         core: &CoreProgram,
         options: &LoweringOptions,
+        preflight: TargetPreflight,
+        ambient: CoreAmbientAnalysis,
         assignment: HomeAssignment,
+        physical: PhysicalRealizationPlan,
+        physical_preflight: PhysicalPreflight,
         transfers: EdgeTransferPlan,
         control: ControlRecipePlan,
         resources: ResourceInventory,
@@ -80,6 +94,10 @@ impl LoweringPlan {
         let candidate = assemble_selected_candidate(
             core,
             options,
+            preflight,
+            ambient,
+            physical,
+            physical_preflight,
             &assignment,
             &transfers,
             &control,
@@ -100,6 +118,18 @@ impl LoweringPlan {
         validate_legacy_phase_headers(core, options, &assignment, &transfers, &resources)?;
         let inventory = super::super::analysis::SemanticInventory::new(core)
             .map_err(|_| invalid_control_without_function())?;
+        let command_limit_evidence = super::super::audit::audit_legality(
+            core,
+            &inventory,
+            options.target(),
+            options.command_limit_assumptions(),
+        )
+        .map_err(PlanFinishError::Invalid)?;
+        let preflight =
+            TargetPreflight::new(core, &inventory, options.target(), command_limit_evidence)
+                .map_err(PlanFinishError::Invalid)?;
+        let ambient =
+            CoreAmbientAnalysis::analyze(core).map_err(|_| invalid_control_without_function())?;
         let control = ControlRecipePlan::new(
             core,
             &inventory,
@@ -108,19 +138,55 @@ impl LoweringPlan {
             options.optimization_level(),
         )
         .map_err(|_| invalid_control_without_function())?;
-        Self::from_selected_parts(core, options, assignment, transfers, control, resources)
+        let physical = PhysicalRealizationPlan::for_score_compatibility(
+            core,
+            &inventory,
+            &assignment,
+            None,
+            PhysicalPlanningLimits::DEFAULT,
+        )
+        .map_err(|_| invalid_control_without_function())?;
+        let physical_preflight = PhysicalPreflight::new(options.target(), &physical)
+            .map_err(|_| invalid_control_without_function())?;
+        Self::from_selected_parts(
+            core,
+            options,
+            preflight,
+            ambient,
+            assignment,
+            physical,
+            physical_preflight,
+            transfers,
+            control,
+            resources,
+        )
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "candidate assembly keeps all immutable phase products explicit for independent verification"
+)]
 pub(super) fn assemble_selected_candidate(
     core: &CoreProgram,
     options: &LoweringOptions,
+    preflight: TargetPreflight,
+    ambient: CoreAmbientAnalysis,
+    physical: PhysicalRealizationPlan,
+    physical_preflight: PhysicalPreflight,
     assignment: &HomeAssignment,
     transfers: &EdgeTransferPlan,
     control: &ControlRecipePlan,
     resources: &ResourceInventory,
 ) -> Result<LoweringPlan, PlanBuildError> {
     validate_phase_headers(core, options, assignment, transfers, control, resources)?;
+    physical_preflight
+        .verify(&physical)
+        .map_err(|_| PlanBuildError::InvalidPhaseInput {
+            phase: PlanInputPhase::Assignment,
+            function: None,
+        })?;
     validate_home_capacity(required_home_count(core, assignment, transfers)?)?;
 
     let target_functions = flatten_resources(resources)?;
@@ -152,7 +218,14 @@ pub(super) fn assemble_selected_candidate(
         )?;
         let abi = flatten_abi(function, assigned, &local_homes)?;
         let value_homes = flatten_value_homes(function, body, assigned, &local_homes)?;
-        let instruction_plans = flatten_instruction_plans(function, body, assigned, &local_homes)?;
+        let instruction_plans = flatten_instruction_plans(
+            function,
+            body,
+            assigned,
+            function_resources,
+            &local_homes,
+            &preflight,
+        )?;
         let edge_transfers =
             flatten_edge_transfers(function, body, transfer, function_resources, &local_homes)?;
         if function_resources.block_slots().len() != body.block_counts().allocated {
@@ -173,6 +246,7 @@ pub(super) fn assemble_selected_candidate(
             )
         });
         let layout = FunctionLayout {
+            linkage: declaration.linkage(),
             diagnostic_name_hint: declaration.name_hint().map(Into::into),
             parameter_types: declaration.parameters().into(),
             result_types: declaration.results().into(),
@@ -180,6 +254,7 @@ pub(super) fn assemble_selected_candidate(
             block_placements: checked_placement_slots(function, body, function_control)?.into(),
             branch_recipes: checked_branch_recipe_slots(function, body, function_control)?.into(),
             block_functions: function_resources.block_slots().into(),
+            assigned_homes: local_homes.assigned.clone(),
             value_homes,
             parallel_copy_temp: local_homes.legacy_edge_temporary,
             edge_temporaries,
@@ -201,7 +276,10 @@ pub(super) fn assemble_selected_candidate(
     Ok(LoweringPlan {
         optimization_level: options.optimization_level(),
         target: options.target(),
-        command_limit_assumptions: options.command_limit_assumptions(),
+        preflight,
+        physical,
+        physical_preflight,
+        ambient,
         namespace: options.namespace().clone(),
         pack_abi: PackAbi {
             register_objective: options.register_objective().clone(),
@@ -227,6 +305,18 @@ pub(super) fn assemble_candidate(
     validate_legacy_phase_headers(core, options, assignment, transfers, resources)?;
     let inventory = super::super::analysis::SemanticInventory::new(core)
         .map_err(|_| invalid_control_without_function())?;
+    let command_limit_evidence = super::super::audit::audit_legality(
+        core,
+        &inventory,
+        options.target(),
+        options.command_limit_assumptions(),
+    )
+    .map_err(|_| invalid_control_without_function())?;
+    let preflight =
+        TargetPreflight::new(core, &inventory, options.target(), command_limit_evidence)
+            .map_err(|_| invalid_control_without_function())?;
+    let ambient =
+        CoreAmbientAnalysis::analyze(core).map_err(|_| invalid_control_without_function())?;
     let control = ControlRecipePlan::new(
         core,
         &inventory,
@@ -235,7 +325,28 @@ pub(super) fn assemble_candidate(
         options.optimization_level(),
     )
     .map_err(|_| invalid_control_without_function())?;
-    assemble_selected_candidate(core, options, assignment, transfers, &control, resources)
+    let physical = PhysicalRealizationPlan::for_score_compatibility(
+        core,
+        &inventory,
+        assignment,
+        None,
+        PhysicalPlanningLimits::DEFAULT,
+    )
+    .map_err(|_| invalid_control_without_function())?;
+    let physical_preflight = PhysicalPreflight::new(options.target(), &physical)
+        .map_err(|_| invalid_control_without_function())?;
+    assemble_selected_candidate(
+        core,
+        options,
+        preflight,
+        ambient,
+        physical,
+        physical_preflight,
+        assignment,
+        transfers,
+        &control,
+        resources,
+    )
 }
 
 #[cfg(test)]
@@ -618,7 +729,9 @@ fn flatten_instruction_plans(
     function: FunctionId,
     body: &crate::ir::core::FunctionBody,
     assignment: &FunctionHomeAssignment,
+    resources: &FunctionResourceInventory,
     homes: &LocalHomeMap,
+    preflight: &TargetPreflight,
 ) -> Result<Box<[Option<InstructionPlan>]>, PlanBuildError> {
     if assignment.instruction_slots().len() != body.instruction_counts().allocated {
         return Err(invalid_assignment(function));
@@ -631,7 +744,17 @@ fn flatten_instruction_plans(
             let instruction =
                 indexed_instruction(index).ok_or_else(|| invalid_assignment(function))?;
             plan.as_ref()
-                .map(|plan| flatten_instruction_plan(function, instruction, plan, homes))
+                .map(|plan| {
+                    flatten_instruction_plan(
+                        function,
+                        instruction,
+                        body,
+                        plan,
+                        resources,
+                        homes,
+                        preflight,
+                    )
+                })
                 .transpose()
         })
         .collect::<Result<Vec<_>, PlanBuildError>>()
@@ -640,12 +763,38 @@ fn flatten_instruction_plans(
 
 fn flatten_instruction_plan(
     function: FunctionId,
-    _instruction: InstId,
+    instruction: InstId,
+    body: &crate::ir::core::FunctionBody,
     plan: &AssignedInstructionPlan,
+    resources: &FunctionResourceInventory,
     homes: &LocalHomeMap,
+    preflight: &TargetPreflight,
 ) -> Result<InstructionPlan, PlanBuildError> {
     match plan {
         AssignedInstructionPlan::OmittedPure => Ok(InstructionPlan::OmittedPure),
+        AssignedInstructionPlan::External => {
+            let data = body
+                .instruction(instruction)
+                .ok_or_else(|| invalid_assignment(function))?;
+            let CoreOp::External(external) = data.op() else {
+                return Err(invalid_assignment(function));
+            };
+            if let Some(recipe) = preflight.selected_recipe(*external) {
+                if resources.external_helper(instruction).is_some() {
+                    return Err(invalid_resources(function));
+                }
+                Ok(InstructionPlan::Minecraft {
+                    external: *external,
+                    recipe: recipe.recipe_id(),
+                })
+            } else {
+                Ok(InstructionPlan::External {
+                    helper: resources
+                        .external_helper(instruction)
+                        .ok_or_else(|| invalid_resources(function))?,
+                })
+            }
+        }
         AssignedInstructionPlan::Scalar { operands, results } => {
             let operands = flatten_assigned_ids(function, operands, homes)?;
             let results = results
@@ -1242,7 +1391,7 @@ mod tests {
                 baseline_parts_with_liveness_limits(&core, &options, limits);
             LoweringPlan::from_parts(&core, &options, assignment, transfers, resources)
                 .unwrap()
-                .report()
+                .report(&core)
                 .dump()
         };
         let first = build();

@@ -6,15 +6,16 @@ use std::fmt;
 use super::FrontendLimits;
 use super::ast::{
     AstAssignment, AstBindingKind, AstBlock, AstCall, AstCallStatement, AstComparisonOp,
-    AstDeclaration, AstExpression, AstExpressionKind, AstFunction, AstIfArm, AstIfStatement,
-    AstModule, AstName, AstParameter, AstResultType, AstResultTypeKind, AstReturnStatement,
-    AstStatement, AstValueType, AstValueTypeKind,
+    AstCoordinateSigil, AstDeclaration, AstExpression, AstExpressionKind, AstFunction,
+    AstFunctionVisibility, AstIfArm, AstIfStatement, AstImport, AstModule, AstName, AstParameter,
+    AstResultType, AstResultTypeKind, AstReturnStatement, AstRunModifier, AstRunStatement,
+    AstStatement, AstUnsafeMinecraftStatement, AstValueType, AstValueTypeKind,
 };
 use super::token::{Token, TokenBuffer, TokenKind};
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::source::{FileId, Origin, OriginError, SourceContext, SourceError, Span};
 
-const EXPECTED_FUNCTION: &str = "frontend.parse.expected-function";
+const EXPECTED_ITEM: &str = "frontend.parse.expected-item";
 const EXPECTED_IDENTIFIER: &str = "frontend.parse.expected-identifier";
 const EXPECTED_TOKEN: &str = "frontend.parse.expected-token";
 const EXPECTED_TYPE: &str = "frontend.parse.expected-type";
@@ -163,33 +164,106 @@ impl<'a> Parser<'a> {
 
     fn parse_module(&mut self) -> Result<AstModule, SourceError> {
         let start = self.sources.span(self.file, 0, 0)?;
+        let mut imports = vec![];
         let mut functions = vec![];
         while !self.at(TokenKind::EndOfFile) {
             let before = self.index;
-            if self.at(TokenKind::KeywordFn) {
-                if let Some(function) = self.parse_function()? {
-                    functions.push(function);
+            match self.current().kind() {
+                TokenKind::KeywordConst => {
+                    if let Some(import) = self.parse_import()? {
+                        imports.push(import);
+                    }
                 }
-            } else {
-                self.error(
-                    EXPECTED_FUNCTION,
-                    "expected a function definition",
-                    self.current().span(),
-                );
-                self.recover_item();
+                TokenKind::KeywordFn | TokenKind::KeywordPub | TokenKind::KeywordExport => {
+                    if let Some(function) = self.parse_function()? {
+                        functions.push(function);
+                    }
+                }
+                _ => {
+                    self.error(
+                        EXPECTED_ITEM,
+                        "expected an import or function definition",
+                        self.current().span(),
+                    );
+                    self.recover_item();
+                }
             }
             self.ensure_progress(before);
         }
         let end = self.current().span();
         Ok(AstModule {
+            imports,
             functions,
             span: self.cover(start, end)?,
         })
     }
 
-    fn parse_function(&mut self) -> Result<Option<AstFunction>, SourceError> {
+    fn parse_import(&mut self) -> Result<Option<AstImport>, SourceError> {
         self.item_boundary = false;
         let start = self.bump().span();
+        let Some(binding_token) = self.expect_identifier("expected an import binding name") else {
+            self.recover_item();
+            return Ok(None);
+        };
+        let binding = AstName {
+            span: binding_token.span(),
+        };
+        let mut clean = self
+            .expect(TokenKind::Equal, "expected `=` after the import binding")
+            .is_some();
+        clean &= self
+            .expect(TokenKind::KeywordImport, "expected `import` after `=`")
+            .is_some();
+        clean &= self
+            .expect(TokenKind::LeftParenthesis, "expected `(` after `import`")
+            .is_some();
+        let dependency = if self.at(TokenKind::StringLiteral) {
+            Some(self.bump().span())
+        } else {
+            self.error(
+                EXPECTED_TOKEN,
+                "expected a dependency-name string literal",
+                self.current().span(),
+            );
+            clean = false;
+            None
+        };
+        clean &= self
+            .expect(
+                TokenKind::RightParenthesis,
+                "expected `)` after the dependency name",
+            )
+            .is_some();
+        let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the import");
+        clean &= semicolon.is_some();
+        let end = semicolon.map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(start, end)?;
+        if !clean {
+            self.recover_item();
+            return Ok(None);
+        }
+        Ok(dependency.map(|dependency| AstImport {
+            binding,
+            dependency,
+            span,
+        }))
+    }
+
+    fn parse_function(&mut self) -> Result<Option<AstFunction>, SourceError> {
+        self.item_boundary = false;
+        let (visibility, visibility_span) = match self.current().kind() {
+            TokenKind::KeywordPub => (AstFunctionVisibility::Public, Some(self.bump().span())),
+            TokenKind::KeywordExport => (AstFunctionVisibility::Export, Some(self.bump().span())),
+            _ => (AstFunctionVisibility::Private, None),
+        };
+        let start = visibility_span.unwrap_or_else(|| self.current().span());
+        if self
+            .expect(TokenKind::KeywordFn, "expected `fn` after visibility")
+            .is_none()
+        {
+            self.recover_item_body();
+            return Ok(None);
+        }
         let Some(name_token) = self.expect_identifier("expected a function name") else {
             self.recover_item_body();
             return Ok(None);
@@ -235,6 +309,8 @@ impl<'a> Parser<'a> {
         };
         let span = self.cover(start, body.span)?;
         Ok(clean.then_some(AstFunction {
+            visibility,
+            visibility_span,
             name,
             parameters,
             result,
@@ -340,7 +416,7 @@ impl<'a> Parser<'a> {
 
     fn parse_block(&mut self) -> Result<Option<AstBlock>, SourceError> {
         let Some(open) = self.expect(TokenKind::LeftBrace, "expected `{` to begin a block") else {
-            if self.at(TokenKind::KeywordFn) {
+            if self.at_function_item_start() {
                 self.item_boundary = true;
             }
             return Ok(None);
@@ -351,7 +427,7 @@ impl<'a> Parser<'a> {
         }
         let mut statements = vec![];
         while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
-            if self.at(TokenKind::KeywordFn) {
+            if self.at_function_item_start() {
                 self.error(
                     EXPECTED_TOKEN,
                     "expected `}` before the next function definition",
@@ -389,22 +465,18 @@ impl<'a> Parser<'a> {
             TokenKind::KeywordConst | TokenKind::KeywordVar => self.parse_declaration(),
             TokenKind::KeywordIf => self.parse_if_statement(),
             TokenKind::KeywordReturn => self.parse_return_statement(),
-            TokenKind::Identifier if self.nth_kind(1) == TokenKind::Equal => {
+            TokenKind::KeywordRun if self.nth_kind(1) == TokenKind::Equal => {
                 self.parse_assignment()
             }
-            TokenKind::Identifier if self.nth_kind(1) == TokenKind::LeftParenthesis => {
+            TokenKind::KeywordRun if self.nth_kind(1) == TokenKind::LeftParenthesis => {
                 self.parse_call_statement()
             }
-            TokenKind::Identifier => {
-                let span = self.current().span();
-                self.error(
-                    EXPECTED_ASSIGNMENT_OR_CALL,
-                    "expected `=` or `(` after the name",
-                    span,
-                );
-                self.recover_statement();
-                Ok(AstStatement::Error(span))
+            TokenKind::KeywordRun => self.parse_run_statement(),
+            TokenKind::KeywordUnsafe => self.parse_unsafe_minecraft_statement(),
+            kind if is_identifier_like(kind) && self.nth_kind(1) == TokenKind::Equal => {
+                self.parse_assignment()
             }
+            kind if is_identifier_like(kind) => self.parse_call_statement(),
             _ => {
                 let span = self.current().span();
                 self.error(EXPECTED_STATEMENT, "expected a statement", span);
@@ -491,18 +563,80 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_call_statement(&mut self) -> Result<AstStatement, SourceError> {
-        let name = AstName {
-            span: self.bump().span(),
+        let expression = self.parse_expression()?;
+        let expression_span = expression.span;
+        let AstExpressionKind::Call(call) = expression.kind else {
+            self.error(
+                EXPECTED_ASSIGNMENT_OR_CALL,
+                "expected an assignment or call statement",
+                expression_span,
+            );
+            self.recover_statement();
+            return Ok(AstStatement::Error(
+                self.cover(expression_span, self.previous_or_current_span())?,
+            ));
         };
-        let (call, call_clean) = self.parse_call_after_name(name)?;
         let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the call");
         let end = semicolon.map_or(call.span, Token::span);
         let span = self.cover(call.span, end)?;
-        if !call_clean || semicolon.is_none() {
+        if semicolon.is_none() {
             self.note_item_boundary();
             return Ok(AstStatement::Error(span));
         }
         Ok(AstStatement::Call(AstCallStatement { call, span }))
+    }
+
+    fn parse_unsafe_minecraft_statement(&mut self) -> Result<AstStatement, SourceError> {
+        let start = self.bump().span();
+        let mut clean = self
+            .expect(
+                TokenKind::KeywordMinecraft,
+                "expected `minecraft` after `unsafe`",
+            )
+            .is_some();
+        clean &= self
+            .expect(
+                TokenKind::LeftParenthesis,
+                "expected `(` after `unsafe minecraft`",
+            )
+            .is_some();
+        let command = if self.at(TokenKind::StringLiteral) {
+            Some(self.bump().span())
+        } else {
+            self.error(
+                EXPECTED_TOKEN,
+                "expected one literal command string",
+                self.current().span(),
+            );
+            clean = false;
+            None
+        };
+        clean &= self
+            .expect(
+                TokenKind::RightParenthesis,
+                "expected `)` after the command literal",
+            )
+            .is_some();
+        let semicolon = self.expect(
+            TokenKind::Semicolon,
+            "expected `;` after the unsafe command",
+        );
+        clean &= semicolon.is_some();
+        let end = semicolon.map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(start, end)?;
+        let Some(command) = command else {
+            self.recover_statement();
+            return Ok(AstStatement::Error(span));
+        };
+        if clean {
+            Ok(AstStatement::UnsafeMinecraft(AstUnsafeMinecraftStatement {
+                command,
+                span,
+            }))
+        } else {
+            self.note_item_boundary();
+            Ok(AstStatement::Error(span))
+        }
     }
 
     fn parse_if_statement(&mut self) -> Result<AstStatement, SourceError> {
@@ -536,6 +670,61 @@ impl<'a> Parser<'a> {
             else_body,
             span: self.cover(start, end)?,
         }))
+    }
+
+    fn parse_run_statement(&mut self) -> Result<AstStatement, SourceError> {
+        let start = self.bump().span();
+        let mut modifiers = vec![];
+        let mut clean = true;
+        while let Some(dot) = self.eat(TokenKind::Dot) {
+            let Some(name_token) = self.expect_identifier("expected a run modifier after `.`")
+            else {
+                clean = false;
+                break;
+            };
+            let name = AstName {
+                span: name_token.span(),
+            };
+            let callee = AstExpression {
+                kind: AstExpressionKind::Name(name),
+                span: name.span,
+            };
+            let (call, call_clean) = self.parse_call_after_callee(callee)?;
+            clean &= call_clean;
+            modifiers.push(AstRunModifier {
+                name,
+                arguments: call.arguments,
+                span: self.cover(dot.span(), call.span)?,
+            });
+        }
+
+        let capture = if self.eat(TokenKind::Pipe).is_some() {
+            let capture = self
+                .expect_identifier("expected an executor capture name after `|`")
+                .map(|token| AstName { span: token.span() });
+            clean &= capture.is_some();
+            clean &= self
+                .expect(TokenKind::Pipe, "expected `|` after the executor capture")
+                .is_some();
+            capture
+        } else {
+            None
+        };
+
+        let Some(body) = self.parse_block()? else {
+            return self.error_statement(start);
+        };
+        let span = self.cover(start, body.span)?;
+        if clean {
+            Ok(AstStatement::Run(AstRunStatement {
+                modifiers,
+                capture,
+                body,
+                span,
+            }))
+        } else {
+            Ok(AstStatement::Error(span))
+        }
     }
 
     fn parse_if_arm(&mut self, start: Span) -> Result<Option<AstIfArm>, SourceError> {
@@ -631,9 +820,74 @@ impl<'a> Parser<'a> {
                 kind: AstExpressionKind::Not(Box::new(operand)),
             });
         }
-        self.parse_primary()
+        self.parse_postfix()
     }
 
+    fn parse_postfix(&mut self) -> Result<AstExpression, SourceError> {
+        // The loop builds a left-nested AST even though parsing itself is iterative.
+        // Retain each completed wrapper in `depth` until the whole spine is done so
+        // later checking and recursive drop inherit the same reviewed stack bound.
+        let incoming_depth = self.depth;
+        let result = (|| {
+            let mut expression = self.parse_primary()?;
+            loop {
+                if let Some(dot) = self.eat(TokenKind::Dot) {
+                    if !self.enter_depth(dot.span()) {
+                        expression.span = self.cover(expression.span, dot.span())?;
+                        expression.kind = AstExpressionKind::Error;
+                        break;
+                    }
+                    let Some(member_token) =
+                        self.expect_identifier("expected a member name after `.`")
+                    else {
+                        expression.span = self.cover(expression.span, dot.span())?;
+                        expression.kind = AstExpressionKind::Error;
+                        break;
+                    };
+                    let member = AstName {
+                        span: member_token.span(),
+                    };
+                    expression = AstExpression {
+                        span: self.cover(expression.span, member.span)?,
+                        kind: AstExpressionKind::Member {
+                            receiver: Box::new(expression),
+                            dot: dot.span(),
+                            member,
+                        },
+                    };
+                    continue;
+                }
+                if self.at(TokenKind::LeftParenthesis) {
+                    let open = self.current();
+                    if !self.enter_depth(open.span()) {
+                        expression.span = self.cover(expression.span, open.span())?;
+                        expression.kind = AstExpressionKind::Error;
+                        break;
+                    }
+                    let (call, clean) = self.parse_call_after_callee(expression)?;
+                    let span = call.span;
+                    expression = AstExpression {
+                        kind: if clean {
+                            AstExpressionKind::Call(call)
+                        } else {
+                            AstExpressionKind::Error
+                        },
+                        span,
+                    };
+                    continue;
+                }
+                break;
+            }
+            Ok(expression)
+        })();
+        self.depth = incoming_depth;
+        result
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive primary parser preserves bounded recovery behavior"
+    )]
     fn parse_primary(&mut self) -> Result<AstExpression, SourceError> {
         let token = self.current();
         match token.kind() {
@@ -651,26 +905,70 @@ impl<'a> Parser<'a> {
                     span: token.span(),
                 })
             }
-            TokenKind::Identifier => {
+            TokenKind::DecimalNumber => {
+                self.bump();
+                Ok(AstExpression {
+                    kind: AstExpressionKind::StaticDecimal {
+                        sigil: None,
+                        negative: false,
+                        digits: Some(token.span()),
+                    },
+                    span: token.span(),
+                })
+            }
+            TokenKind::Minus | TokenKind::Tilde | TokenKind::Caret => {
+                let prefix = self.bump();
+                let sigil = match prefix.kind() {
+                    TokenKind::Tilde => Some(AstCoordinateSigil::Relative),
+                    TokenKind::Caret => Some(AstCoordinateSigil::Local),
+                    TokenKind::Minus => None,
+                    _ => unreachable!(),
+                };
+                let negative = if prefix.kind() == TokenKind::Minus {
+                    true
+                } else {
+                    self.eat(TokenKind::Minus).is_some()
+                };
+                let digits = if matches!(
+                    self.current().kind(),
+                    TokenKind::DecimalInteger | TokenKind::DecimalNumber
+                ) {
+                    Some(self.bump().span())
+                } else {
+                    None
+                };
+                if sigil.is_none() && digits.is_none() {
+                    self.error(
+                        EXPECTED_EXPRESSION,
+                        "expected decimal digits after `-`",
+                        prefix.span(),
+                    );
+                    return Ok(Self::error_expression(prefix.span()));
+                }
+                let end = digits.unwrap_or(prefix.span());
+                Ok(AstExpression {
+                    kind: AstExpressionKind::StaticDecimal {
+                        sigil,
+                        negative,
+                        digits,
+                    },
+                    span: self.cover(prefix.span(), end)?,
+                })
+            }
+            TokenKind::StringLiteral => {
+                self.bump();
+                Ok(AstExpression {
+                    kind: AstExpressionKind::StringLiteral(token.span()),
+                    span: token.span(),
+                })
+            }
+            kind if is_identifier_like(kind) => {
                 self.bump();
                 let name = AstName { span: token.span() };
-                if self.at(TokenKind::LeftParenthesis) {
-                    let (call, clean) = self.parse_call_after_name(name)?;
-                    let span = call.span;
-                    Ok(AstExpression {
-                        kind: if clean {
-                            AstExpressionKind::Call(call)
-                        } else {
-                            AstExpressionKind::Error
-                        },
-                        span,
-                    })
-                } else {
-                    Ok(AstExpression {
-                        kind: AstExpressionKind::Name(name),
-                        span: token.span(),
-                    })
-                }
+                Ok(AstExpression {
+                    kind: AstExpressionKind::Name(name),
+                    span: token.span(),
+                })
             }
             TokenKind::LeftParenthesis => {
                 let open = self.bump();
@@ -694,7 +992,10 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 self.error(EXPECTED_EXPRESSION, "expected an expression", token.span());
-                if token.kind() == TokenKind::KeywordFn {
+                if matches!(
+                    token.kind(),
+                    TokenKind::KeywordFn | TokenKind::KeywordPub | TokenKind::KeywordExport
+                ) {
                     self.item_boundary = true;
                 }
                 if !matches!(
@@ -707,7 +1008,11 @@ impl<'a> Parser<'a> {
                         | TokenKind::KeywordVar
                         | TokenKind::KeywordIf
                         | TokenKind::KeywordReturn
+                        | TokenKind::KeywordRun
+                        | TokenKind::KeywordUnsafe
                         | TokenKind::KeywordFn
+                        | TokenKind::KeywordPub
+                        | TokenKind::KeywordExport
                         | TokenKind::EndOfFile
                 ) {
                     self.bump();
@@ -717,24 +1022,29 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_call_after_name(&mut self, callee: AstName) -> Result<(AstCall, bool), SourceError> {
+    fn parse_call_after_callee(
+        &mut self,
+        callee: AstExpression,
+    ) -> Result<(AstCall, bool), SourceError> {
         let Some(open) = self.expect(TokenKind::LeftParenthesis, "expected `(` after the callee")
         else {
+            let span = callee.span;
             return Ok((
                 AstCall {
-                    callee,
+                    callee: Box::new(callee),
                     arguments: vec![],
-                    span: callee.span,
+                    span,
                 },
                 false,
             ));
         };
         if !self.enter_depth(open.span()) {
+            let span = self.cover(callee.span, open.span())?;
             return Ok((
                 AstCall {
-                    callee,
+                    callee: Box::new(callee),
                     arguments: vec![],
-                    span: self.cover(callee.span, open.span())?,
+                    span,
                 },
                 false,
             ));
@@ -785,18 +1095,19 @@ impl<'a> Parser<'a> {
         };
         self.leave_depth();
         let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(callee.span, end)?;
         Ok((
             AstCall {
-                callee,
+                callee: Box::new(callee),
                 arguments,
-                span: self.cover(callee.span, end)?,
+                span,
             },
             clean,
         ))
     }
 
     fn error_statement(&mut self, start: Span) -> Result<AstStatement, SourceError> {
-        if self.at(TokenKind::KeywordFn) {
+        if self.at_function_item_start() {
             self.item_boundary = true;
         } else if !self.item_boundary {
             self.recover_statement();
@@ -814,7 +1125,7 @@ impl<'a> Parser<'a> {
     }
 
     fn expect_identifier(&mut self, message: &'static str) -> Option<Token> {
-        if self.at(TokenKind::Identifier) {
+        if is_identifier_like(self.current().kind()) {
             Some(self.bump())
         } else {
             self.error(EXPECTED_IDENTIFIER, message, self.current().span());
@@ -847,14 +1158,27 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordTrue
                 | TokenKind::KeywordFalse
                 | TokenKind::DecimalInteger
+                | TokenKind::DecimalNumber
+                | TokenKind::Minus
+                | TokenKind::Tilde
+                | TokenKind::Caret
+                | TokenKind::StringLiteral
                 | TokenKind::Identifier
+                | TokenKind::KeywordRun
         )
     }
 
     fn note_item_boundary(&mut self) {
-        if self.at(TokenKind::KeywordFn) {
+        if self.at_function_item_start() {
             self.item_boundary = true;
         }
+    }
+
+    fn at_function_item_start(&self) -> bool {
+        matches!(
+            self.current().kind(),
+            TokenKind::KeywordFn | TokenKind::KeywordPub | TokenKind::KeywordExport
+        )
     }
 
     fn nth_kind(&self, distance: usize) -> TokenKind {
@@ -937,7 +1261,11 @@ impl<'a> Parser<'a> {
     fn recover_item(&mut self) {
         while !matches!(
             self.current().kind(),
-            TokenKind::KeywordFn | TokenKind::EndOfFile
+            TokenKind::KeywordConst
+                | TokenKind::KeywordFn
+                | TokenKind::KeywordPub
+                | TokenKind::KeywordExport
+                | TokenKind::EndOfFile
         ) {
             self.bump();
         }
@@ -946,7 +1274,12 @@ impl<'a> Parser<'a> {
     fn recover_item_body(&mut self) {
         while !matches!(
             self.current().kind(),
-            TokenKind::LeftBrace | TokenKind::KeywordFn | TokenKind::EndOfFile
+            TokenKind::LeftBrace
+                | TokenKind::KeywordConst
+                | TokenKind::KeywordFn
+                | TokenKind::KeywordPub
+                | TokenKind::KeywordExport
+                | TokenKind::EndOfFile
         ) {
             self.bump();
         }
@@ -961,7 +1294,7 @@ impl<'a> Parser<'a> {
     fn recover_block_body(&mut self) {
         let mut braces = 1usize;
         while !self.at(TokenKind::EndOfFile) {
-            if self.at(TokenKind::KeywordFn) {
+            if self.at_function_item_start() {
                 self.item_boundary = true;
                 break;
             }
@@ -988,7 +1321,11 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordVar
                 | TokenKind::KeywordIf
                 | TokenKind::KeywordReturn
+                | TokenKind::KeywordRun
+                | TokenKind::KeywordUnsafe
                 | TokenKind::KeywordFn
+                | TokenKind::KeywordPub
+                | TokenKind::KeywordExport
                 | TokenKind::Identifier
                 | TokenKind::EndOfFile
         ) {
@@ -1004,6 +1341,10 @@ impl<'a> Parser<'a> {
             && !self.at(TokenKind::LeftBrace)
             && !self.at(TokenKind::RightBrace)
             && !self.at(TokenKind::KeywordFn)
+            && !self.at(TokenKind::KeywordPub)
+            && !self.at(TokenKind::KeywordExport)
+            && !self.at(TokenKind::KeywordRun)
+            && !self.at(TokenKind::KeywordUnsafe)
             && !self.at(TokenKind::EndOfFile)
         {
             self.bump();
@@ -1022,7 +1363,11 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordVar
                 | TokenKind::KeywordIf
                 | TokenKind::KeywordReturn
+                | TokenKind::KeywordRun
+                | TokenKind::KeywordUnsafe
                 | TokenKind::KeywordFn
+                | TokenKind::KeywordPub
+                | TokenKind::KeywordExport
                 | TokenKind::EndOfFile
         ) {
             self.bump();
@@ -1049,16 +1394,25 @@ const fn comparison_op(kind: TokenKind) -> Option<AstComparisonOp> {
     }
 }
 
+const fn is_identifier_like(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Identifier | TokenKind::KeywordRun)
+}
+
 fn expression_has_error(expression: &AstExpression) -> bool {
     match &expression.kind {
         AstExpressionKind::Error => true,
-        AstExpressionKind::Call(call) => call.arguments.iter().any(expression_has_error),
+        AstExpressionKind::Member { receiver, .. } => expression_has_error(receiver),
+        AstExpressionKind::Call(call) => {
+            expression_has_error(&call.callee) || call.arguments.iter().any(expression_has_error)
+        }
         AstExpressionKind::Not(operand) => expression_has_error(operand),
         AstExpressionKind::Compare { left, right, .. } => {
             expression_has_error(left) || expression_has_error(right)
         }
         AstExpressionKind::Bool(_)
         | AstExpressionKind::DecimalInteger(_)
+        | AstExpressionKind::StaticDecimal { .. }
+        | AstExpressionKind::StringLiteral(_)
         | AstExpressionKind::Name(_) => false,
     }
 }
@@ -1081,7 +1435,8 @@ mod tests {
     use super::{CHAINED_COMPARISON, ParseOutput, TRUNCATED, parse};
     use crate::frontend::FrontendLimits;
     use crate::frontend::ast::{
-        AstBindingKind, AstExpressionKind, AstResultTypeKind, AstStatement, AstValueTypeKind, dump,
+        AstBindingKind, AstExpressionKind, AstFunctionVisibility, AstResultTypeKind, AstStatement,
+        AstValueTypeKind, dump,
     };
     use crate::frontend::lexer::lex;
     use crate::source::{FileId, SourceContext};
@@ -1130,6 +1485,7 @@ fn choose(condition: Bool, left: Int32, right: Int32,) -> Int32 {
     } else {
         selected = right;
     }
+
     return selected;
 }
 
@@ -1205,6 +1561,50 @@ fn notify() -> Void {
     }
 
     #[test]
+    fn parses_imports_visibility_and_one_uniform_postfix_spine() {
+        let text = r#"
+const cells = import("cells-api");
+pub fn helper(value: Int32) -> Int32 { return value; }
+export fn run(value: Int32) -> Int32 {
+    return cells.normalize(helper(value));
+}
+"#;
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        let module = output.module();
+        assert_eq!(module.imports.len(), 1);
+        assert_eq!(spelling(&sources, module.imports[0].binding.span), "cells");
+        assert_eq!(
+            spelling(&sources, module.imports[0].dependency),
+            "\"cells-api\""
+        );
+        assert_eq!(
+            module.functions[0].visibility,
+            AstFunctionVisibility::Public
+        );
+        assert_eq!(
+            module.functions[1].visibility,
+            AstFunctionVisibility::Export
+        );
+
+        let AstStatement::Return(return_statement) = &module.functions[1].body.statements[0] else {
+            unreachable!();
+        };
+        let AstExpressionKind::Call(call) = &return_statement.value.as_ref().unwrap().kind else {
+            unreachable!();
+        };
+        let AstExpressionKind::Member {
+            receiver, member, ..
+        } = &call.callee.kind
+        else {
+            unreachable!();
+        };
+        assert_eq!(spelling(&sources, member.span), "normalize");
+        assert!(matches!(receiver.kind, AstExpressionKind::Name(_)));
+        assert!(matches!(call.arguments[0].kind, AstExpressionKind::Call(_)));
+    }
+
+    #[test]
     fn distinguishes_names_calls_and_assignments_with_lookahead() {
         let (_, _, output) =
             parse_text("fn f(x: Int32) -> Int32 { var y: Int32 = x; y = f(y); f(y); return y; }");
@@ -1233,6 +1633,16 @@ fn notify() -> Void {
     }
 
     #[test]
+    fn run_is_contextual_and_remains_an_ordinary_function_name() {
+        let (_, _, output) = parse_text("fn run() {} fn caller() { run(); run {} }");
+        assert_eq!(output.diagnostics(), None);
+        assert!(matches!(
+            &output.module().functions[1].body.statements[..],
+            [AstStatement::Call(_), AstStatement::Run(_)]
+        ));
+    }
+
+    #[test]
     fn parses_prefix_and_one_comparison_without_chaining() {
         let (_, _, output) = parse_text(
             "fn different(left: Int32, right: Int32) -> Bool { return !(left == right); }",
@@ -1247,6 +1657,54 @@ fn notify() -> Void {
             unreachable!();
         };
         assert!(matches!(operand.kind, AstExpressionKind::Compare { .. }));
+    }
+
+    #[test]
+    fn unsafe_minecraft_accepts_exactly_one_string_literal_statement() {
+        let (sources, _, output) =
+            parse_text(r#"fn raw() { unsafe minecraft("say hello"); return; }"#);
+        assert_eq!(output.diagnostics(), None);
+        let AstStatement::UnsafeMinecraft(statement) =
+            &output.module().functions[0].body.statements[0]
+        else {
+            panic!("expected unsafe Minecraft statement");
+        };
+        assert_eq!(spelling(&sources, statement.command), r#""say hello""#);
+
+        for malformed in [
+            "fn raw() { unsafe minecraft(command); return; }",
+            r#"fn raw() { unsafe minecraft("say a", "say b"); return; }"#,
+            r#"fn raw() { unsafe minecraft("say a" "say b"); return; }"#,
+        ] {
+            let (_, _, output) = parse_text(malformed);
+            assert!(output.diagnostics().is_some(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn parses_run_modifier_chain_capture_and_nested_block_as_one_statement() {
+        let text = r#"fn scoped() {
+    run.as(mc.entities(ArmorStand).with_tag("stage7").limit(1)) |speaker| {
+        unsafe minecraft("say hello");
+    }
+}"#;
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        let AstStatement::Run(run) = &output.module().functions[0].body.statements[0] else {
+            panic!("expected one structured run statement");
+        };
+        assert_eq!(run.modifiers.len(), 1);
+        assert_eq!(spelling(&sources, run.modifiers[0].name.span), "as");
+        assert_eq!(run.modifiers[0].arguments.len(), 1);
+        assert_eq!(spelling(&sources, run.capture.unwrap().span), "speaker");
+        assert!(matches!(
+            run.body.statements.as_slice(),
+            [AstStatement::UnsafeMinecraft(_)]
+        ));
+        assert_eq!(
+            spelling(&sources, run.span),
+            text[text.find("run.as").unwrap()..text.rfind('\n').unwrap()].trim_end()
+        );
     }
 
     #[test]
@@ -1362,7 +1820,7 @@ fn notify() -> Void {
         ));
         assert_eq!(
             dump(output.module(), &sources),
-            "module @0..34\n  function f @0..34\n    parameter x: Int32 @5..13\n    result Void (omitted)\n    block @15..34\n      error @17..21\n      error @22..32\n"
+            "module @0..34\n  private function f @0..34\n    parameter x: Int32 @5..13\n    result Void (omitted)\n    block @15..34\n      error @17..21\n      error @22..32\n"
         );
     }
 
@@ -1371,7 +1829,7 @@ fn notify() -> Void {
         let text = "fn f(x: Int32) -> Bool { return x == 1; }";
         let (sources, _, output) = parse_text(text);
         assert_eq!(output.diagnostics(), None);
-        let expected = "module @0..41\n  function f @0..41\n    parameter x: Int32 @5..13\n    result Bool @15..22\n    block @23..41\n      return @25..39\n        compare eq @32..38\n          name x @32..33\n          integer 1 @37..38\n";
+        let expected = "module @0..41\n  private function f @0..41\n    parameter x: Int32 @5..13\n    result Bool @15..22\n    block @23..41\n      return @25..39\n        compare eq @32..38\n          name x @32..33\n          integer 1 @37..38\n";
         assert_eq!(dump(output.module(), &sources), expected);
         assert_eq!(dump(output.module(), &sources), expected);
     }
@@ -1416,6 +1874,23 @@ fn notify() -> Void {
             parse_text_with_limits("fn f() -> Bool { return (((true))); }", limited);
         assert!(limited_output.is_truncated());
         assert_eq!(codes(&limited_output).last(), Some(&TRUNCATED));
+    }
+
+    #[test]
+    fn postfix_spines_share_the_recursive_syntax_depth_budget() {
+        let exact = FrontendLimits::new(100, 4, 10).unwrap();
+        let (_, _, exact_output) = parse_text_with_limits("fn f() { target.member(); }", exact);
+        assert_eq!(exact_output.diagnostics(), None);
+
+        let mut source = String::from("fn f() { target");
+        for _ in 0..1_024 {
+            source.push_str(".member()");
+        }
+        source.push_str("; }");
+        let limited = FrontendLimits::new(10_000, FrontendLimits::MAX_SYNTAX_DEPTH, 10).unwrap();
+        let (_, _, output) = parse_text_with_limits(&source, limited);
+        assert!(output.is_truncated());
+        assert_eq!(codes(&output).last(), Some(&TRUNCATED));
     }
 
     #[test]

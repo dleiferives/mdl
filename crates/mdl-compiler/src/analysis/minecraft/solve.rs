@@ -86,6 +86,7 @@ enum ContextClass {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ContextFlow {
     alternatives: [Option<MetricSet>; CONTEXT_CLASS_COUNT],
+    multiplicities: [Option<CountBound>; CONTEXT_CLASS_COUNT],
     divergence: Option<MetricSet>,
 }
 
@@ -981,6 +982,7 @@ impl ContextFlow {
     const fn one() -> Self {
         Self {
             alternatives: [None, Some(MetricSet::zero()), None],
+            multiplicities: [None, Some(CountBound::exact(1)), None],
             divergence: None,
         }
     }
@@ -992,8 +994,13 @@ impl ContextFlow {
         Some(())
     }
 
-    fn insert(&mut self, class: ContextClass, metrics: MetricSet) {
-        merge_cell(&mut self.alternatives[class as usize], metrics);
+    fn insert(&mut self, class: ContextClass, metrics: MetricSet, multiplicity: CountBound) {
+        let index = class as usize;
+        merge_cell(&mut self.alternatives[index], metrics);
+        self.multiplicities[index] =
+            Some(self.multiplicities[index].map_or(multiplicity, |current| {
+                merge_alternative_bound(current, multiplicity)
+            }));
     }
 }
 
@@ -1045,6 +1052,24 @@ fn evaluate_command(command: &CommandKind, context: &SolverContext<'_>) -> Optio
     match command {
         CommandKind::Score(_) | CommandKind::Data(_) => {
             let metrics = MetricSet::command(true);
+            let mut output = CommandFlow::continuing(CommandResult::Zero, metrics);
+            output.merge(CommandFlow::continuing(CommandResult::NonZero, metrics));
+            output.merge(CommandFlow::continuing(CommandResult::Failure, metrics));
+            Some(output)
+        }
+        CommandKind::Say(_) => {
+            let result = command.contract().native_outcome().exact_result()?;
+            Some(CommandFlow::continuing(
+                if result == 0 {
+                    CommandResult::Zero
+                } else {
+                    CommandResult::NonZero
+                },
+                MetricSet::command(false),
+            ))
+        }
+        CommandKind::Teleport(_) => {
+            let metrics = MetricSet::command(false);
             let mut output = CommandFlow::continuing(CommandResult::Zero, metrics);
             output.merge(CommandFlow::continuing(CommandResult::NonZero, metrics));
             output.merge(CommandFlow::continuing(CommandResult::Failure, metrics));
@@ -1419,7 +1444,11 @@ fn evaluate_execute(
         )?;
         contexts = match modifier.kind() {
             ExecuteModifierKind::As(selector) | ExecuteModifierKind::At(selector) => {
-                apply_selector(&contexts, selector.cardinality())?
+                apply_selector(
+                    &contexts,
+                    selector.cardinality(),
+                    context.caps.forks().max(context.caps.sequence()),
+                )?
             }
             ExecuteModifierKind::If(Condition::Function(function)) => {
                 apply_function_condition(&contexts, *function, false, context)?
@@ -1428,18 +1457,27 @@ fn evaluate_execute(
                 apply_function_condition(&contexts, *function, true, context)?
             }
             ExecuteModifierKind::If(_) | ExecuteModifierKind::Unless(_) => apply_filter(&contexts),
-            ExecuteModifierKind::In(_) | ExecuteModifierKind::Store(_, _) => {
-                preserve_contexts(&contexts)
-            }
+            ExecuteModifierKind::In(_)
+            | ExecuteModifierKind::Positioned(_)
+            | ExecuteModifierKind::Rotated(_)
+            | ExecuteModifierKind::Anchored(_)
+            | ExecuteModifierKind::Align(_)
+            | ExecuteModifierKind::Store(_, _) => preserve_contexts(&contexts),
         };
     }
 
     let mut output = CommandFlow::empty();
     output.divergence = contexts.divergence;
-    for (index, prefix) in contexts.alternatives.into_iter().enumerate() {
+    for (index, (prefix, multiplicity)) in contexts
+        .alternatives
+        .into_iter()
+        .zip(contexts.multiplicities)
+        .enumerate()
+    {
         let Some(prefix) = prefix else {
             continue;
         };
+        let multiplicity = multiplicity?;
         match index {
             0 => {
                 let flow = if as_return {
@@ -1462,8 +1500,9 @@ fn evaluate_execute(
                     // `return run execute` schedules only the first surviving source.
                     evaluate_return_run(execute.run().kind(), context)?
                 } else {
-                    repeat_many(
+                    repeat_contexts(
                         &evaluate_command(execute.run().kind(), context)?,
+                        multiplicity,
                         context.caps,
                     )?
                 };
@@ -1475,15 +1514,27 @@ fn evaluate_execute(
     Some(output)
 }
 
-fn apply_selector(input: &ContextFlow, cardinality: Cardinality) -> Option<ContextFlow> {
+fn apply_selector(
+    input: &ContextFlow,
+    cardinality: Cardinality,
+    arithmetic_cap: u64,
+) -> Option<ContextFlow> {
     let mut output = ContextFlow {
         alternatives: [None; CONTEXT_CLASS_COUNT],
+        multiplicities: [None; CONTEXT_CLASS_COUNT],
         divergence: input.divergence,
     };
-    for (index, metrics) in input.alternatives.iter().copied().enumerate() {
+    for (index, (metrics, multiplicity)) in input
+        .alternatives
+        .iter()
+        .copied()
+        .zip(input.multiplicities.iter().copied())
+        .enumerate()
+    {
         let Some(metrics) = metrics else {
             continue;
         };
+        let multiplicity = multiplicity?;
         let source = match index {
             0 => ContextClass::Zero,
             1 => ContextClass::One,
@@ -1491,53 +1542,109 @@ fn apply_selector(input: &ContextFlow, cardinality: Cardinality) -> Option<Conte
             _ => return None,
         };
         match source {
-            ContextClass::Zero => output.insert(ContextClass::Zero, metrics),
+            ContextClass::Zero => {
+                output.insert(ContextClass::Zero, metrics, CountBound::exact(0));
+            }
             ContextClass::One => {
-                output.insert(ContextClass::Zero, metrics);
-                let mut one = metrics;
-                one.max_chain = maximum_bound(one.max_chain, CountBound::exact(1));
-                output.insert(ContextClass::One, one);
-                if cardinality == Cardinality::Unbounded {
-                    let mut many = metrics;
-                    many.max_chain = maximum_bound(
-                        many.max_chain,
-                        CountBound::no_finite_bound(2, NoFiniteBoundReason::SelectorCardinality),
-                    );
-                    output.insert(ContextClass::Many, many);
+                output.insert(ContextClass::Zero, metrics, CountBound::exact(0));
+                output.insert(
+                    ContextClass::One,
+                    with_context_peak(metrics, CountBound::exact(1)),
+                    CountBound::exact(1),
+                );
+                if cardinality.maximum().is_none_or(|maximum| maximum > 1) {
+                    let many =
+                        selector_many_multiplicity(multiplicity, cardinality, arithmetic_cap)?;
+                    output.insert(ContextClass::Many, with_context_peak(metrics, many), many);
                 }
             }
             ContextClass::Many => {
-                output.insert(ContextClass::Zero, metrics);
-                output.insert(ContextClass::One, metrics);
-                output.insert(ContextClass::Many, metrics);
+                output.insert(ContextClass::Zero, metrics, CountBound::exact(0));
+                output.insert(
+                    ContextClass::One,
+                    with_context_peak(metrics, CountBound::exact(1)),
+                    CountBound::exact(1),
+                );
+                let many = selector_many_multiplicity(multiplicity, cardinality, arithmetic_cap)?;
+                output.insert(ContextClass::Many, with_context_peak(metrics, many), many);
             }
         }
     }
     Some(output)
 }
 
+fn selector_many_multiplicity(
+    input: CountBound,
+    cardinality: Cardinality,
+    fork_cap: u64,
+) -> Option<CountBound> {
+    let per_input = match cardinality.maximum() {
+        Some(maximum) => CountBound::finite(0, u64::from(maximum)).ok()?,
+        None => CountBound::no_finite_bound(0, NoFiniteBoundReason::SelectorCardinality),
+    };
+    with_count_lower(multiply_bound(input, per_input, fork_cap)?, 2)
+}
+
+fn with_count_lower(bound: CountBound, lower: u64) -> Option<CountBound> {
+    match bound.upper().kind() {
+        CountUpperKind::Finite(upper) => CountBound::finite(lower, upper).ok(),
+        CountUpperKind::AboveAnalysisCap => Some(CountBound::saturated_above_analysis_cap(lower)),
+        CountUpperKind::NoFiniteBoundProven(reason) => {
+            Some(CountBound::no_finite_bound(lower, reason))
+        }
+        CountUpperKind::Unknown(reason) => Some(CountBound::unknown(lower, reason)),
+    }
+}
+
+fn zero_to_predecessor_upper(bound: CountBound) -> CountBound {
+    match bound.upper().kind() {
+        CountUpperKind::Finite(upper) => CountBound::finite(0, upper.saturating_sub(1))
+            .expect("zero remains below a finite predecessor upper bound"),
+        CountUpperKind::AboveAnalysisCap => CountBound::saturated_above_analysis_cap(0),
+        CountUpperKind::NoFiniteBoundProven(reason) => CountBound::no_finite_bound(0, reason),
+        CountUpperKind::Unknown(reason) => CountBound::unknown(0, reason),
+    }
+}
+
 fn apply_filter(input: &ContextFlow) -> ContextFlow {
     let mut output = ContextFlow {
         alternatives: [None; CONTEXT_CLASS_COUNT],
+        multiplicities: [None; CONTEXT_CLASS_COUNT],
         divergence: input.divergence,
     };
-    for (index, metrics) in input.alternatives.iter().copied().enumerate() {
+    for (index, (metrics, multiplicity)) in input
+        .alternatives
+        .iter()
+        .copied()
+        .zip(input.multiplicities.iter().copied())
+        .enumerate()
+    {
         let Some(metrics) = metrics else {
             continue;
         };
+        let multiplicity = multiplicity.expect("reachable context alternatives have a bound");
         match index {
-            0 => output.insert(ContextClass::Zero, metrics),
+            0 => output.insert(ContextClass::Zero, metrics, CountBound::exact(0)),
             1 => {
-                output.insert(ContextClass::Zero, metrics);
+                output.insert(ContextClass::Zero, metrics, CountBound::exact(0));
                 output.insert(
                     ContextClass::One,
-                    with_context_peak(metrics, ContextClass::One),
+                    with_context_peak(metrics, CountBound::exact(1)),
+                    CountBound::exact(1),
                 );
             }
             2 => {
-                output.insert(ContextClass::Zero, metrics);
-                output.insert(ContextClass::One, metrics);
-                output.insert(ContextClass::Many, metrics);
+                output.insert(ContextClass::Zero, metrics, CountBound::exact(0));
+                output.insert(
+                    ContextClass::One,
+                    with_context_peak(metrics, CountBound::exact(1)),
+                    CountBound::exact(1),
+                );
+                output.insert(
+                    ContextClass::Many,
+                    with_context_peak(metrics, multiplicity),
+                    multiplicity,
+                );
             }
             _ => unreachable!("fixed context table"),
         }
@@ -1547,30 +1654,20 @@ fn apply_filter(input: &ContextFlow) -> ContextFlow {
 
 fn preserve_contexts(input: &ContextFlow) -> ContextFlow {
     let mut output = *input;
-    for (index, metrics) in output.alternatives.iter_mut().enumerate() {
+    for (metrics, multiplicity) in output.alternatives.iter_mut().zip(output.multiplicities) {
         let Some(value) = metrics else {
             continue;
         };
-        let class = match index {
-            0 => ContextClass::Zero,
-            1 => ContextClass::One,
-            2 => ContextClass::Many,
-            _ => unreachable!("fixed context table"),
-        };
-        *value = with_context_peak(*value, class);
+        *value = with_context_peak(
+            *value,
+            multiplicity.expect("reachable context alternatives have a bound"),
+        );
     }
     output
 }
 
-fn with_context_peak(mut metrics: MetricSet, class: ContextClass) -> MetricSet {
-    let peak = match class {
-        ContextClass::Zero => CountBound::exact(0),
-        ContextClass::One => CountBound::exact(1),
-        ContextClass::Many => {
-            CountBound::no_finite_bound(2, NoFiniteBoundReason::SelectorCardinality)
-        }
-    };
-    metrics.max_chain = maximum_bound(metrics.max_chain, peak);
+fn with_context_peak(mut metrics: MetricSet, multiplicity: CountBound) -> MetricSet {
+    metrics.max_chain = maximum_bound(metrics.max_chain, multiplicity);
     metrics
 }
 
@@ -1582,6 +1679,7 @@ fn apply_function_condition(
 ) -> Option<ContextFlow> {
     let mut output = ContextFlow {
         alternatives: [None; CONTEXT_CLASS_COUNT],
+        multiplicities: [None; CONTEXT_CLASS_COUNT],
         divergence: input.divergence,
     };
     let needs_callee = input.alternatives[ContextClass::One as usize].is_some()
@@ -1596,12 +1694,19 @@ fn apply_function_condition(
     } else {
         MetricSet::zero()
     };
-    for (index, prefix) in input.alternatives.iter().copied().enumerate() {
+    for (index, (prefix, multiplicity)) in input
+        .alternatives
+        .iter()
+        .copied()
+        .zip(input.multiplicities.iter().copied())
+        .enumerate()
+    {
         let Some(prefix) = prefix else {
             continue;
         };
+        let multiplicity = multiplicity?;
         match index {
-            0 => output.insert(ContextClass::Zero, prefix),
+            0 => output.insert(ContextClass::Zero, prefix, CountBound::exact(0)),
             1 => apply_one_function_condition(
                 &mut output,
                 prefix,
@@ -1616,6 +1721,7 @@ fn apply_function_condition(
                 callee.as_ref()?,
                 unless,
                 recursive,
+                multiplicity,
                 context.caps,
             )?,
             _ => return None,
@@ -1667,7 +1773,12 @@ fn apply_one_function_condition(
         // It preserves/filter contexts for later stages but bypasses BuildContexts'
         // ordinary fork-limit check, so its own surviving context is not a checked
         // redirect expansion.
-        output.insert(class, metrics);
+        let multiplicity = match class {
+            ContextClass::Zero => CountBound::exact(0),
+            ContextClass::One => CountBound::exact(1),
+            ContextClass::Many => unreachable!("one input cannot produce many outputs"),
+        };
+        output.insert(class, metrics, multiplicity);
     }
     Some(())
 }
@@ -1678,16 +1789,9 @@ fn apply_many_function_condition(
     callee: &FunctionFlow,
     unless: bool,
     recursive: MetricSet,
+    multiplicity: CountBound,
     caps: AnalysisArithmeticCaps,
 ) -> Option<()> {
-    if let Some(divergence) = callee.divergence {
-        let divergence = invoked_callee_metrics(divergence, recursive, caps)?;
-        let divergence = scale_metrics_zero_or_many(divergence, caps)?;
-        merge_cell(
-            &mut output.divergence,
-            add_metrics(prefix, divergence, caps)?,
-        );
-    }
     let mut pass_possible = false;
     let mut fail_possible = false;
     let mut one_call = None;
@@ -1703,24 +1807,44 @@ fn apply_many_function_condition(
             invoked_callee_metrics(metrics, recursive, caps)?,
         );
     }
+    if let Some(divergence) = callee.divergence {
+        let divergence = invoked_callee_metrics(divergence, recursive, caps)?;
+        merge_cell(
+            &mut output.divergence,
+            add_metrics(prefix, divergence, caps)?,
+        );
+        if let Some(one_call) = one_call {
+            let predecessors = zero_to_predecessor_upper(multiplicity);
+            let completed = scale_metrics(one_call, predecessors, caps)?;
+            let divergence = add_metrics(completed, divergence, caps)?;
+            merge_cell(
+                &mut output.divergence,
+                add_metrics(prefix, divergence, caps)?,
+            );
+        }
+    }
     let Some(one_call) = one_call else {
         return Some(());
     };
-    let metrics = add_metrics(prefix, scale_metrics_many(one_call, caps)?, caps)?;
+    let metrics = add_metrics(prefix, scale_metrics(one_call, multiplicity, caps)?, caps)?;
     match (pass_possible, fail_possible) {
-        (true, false) => output.insert(ContextClass::Many, metrics),
-        (false, true) => output.insert(ContextClass::Zero, metrics),
+        (true, false) => output.insert(ContextClass::Many, metrics, multiplicity),
+        (false, true) => output.insert(ContextClass::Zero, metrics, CountBound::exact(0)),
         (true, true) => {
-            output.insert(ContextClass::Zero, metrics);
-            output.insert(ContextClass::One, metrics);
-            output.insert(ContextClass::Many, metrics);
+            output.insert(ContextClass::Zero, metrics, CountBound::exact(0));
+            output.insert(ContextClass::One, metrics, CountBound::exact(1));
+            output.insert(ContextClass::Many, metrics, multiplicity);
         }
         (false, false) => unreachable!("a completed predicate exit has one result"),
     }
     Some(())
 }
 
-fn repeat_many(flow: &CommandFlow, caps: AnalysisArithmeticCaps) -> Option<CommandFlow> {
+fn repeat_contexts(
+    flow: &CommandFlow,
+    multiplicity: CountBound,
+    caps: AnalysisArithmeticCaps,
+) -> Option<CommandFlow> {
     let mut output = CommandFlow::empty();
     for (index, metrics) in flow.continues.iter().copied().enumerate() {
         let Some(metrics) = metrics else {
@@ -1728,7 +1852,7 @@ fn repeat_many(flow: &CommandFlow, caps: AnalysisArithmeticCaps) -> Option<Comma
         };
         merge_cell(
             &mut output.continues[index],
-            scale_metrics_many(metrics, caps)?,
+            scale_metrics(metrics, multiplicity, caps)?,
         );
     }
     let continuation = merge_cells(&flow.continues);
@@ -1738,7 +1862,7 @@ fn repeat_many(flow: &CommandFlow, caps: AnalysisArithmeticCaps) -> Option<Comma
             merge_cell(
                 &mut output.divergence,
                 add_metrics(
-                    scale_metrics_zero_or_many(continuation, caps)?,
+                    scale_metrics(continuation, zero_to_predecessor_upper(multiplicity), caps)?,
                     divergence,
                     caps,
                 )?,
@@ -1751,7 +1875,8 @@ fn repeat_many(flow: &CommandFlow, caps: AnalysisArithmeticCaps) -> Option<Comma
         };
         merge_cell(&mut output.returns[index], terminal);
         if let Some(continuation) = continuation {
-            let prefix = scale_metrics_zero_or_many(continuation, caps)?;
+            let prefix =
+                scale_metrics(continuation, zero_to_predecessor_upper(multiplicity), caps)?;
             merge_cell(
                 &mut output.returns[index],
                 add_metrics(prefix, terminal, caps)?,
@@ -1970,25 +2095,6 @@ fn cycle_bound(bound: CountBound, positive: bool) -> CountBound {
         CountUpperKind::Unknown(reason) => CountBound::unknown(bound.lower(), reason),
         _ => CountBound::no_finite_bound(bound.lower(), NoFiniteBoundReason::PositiveCycle),
     }
-}
-
-fn scale_metrics_many(metrics: MetricSet, caps: AnalysisArithmeticCaps) -> Option<MetricSet> {
-    scale_metrics(
-        metrics,
-        CountBound::no_finite_bound(2, NoFiniteBoundReason::SelectorCardinality),
-        caps,
-    )
-}
-
-fn scale_metrics_zero_or_many(
-    metrics: MetricSet,
-    caps: AnalysisArithmeticCaps,
-) -> Option<MetricSet> {
-    scale_metrics(
-        metrics,
-        CountBound::no_finite_bound(0, NoFiniteBoundReason::SelectorCardinality),
-        caps,
-    )
 }
 
 fn scale_metrics(

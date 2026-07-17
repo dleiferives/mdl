@@ -53,6 +53,14 @@ pub(crate) struct EntityVec<I, T> {
     marker: PhantomData<fn(I) -> I>,
 }
 
+impl<I, T: PartialEq> PartialEq for EntityVec<I, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values
+    }
+}
+
+impl<I, T: Eq> Eq for EntityVec<I, T> {}
+
 impl<I, T> EntityVec<I, T> {
     pub(crate) const fn new() -> Self {
         Self {

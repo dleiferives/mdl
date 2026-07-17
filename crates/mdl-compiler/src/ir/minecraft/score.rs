@@ -429,7 +429,7 @@ pub enum ScoreHolders {
     Fake(FakeScoreHolder),
     /// A selector with its native target cardinality.
     Selector(Selector),
-    /// Every holder currently tracked by the objective (`*`).
+    /// Every holder tracked anywhere by the scoreboard service (`*`).
     AllTracked,
 }
 

@@ -1,15 +1,22 @@
 use std::fmt::Write;
 
+use crate::analysis::minecraft::classify_constructed_command;
 use crate::entity::EntityId;
-use crate::ir::core::{BlockId, CoreType, FunctionId, InstId, ValueId};
+use crate::ir::core::{
+    BlockId, CoreFunctionLinkage, CoreProgram, CoreType, FunctionId, InstId,
+    MinecraftOperationOrigins, ValueId,
+};
 use crate::ir::minecraft::{
     FakeScoreHolder, FunctionResourceId, ObjectiveName, PackNamespace, StoragePath,
 };
+use crate::ir::semantic::{AmbientContextRequirements, minecraft_descriptor};
 use crate::source::OriginId;
 use crate::target::JavaEditionTarget;
 
+use crate::lower::minecraft::emit::ConstructionMap;
 use crate::lower::minecraft::{
-    ExecutionContract, LoweredFunction, LoweringMap, MinecraftOptimizationLevel, RegisterSlot,
+    ExecutionContract, LoweredCommand, LoweredFunction, LoweringMap, MinecraftOptimizationLevel,
+    RegisterSlot,
 };
 
 use super::{
@@ -35,6 +42,7 @@ pub struct LoweringDecisionReport {
     load: PlannedFunctionId,
     init_try_create: PlannedFunctionId,
     execution: ExecutionContract,
+    physical: crate::lower::minecraft::realization::PhysicalRealizationPlan,
     homes: Box<[HomeReport]>,
     target_functions: Box<[TargetFunctionReport]>,
     functions: Box<[FunctionReport]>,
@@ -59,7 +67,9 @@ struct TargetFunctionReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FunctionReport {
     function: FunctionId,
+    linkage: CoreFunctionLinkage,
     diagnostic_name_hint: Option<Box<str>>,
+    generated_entry_requirement: AmbientContextRequirements,
     parameters: Box<[(CoreType, HomeId, FakeScoreHolder)]>,
     results: Box<[(CoreType, HomeId, FakeScoreHolder)]>,
     entry_block: BlockId,
@@ -78,6 +88,15 @@ struct FunctionReport {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LoweringDecisionStatistics {
     homes: usize,
+    physical_storages: usize,
+    realizations: usize,
+    use_requirements: usize,
+    materializations: usize,
+    call_occurrences: usize,
+    recursive_call_occurrences: usize,
+    recursive_spill_bridges: usize,
+    physical_recipe_sequence_operations: usize,
+    physical_recipe_forks: usize,
     target_functions: usize,
     core_functions: usize,
     branch_arms: u64,
@@ -96,10 +115,19 @@ struct EdgeTemporaryReport {
 struct InstructionReport {
     instruction: InstId,
     plan: InstructionPlan,
+    selected_recipe: Option<crate::lower::minecraft::SelectedSemanticRecipe>,
+    semantic_provenance: Option<SemanticProvenanceReport>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SemanticProvenanceReport {
+    instruction_origin: OriginId,
+    operation_origins: MinecraftOperationOrigins,
+    message_origin: OriginId,
 }
 
 impl LoweringDecisionReport {
-    pub(crate) fn from_plan(plan: &LoweringPlan) -> Self {
+    pub(crate) fn from_plan(core: &CoreProgram, plan: &LoweringPlan) -> Self {
         let homes = plan
             .homes
             .iter()
@@ -124,12 +152,22 @@ impl LoweringDecisionReport {
         let functions = plan
             .functions
             .iter()
-            .map(|(function, layout)| FunctionReport::from_layout(plan, function, layout))
+            .map(|(function, layout)| FunctionReport::from_layout(core, plan, function, layout))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let statistics = plan.control_statistics;
+        let physical_preflight = plan.physical_preflight();
         let statistics = LoweringDecisionStatistics {
             homes: homes.len(),
+            physical_storages: plan.physical.storage_count(),
+            realizations: plan.physical.realization_count(),
+            use_requirements: plan.physical.requirement_count(),
+            materializations: plan.physical.materialization_count(),
+            call_occurrences: plan.physical.call_count(),
+            recursive_call_occurrences: physical_preflight.recursive_edges(),
+            recursive_spill_bridges: physical_preflight.spill_bridges(),
+            physical_recipe_sequence_operations: physical_preflight.local_sequence_operations(),
+            physical_recipe_forks: physical_preflight.local_forks(),
             target_functions: target_functions.len(),
             core_functions: functions.len(),
             branch_arms: statistics.branch_arms_visited(),
@@ -144,7 +182,11 @@ impl LoweringDecisionReport {
             init_sentinel: plan.pack_abi.init_sentinel.clone(),
             load: plan.load,
             init_try_create: plan.init_try_create,
-            execution: ExecutionContract::new(plan.target, plan.command_limit_assumptions),
+            execution: ExecutionContract::new(
+                plan.preflight().command_limit_evidence(),
+                plan.has_recursive_activation(),
+            ),
+            physical: plan.physical.clone(),
             homes,
             target_functions,
             functions,
@@ -215,8 +257,9 @@ impl LoweringDecisionReport {
         }
         writeln!(
             output,
-            "execution activation={:?} command-limits={:?}",
+            "execution activation={:?} depth={:?} command-limits={:?}",
             self.execution.activation(),
+            self.execution.activation_depth(),
             self.execution.command_limits()
         )
         .unwrap();
@@ -226,6 +269,14 @@ impl LoweringDecisionReport {
             self.load.index(),
             self.init_try_create.index(),
             self.init_sentinel
+        )
+        .unwrap();
+        output.push_str(&self.physical.dump());
+        writeln!(
+            output,
+            "physical-preflight local-sequence-operations={} local-forks={}",
+            self.statistics.physical_recipe_sequence_operations,
+            self.statistics.physical_recipe_forks
         )
         .unwrap();
         for report in &self.homes {
@@ -255,7 +306,7 @@ impl LoweringDecisionReport {
         output
     }
 
-    pub(crate) fn map(&self) -> LoweringMap {
+    pub(crate) fn map(&self, construction: &ConstructionMap) -> LoweringMap {
         let functions = self
             .functions
             .iter()
@@ -272,13 +323,51 @@ impl LoweringDecisionReport {
                         .collect()
                 };
                 LoweredFunction::new(
+                    report.linkage,
                     report.entry_resource.clone(),
+                    report.generated_entry_requirement,
                     slots(&report.parameters),
                     slots(&report.results),
                 )
             })
             .collect();
-        LoweringMap::new(self.execution, functions)
+        let semantic_commands = self
+            .functions
+            .iter()
+            .map(|report| {
+                construction
+                    .function_slots(report.function)
+                    .expect("verified construction map has every reported Core function")
+                    .iter()
+                    .map(|location| {
+                        location.map(|location| {
+                            LoweredCommand::new(location.function(), location.command())
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+            .collect();
+        let run_modifiers = construction
+            .run_scopes()
+            .map(|(_, slots)| {
+                slots
+                    .iter()
+                    .map(|slot| {
+                        slot.map(|location| {
+                            crate::lower::minecraft::LoweredRunModifier::new(
+                                location.function,
+                                location.command,
+                                location.modifier_index,
+                                location.recipe,
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+            .collect();
+        LoweringMap::new(self.execution, functions, semantic_commands, run_modifiers)
     }
 }
 
@@ -287,6 +376,60 @@ impl LoweringDecisionStatistics {
     #[must_use]
     pub const fn homes(self) -> usize {
         self.homes
+    }
+
+    /// Returns the number of logical physical storage declarations.
+    #[must_use]
+    pub const fn physical_storages(self) -> usize {
+        self.physical_storages
+    }
+
+    /// Returns the number of semantic value realization occurrences.
+    #[must_use]
+    pub const fn realizations(self) -> usize {
+        self.realizations
+    }
+
+    /// Returns the number of exact physical use requirements.
+    #[must_use]
+    pub const fn use_requirements(self) -> usize {
+        self.use_requirements
+    }
+
+    /// Returns the number of explicit materialization occurrences.
+    #[must_use]
+    pub const fn materializations(self) -> usize {
+        self.materializations
+    }
+
+    /// Returns the number of retained physical call occurrences.
+    #[must_use]
+    pub const fn call_occurrences(self) -> usize {
+        self.call_occurrences
+    }
+
+    /// Returns the number of call occurrences using recursive stack activation.
+    #[must_use]
+    pub const fn recursive_call_occurrences(self) -> usize {
+        self.recursive_call_occurrences
+    }
+
+    /// Returns the number of planned score/frame spill pairs across recursive calls.
+    #[must_use]
+    pub const fn recursive_spill_bridges(self) -> usize {
+        self.recursive_spill_bridges
+    }
+
+    /// Returns exact local sequence operations selected by physical-only recipes.
+    #[must_use]
+    pub const fn physical_recipe_sequence_operations(self) -> usize {
+        self.physical_recipe_sequence_operations
+    }
+
+    /// Returns local command forks selected by physical-only recipes.
+    #[must_use]
+    pub const fn physical_recipe_forks(self) -> usize {
+        self.physical_recipe_forks
     }
 
     /// Returns the number of generated target functions owned by the plan.
@@ -327,11 +470,18 @@ fn dump_function_report(
 ) {
     writeln!(
         output,
-        "function {} name={:?} params={:?} results={:?}",
+        "function {} name={:?} linkage={} params={:?} results={:?}",
         report.function.index(),
         report.diagnostic_name_hint,
+        report.linkage,
         report.parameters,
         report.results
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "  generated-entry-requirement {:?}",
+        report.generated_entry_requirement
     )
     .unwrap();
     writeln!(
@@ -371,7 +521,13 @@ fn dump_function_report(
     for (value, home) in &report.values {
         writeln!(output, "  value {} -> {}", value.index(), home.index()).unwrap();
     }
-    if optimization_level != MinecraftOptimizationLevel::None {
+    if optimization_level == MinecraftOptimizationLevel::None {
+        for instruction in &report.instructions {
+            if matches!(instruction.plan, InstructionPlan::Minecraft { .. }) {
+                dump_instruction(output, instruction);
+            }
+        }
+    } else {
         for (block, placement) in &report.placements {
             writeln!(output, "  placement block={} {placement:?}", block.index()).unwrap();
         }
@@ -384,7 +540,7 @@ fn dump_function_report(
             dump_edge_temporary(output, temporary);
         }
         for instruction in &report.instructions {
-            dump_instruction(output, instruction.instruction, &instruction.plan);
+            dump_instruction(output, instruction);
         }
     }
     for (block, transfer) in &report.edges {
@@ -498,14 +654,28 @@ impl FunctionReport {
         clippy::too_many_lines,
         reason = "the report projection copies one dense verified layout into a single immutable audit record"
     )]
-    fn from_layout(plan: &LoweringPlan, function: FunctionId, layout: &FunctionLayout) -> Self {
+    fn from_layout(
+        core: &CoreProgram,
+        plan: &LoweringPlan,
+        function: FunctionId,
+        layout: &FunctionLayout,
+    ) -> Self {
         let entry_function =
             layout.block_functions[usize::try_from(layout.abi.entry_block.index())
                 .expect("Core block identity fits the host index")]
             .expect("verified report input has an entry function");
+        let body = core
+            .function(function)
+            .and_then(crate::ir::core::Function::body)
+            .expect("verified report input has every Core function body");
         Self {
             function,
+            linkage: layout.linkage,
             diagnostic_name_hint: layout.diagnostic_name_hint.clone(),
+            generated_entry_requirement: plan
+                .ambient()
+                .requirement(function)
+                .expect("verified retained ambient analysis has every Core function"),
             parameters: layout
                 .parameter_types
                 .iter()
@@ -583,10 +753,34 @@ impl FunctionReport {
                 .instruction_plans
                 .iter()
                 .enumerate()
-                .filter_map(|(instruction, plan)| {
+                .filter_map(|(instruction, instruction_plan)| {
+                    let instruction = InstId::from_index(u32::try_from(instruction).ok()?);
+                    let physical_plan = instruction_plan.clone()?;
+                    let selected_recipe = match &physical_plan {
+                        InstructionPlan::Minecraft { external, .. } => {
+                            Some(plan_preflight_recipe(plan, *external)?.clone())
+                        }
+                        _ => None,
+                    };
+                    let semantic_provenance = selected_recipe.as_ref().map(|selected| {
+                        let declaration = core
+                            .minecraft_operation(selected.operation())
+                            .expect("verified selected recipe names a Core semantic operation");
+                        let instruction_origin = body
+                            .instruction(instruction)
+                            .expect("verified report instruction is attached to its Core body")
+                            .origin();
+                        SemanticProvenanceReport {
+                            instruction_origin,
+                            operation_origins: declaration.origins(),
+                            message_origin: declaration.attributes().message_origin(),
+                        }
+                    });
                     Some(InstructionReport {
-                        instruction: InstId::from_index(u32::try_from(instruction).ok()?),
-                        plan: plan.clone()?,
+                        instruction,
+                        plan: physical_plan,
+                        selected_recipe,
+                        semantic_provenance,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -608,10 +802,23 @@ impl FunctionReport {
     }
 }
 
-fn dump_instruction(output: &mut String, instruction: InstId, plan: &InstructionPlan) {
-    match plan {
+fn dump_instruction(output: &mut String, report: &InstructionReport) {
+    let instruction = report.instruction;
+    match &report.plan {
         InstructionPlan::OmittedPure => {
             writeln!(output, "  instruction {} omitted-pure", instruction.index()).unwrap();
+        }
+        InstructionPlan::External { helper } => {
+            writeln!(
+                output,
+                "  instruction {} external helper={}",
+                instruction.index(),
+                helper.index()
+            )
+            .unwrap();
+        }
+        InstructionPlan::Minecraft { external, recipe } => {
+            dump_minecraft_instruction(output, report, *external, *recipe);
         }
         InstructionPlan::Scalar { operands, results } => {
             writeln!(output, "  instruction {} scalar", instruction.index()).unwrap();
@@ -673,6 +880,72 @@ fn dump_instruction(output: &mut String, instruction: InstId, plan: &Instruction
             }
         }
     }
+}
+
+fn dump_minecraft_instruction(
+    output: &mut String,
+    report: &InstructionReport,
+    external: crate::ir::core::ExternalOpId,
+    recipe: crate::lower::minecraft::MinecraftRecipeId,
+) {
+    let selected = report
+        .selected_recipe
+        .as_ref()
+        .expect("verified Minecraft instruction report retains its selected recipe");
+    let provenance = report
+        .semantic_provenance
+        .expect("verified Minecraft instruction report retains exact Core provenance");
+    let operation_origins = provenance.operation_origins;
+    let descriptor = minecraft_descriptor(selected.semantic_key());
+    let command = selected.command_kind();
+    let contract = command.contract();
+    let cost = classify_constructed_command(&command)
+        .expect("every selected semantic recipe has a local target cost");
+    writeln!(
+        output,
+        "  instruction {} minecraft external={} operation={} semantic={:?} recipe={recipe:?} placement=direct message={:?} origins=[instruction={:?},call={:?},member={:?},receiver={:?},attribute={:?}]",
+        report.instruction.index(),
+        external.index(),
+        selected.operation().index(),
+        selected.semantic_key(),
+        selected.say_message().map(crate::ir::minecraft::SayMessage::as_str),
+        provenance.instruction_origin,
+        operation_origins.call(),
+        operation_origins.member(),
+        operation_origins.receiver(),
+        provenance.message_origin,
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "    semantic context={:?} world-effect={:?} observable-effect={:?} fork={:?} work={:?} source-outcome={:?}",
+        descriptor.ambient_context(),
+        descriptor.world_effect(),
+        descriptor.observable_effect(),
+        descriptor.fork_behavior(),
+        descriptor.work_behavior(),
+        descriptor.outcome_behavior(),
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "    target context={:?} effects={:?} fork={:?} native-outcome={:?} local-counts={:?} max-chain={:?} control-outcomes={:?}",
+        contract.context(),
+        contract.effects(),
+        contract.fork(),
+        contract.native_outcome(),
+        cost.counts(),
+        cost.maximum_chain_expansion(),
+        cost.outcomes(),
+    )
+    .unwrap();
+}
+
+fn plan_preflight_recipe(
+    plan: &LoweringPlan,
+    external: crate::ir::core::ExternalOpId,
+) -> Option<&crate::lower::minecraft::SelectedSemanticRecipe> {
+    plan.selected_semantic_recipe(external)
 }
 
 fn dump_transfer(output: &mut String, block: BlockId, transfer: &EdgeTransfer) {
@@ -744,7 +1017,8 @@ mod tests {
     };
 
     use super::{
-        EdgeTemporaryReport, dump_edge_temporary, dump_instruction, dump_optimization_level,
+        EdgeTemporaryReport, InstructionReport, dump_edge_temporary, dump_instruction,
+        dump_optimization_level,
     };
 
     #[test]
@@ -763,42 +1037,54 @@ mod tests {
         let mut output = String::new();
         dump_instruction(
             &mut output,
-            InstId::from_index(0),
-            &InstructionPlan::OmittedPure,
-        );
-        dump_instruction(
-            &mut output,
-            InstId::from_index(1),
-            &InstructionPlan::Scalar {
-                operands: vec![home(1), home(2)].into_boxed_slice(),
-                results: vec![
-                    ScalarResultPlacement::Semantic {
-                        result_index: 0,
-                        value: ValueId::from_index(3),
-                        home: home(4),
-                    },
-                    ScalarResultPlacement::RecipeTemporary {
-                        result_index: 1,
-                        home: home(5),
-                    },
-                ]
-                .into_boxed_slice(),
+            &InstructionReport {
+                instruction: InstId::from_index(0),
+                plan: InstructionPlan::OmittedPure,
+                selected_recipe: None,
+                semantic_provenance: None,
             },
         );
         dump_instruction(
             &mut output,
-            InstId::from_index(2),
-            &InstructionPlan::Call {
-                arguments: vec![home(6)].into_boxed_slice(),
-                result_destinations: vec![
-                    None,
-                    Some(CallResultDestination {
-                        result_index: 1,
-                        value: ValueId::from_index(7),
-                        home: home(8),
-                    }),
-                ]
-                .into_boxed_slice(),
+            &InstructionReport {
+                instruction: InstId::from_index(1),
+                plan: InstructionPlan::Scalar {
+                    operands: vec![home(1), home(2)].into_boxed_slice(),
+                    results: vec![
+                        ScalarResultPlacement::Semantic {
+                            result_index: 0,
+                            value: ValueId::from_index(3),
+                            home: home(4),
+                        },
+                        ScalarResultPlacement::RecipeTemporary {
+                            result_index: 1,
+                            home: home(5),
+                        },
+                    ]
+                    .into_boxed_slice(),
+                },
+                selected_recipe: None,
+                semantic_provenance: None,
+            },
+        );
+        dump_instruction(
+            &mut output,
+            &InstructionReport {
+                instruction: InstId::from_index(2),
+                plan: InstructionPlan::Call {
+                    arguments: vec![home(6)].into_boxed_slice(),
+                    result_destinations: vec![
+                        None,
+                        Some(CallResultDestination {
+                            result_index: 1,
+                            value: ValueId::from_index(7),
+                            home: home(8),
+                        }),
+                    ]
+                    .into_boxed_slice(),
+                },
+                selected_recipe: None,
+                semantic_provenance: None,
             },
         );
 

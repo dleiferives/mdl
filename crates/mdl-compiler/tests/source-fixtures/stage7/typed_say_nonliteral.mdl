@@ -1,0 +1,6 @@
+// MDL: failure semantic frontend.check.message-literal-required
+export fn nonliteral_message() {
+    run.as(mc.entities(ArmorStand).limit(1)) |speaker| {
+        speaker.say(1);
+    }
+}

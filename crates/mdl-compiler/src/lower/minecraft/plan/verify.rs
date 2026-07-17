@@ -28,6 +28,14 @@ const MAX_STRUCTURAL_FINDINGS: usize = 64;
 
 /// Independently verifies one final plan against Core alone.
 pub(super) fn verify_plan(core: &CoreProgram, plan: &LoweringPlan) -> Result<(), Diagnostics> {
+    if let Err(error) = plan.physical_preflight.verify(&plan.physical) {
+        return Err(Diagnostics::from_findings(vec![Diagnostic::new(
+            "lower.plan.physical-preflight",
+            error.to_string(),
+            OriginId::UNKNOWN,
+        )])
+        .expect("one physical-preflight finding forms diagnostics"));
+    }
     let minimum = MinimumSemanticDemand::new(core).map_err(minimum_demand_diagnostics)?;
     let mut verifier = PlanVerifier::new(core, plan, &minimum);
     verifier.verify_program();
@@ -71,7 +79,11 @@ impl<'a> PlanVerifier<'a> {
         .ok()
         .map(|options| {
             options
-                .with_command_limit_assumptions(plan.command_limit_assumptions)
+                .with_command_limit_assumptions(
+                    plan.preflight()
+                        .command_limit_evidence()
+                        .configured_assumptions(),
+                )
                 .with_optimization_level(plan.optimization_level)
         });
         Self {
@@ -95,6 +107,7 @@ impl<'a> PlanVerifier<'a> {
 
     fn verify_program(&mut self) {
         self.verify_program_shape();
+        self.verify_preflight_and_ambient();
         self.verify_control_statistics();
         self.verify_home_records();
         self.verify_resource_uniqueness();
@@ -119,6 +132,36 @@ impl<'a> PlanVerifier<'a> {
             self.verify_function(function, declaration, body, minimum);
         }
         self.verify_final_ownership();
+    }
+
+    fn verify_preflight_and_ambient(&mut self) {
+        let inventory = match crate::lower::minecraft::analysis::SemanticInventory::new(self.core) {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                self.report(
+                    "lower.plan.preflight",
+                    format!(
+                        "cannot independently verify target preflight: semantic inventory failed: {error:?}"
+                    ),
+                    OriginId::UNKNOWN,
+                );
+                return;
+            }
+        };
+        if let Err(diagnostics) = self.plan.preflight().verify(self.core, &inventory) {
+            self.report(
+                "lower.plan.preflight",
+                format!("retained target preflight failed independent verification: {diagnostics}"),
+                OriginId::UNKNOWN,
+            );
+        }
+        if let Err(error) = self.plan.ambient().verify(self.core) {
+            self.report(
+                "lower.plan.ambient-analysis",
+                format!("retained Core ambient analysis failed independent verification: {error}"),
+                OriginId::UNKNOWN,
+            );
+        }
     }
 
     fn verify_control_statistics(&mut self) {
@@ -435,6 +478,18 @@ impl<'a> PlanVerifier<'a> {
                 );
             }
         }
+        let expected_assigned = self.plan.physical.function_assigned_storage_count(function);
+        if self.plan.has_recursive_activation() && layout.assigned_homes.len() != expected_assigned
+        {
+            self.report(
+                "lower.plan.assigned-home-map",
+                format!(
+                    "{function:?} assigned-home map has length {}, expected {expected_assigned}",
+                    layout.assigned_homes.len()
+                ),
+                OriginId::UNKNOWN,
+            );
+        }
         if minimum.block_slots() != body.block_counts().allocated
             || minimum.value_slots() != body.value_counts().allocated
             || minimum.instruction_slots() != body.instruction_counts().allocated
@@ -669,6 +724,10 @@ impl<'a> PlanVerifier<'a> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the verifier exhaustively audits every closed physical instruction plan in one dispatch"
+    )]
     fn verify_instruction(
         &mut self,
         function: FunctionId,
@@ -690,6 +749,75 @@ impl<'a> PlanVerifier<'a> {
                         format!("{function:?} {instruction:?} cannot be omitted"),
                         data.origin(),
                     );
+                }
+            }
+            InstructionPlan::External { helper } => {
+                if let CoreOp::External(external) = data.op() {
+                    if self.plan.preflight().selected_recipe(*external).is_some() {
+                        self.report(
+                            "lower.plan.typed-external-placement",
+                            format!(
+                                "typed Minecraft operation {function:?} {instruction:?} must use its direct selected recipe"
+                            ),
+                            data.origin(),
+                        );
+                    }
+                }
+                if !matches!(data.op(), CoreOp::External(_))
+                    || !data.operands().is_empty()
+                    || !data.results().is_empty()
+                {
+                    self.report(
+                        "lower.plan.instruction-kind",
+                        format!("{function:?} {instruction:?} has an invalid external plan shape"),
+                        data.origin(),
+                    );
+                }
+                if let Some(resource) = self.naming_options.as_ref().map(|options| {
+                    options
+                        .generated_names()
+                        .external_helper_function(function, instruction)
+                }) {
+                    self.reference_function(
+                        *helper,
+                        PlannedFunctionRole::ExternalHelper {
+                            function,
+                            instruction,
+                        },
+                        data.origin(),
+                        &resource,
+                    );
+                }
+            }
+            InstructionPlan::Minecraft { external, recipe } => {
+                let CoreOp::External(actual) = data.op() else {
+                    self.report(
+                        "lower.plan.instruction-kind",
+                        format!(
+                            "{function:?} {instruction:?} has a Minecraft command plan for a non-external operation"
+                        ),
+                        data.origin(),
+                    );
+                    return;
+                };
+                if actual != external || !data.operands().is_empty() || !data.results().is_empty() {
+                    self.report(
+                        "lower.plan.minecraft-shape",
+                        format!(
+                            "{function:?} {instruction:?} has an invalid Minecraft command plan shape"
+                        ),
+                        data.origin(),
+                    );
+                }
+                match self.plan.preflight().selected_recipe(*external) {
+                    Some(selected) if selected.recipe_id() == *recipe => {}
+                    selected => self.report(
+                        "lower.plan.minecraft-recipe",
+                        format!(
+                            "{function:?} {instruction:?} retains recipe {recipe:?}, but preflight selected {selected:?}"
+                        ),
+                        data.origin(),
+                    ),
                 }
             }
             InstructionPlan::Scalar { operands, results } => {
@@ -2102,7 +2230,7 @@ fn verifier_scalar_result_types(operation: &CoreOp) -> Option<&'static [CoreType
         CoreOp::BoolConstant(_) | CoreOp::I32Compare(_) | CoreOp::BoolNot => Some(BOOL),
         CoreOp::I32Constant(_) | CoreOp::I32AddWrapping => Some(I32),
         CoreOp::I32AddOverflowing => Some(OVERFLOW),
-        CoreOp::Call(_) => None,
+        CoreOp::Call(_) | CoreOp::External(_) => None,
     }
 }
 
@@ -2270,10 +2398,15 @@ mod tests {
     use super::verify_plan;
     use crate::entity::EntityId;
     use crate::ir::core::{
-        BlockId, BlockTarget, CoreProgram, CoreType, FunctionBuilder, FunctionId, InstId,
-        Terminator, TerminatorKind, ValueDef, ValueId,
+        BlockId, BlockTarget, CoreProgram, CoreType, EntityQueryDecl, ExternalSemanticBinding,
+        FunctionBuilder, FunctionId, InstId, MinecraftOperationAttributes,
+        MinecraftOperationOrigins, RunModifierInstance, TargetFragment, Terminator, TerminatorKind,
+        ValueDef, ValueId,
     };
     use crate::ir::minecraft::{ObjectiveName, PackNamespace};
+    use crate::ir::semantic::{
+        EntityKind, MessageLiteral, MinecraftSemanticKey, StaticEntityQuery,
+    };
     use crate::lower::minecraft::analysis::SemanticInventory;
     use crate::lower::minecraft::assignment::HomeAssignment;
     use crate::lower::minecraft::demand::{RuntimeDemand, RuntimeDemandLimits};
@@ -2287,6 +2420,7 @@ mod tests {
     };
     use crate::lower::minecraft::plan::{
         EdgeTransfer, HomeRole, InstructionPlan, LoweringPlan, PlannedFunctionId,
+        PlannedFunctionRole,
     };
     use crate::lower::minecraft::recipe::ControlRecipeKind;
     use crate::lower::minecraft::resources::ResourceInventory;
@@ -2338,20 +2472,55 @@ mod tests {
         let level = MinecraftOptimizationLevel::Baseline;
         let options = options(level);
         let inventory = SemanticInventory::new(core).unwrap();
+        let command_limit_evidence = crate::lower::minecraft::audit::audit_legality(
+            core,
+            &inventory,
+            options.target(),
+            options.command_limit_assumptions(),
+        )
+        .unwrap();
+        let preflight = crate::lower::minecraft::TargetPreflight::new(
+            core,
+            &inventory,
+            options.target(),
+            command_limit_evidence,
+        )
+        .unwrap();
+        let ambient = crate::ir::core::CoreAmbientAnalysis::analyze(core).unwrap();
         let demand =
             RuntimeDemand::for_level(core, &inventory, level, RuntimeDemandLimits::derived())
                 .unwrap();
         let assignment =
             HomeAssignment::for_baseline_derived_liveness(core, &inventory, &demand).unwrap();
+        let physical =
+            crate::lower::minecraft::realization::PhysicalRealizationPlan::for_score_compatibility(
+                core,
+                &inventory,
+                &assignment,
+                None,
+                crate::lower::minecraft::realization::PhysicalPlanningLimits::DEFAULT,
+            )
+            .unwrap();
+        let physical_preflight =
+            crate::lower::minecraft::physical_preflight::PhysicalPreflight::new(
+                options.target(),
+                &physical,
+            )
+            .unwrap();
         let transfers = EdgeTransferPlan::for_baseline(core, &inventory, &assignment).unwrap();
         let control =
             ControlRecipePlan::new(core, &inventory, &assignment, &transfers, level).unwrap();
-        let resources =
-            ResourceInventory::for_control_plan(core, &inventory, &transfers, &control, &options)
-                .unwrap();
+        let resources = ResourceInventory::for_control_plan(
+            core, &inventory, &transfers, &control, &preflight, &options,
+        )
+        .unwrap();
         let plan = assemble_selected_candidate(
             core,
             &options,
+            preflight,
+            ambient,
+            physical,
+            physical_preflight,
             &assignment,
             &transfers,
             &control,
@@ -2371,6 +2540,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_corrupted_physical_preflight_inventory() {
+        let (core, _, _) = returned_constant_program();
+        let mut plan = candidate(&core, MinecraftOptimizationLevel::None);
+        plan.physical_preflight.corrupt_spill_bridges();
+        assert_invalid(&core, &plan, "lower.plan.physical-preflight");
+    }
+
+    #[test]
     fn rejects_an_omitted_required_instruction() {
         let (core, function, value) = returned_constant_program();
         let instruction = defining_instruction(&core, function, value);
@@ -2379,6 +2556,70 @@ mod tests {
         layout.instruction_plans[index(instruction)] = Some(InstructionPlan::OmittedPure);
 
         assert_invalid(&core, &plan, "lower.plan.omitted-required-instruction");
+    }
+
+    #[test]
+    fn external_plan_owns_one_dedicated_isolation_helper() {
+        let (core, function, instruction) = external_program();
+        let mut plan = candidate(&core, MinecraftOptimizationLevel::None);
+        let load = plan.load;
+        let Some(InstructionPlan::External { helper }) = plan
+            .functions
+            .get(function)
+            .and_then(|layout| layout.instruction_plans.get(index(instruction)))
+            .and_then(Option::as_ref)
+        else {
+            panic!("external instruction must own an isolation helper")
+        };
+        let helper = *helper;
+        let helper_data = plan.target_functions.get(helper).unwrap();
+        assert_eq!(
+            helper_data.role,
+            PlannedFunctionRole::ExternalHelper {
+                function,
+                instruction
+            }
+        );
+        assert!(helper_data.resource.to_string().ends_with("/f0/x0"));
+
+        let Some(InstructionPlan::External { helper }) = plan
+            .functions
+            .get_mut(function)
+            .and_then(|layout| layout.instruction_plans.get_mut(index(instruction)))
+            .and_then(Option::as_mut)
+        else {
+            unreachable!()
+        };
+        *helper = load;
+        assert_invalid(&core, &plan, "lower.plan.function-role");
+    }
+
+    #[test]
+    fn rejects_corrupted_derived_command_fork_evidence() {
+        let core = at_most_one_run_scope_program();
+        let mut plan = candidate(&core, MinecraftOptimizationLevel::None);
+        let retained = plan.preflight.command_limit_evidence();
+        assert_eq!(retained.minimum_max_command_forks(), 2);
+        plan.preflight.replace_command_limit_evidence_for_test(
+            crate::lower::minecraft::CommandLimitEvidence::new(
+                retained.configured_assumptions(),
+                retained.target_defaults(),
+                0,
+            ),
+        );
+
+        assert_invalid(&core, &plan, "lower.plan.preflight");
+    }
+
+    #[test]
+    fn rejects_a_typed_recipe_corrupted_into_an_external_helper() {
+        let (core, function, instruction) = typed_say_program();
+        let mut plan = selected_baseline_candidate(&core);
+        let helper = plan.load;
+        plan.functions.get_mut(function).unwrap().instruction_plans[index(instruction)] =
+            Some(InstructionPlan::External { helper });
+
+        assert_invalid(&core, &plan, "lower.plan.typed-external-placement");
     }
 
     #[test]
@@ -2861,6 +3102,152 @@ mod tests {
 
     fn defining_instruction(core: &CoreProgram, function: FunctionId, value: ValueId) -> InstId {
         defining_instruction_in_body(core.function(function).unwrap().body().unwrap(), value)
+    }
+
+    fn external_program() -> (CoreProgram, FunctionId, InstId) {
+        let sources = SourceContext::new();
+        let mut core = CoreProgram::new();
+        let fragment = core
+            .declare_target_fragment(TargetFragment::unsafe_minecraft_command("return 1").unwrap())
+            .unwrap();
+        let external = core
+            .declare_external_op(
+                ExternalSemanticBinding::UnsafeTargetFragment(fragment),
+                vec![],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let function = core
+            .declare_function(Some("raw"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
+        builder
+            .external(external, vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let instruction = builder
+            .body()
+            .block(builder.entry_block())
+            .unwrap()
+            .instructions()[0];
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        core.define_function(function, builder.finish().unwrap())
+            .unwrap();
+        (core, function, instruction)
+    }
+
+    fn typed_say_program() -> (CoreProgram, FunctionId, InstId) {
+        let sources = SourceContext::new();
+        let mut core = CoreProgram::new();
+        let operation = core
+            .declare_minecraft_operation(
+                MinecraftSemanticKey::Say,
+                EntityKind::ArmorStand,
+                MinecraftOperationAttributes::Say {
+                    message: MessageLiteral::new("typed placement").unwrap(),
+                    message_origin: OriginId::UNKNOWN,
+                },
+                MinecraftOperationOrigins::new(
+                    OriginId::UNKNOWN,
+                    OriginId::UNKNOWN,
+                    OriginId::UNKNOWN,
+                ),
+            )
+            .unwrap();
+        let external = core
+            .declare_external_op(
+                ExternalSemanticBinding::MinecraftOperation(operation),
+                vec![],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let function = core
+            .declare_function(Some("typed"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
+        builder
+            .external(external, vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let instruction = builder
+            .body()
+            .block(builder.entry_block())
+            .unwrap()
+            .instructions()[0];
+        builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        core.define_function(function, builder.finish().unwrap())
+            .unwrap();
+        (core, function, instruction)
+    }
+
+    fn at_most_one_run_scope_program() -> CoreProgram {
+        let sources = SourceContext::new();
+        let mut core = CoreProgram::new();
+        let body = core
+            .declare_function(Some("body"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let mut body_builder = FunctionBuilder::new(&core, &sources, body).unwrap();
+        body_builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        core.define_function(body, body_builder.finish().unwrap())
+            .unwrap();
+
+        let query = core
+            .declare_entity_query(EntityQueryDecl::from_semantic(
+                StaticEntityQuery::entities(EntityKind::ArmorStand)
+                    .limit(1)
+                    .unwrap(),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        let scope = core
+            .declare_run_scope(
+                vec![RunModifierInstance::AsEntityQuery {
+                    query,
+                    origin: OriginId::UNKNOWN,
+                }],
+                body,
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let external = core
+            .declare_external_op(
+                ExternalSemanticBinding::MinecraftRunScope(scope),
+                vec![],
+                vec![],
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let entry = core
+            .declare_function(Some("entry"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let mut entry_builder = FunctionBuilder::new(&core, &sources, entry).unwrap();
+        entry_builder
+            .external(external, vec![], OriginId::UNKNOWN)
+            .unwrap();
+        entry_builder
+            .terminate(Terminator::new(
+                TerminatorKind::Return(vec![]),
+                OriginId::UNKNOWN,
+            ))
+            .unwrap();
+        core.define_function(entry, entry_builder.finish().unwrap())
+            .unwrap();
+        core
     }
 
     fn defining_instruction_in_body(

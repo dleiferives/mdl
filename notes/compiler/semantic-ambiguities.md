@@ -630,3 +630,205 @@ assumption that outside code will not discover a name.
 
 - MLIR symbol visibility: <https://mlir.llvm.org/docs/SymbolsAndSymbolTables/>
 - LLVM linkage and visibility: <https://llvm.org/docs/LangRef.html#linkage-types>
+
+## A-018 — Opaque raw commands and compiler-created function boundaries
+
+**Status:** control-flow ambiguity resolved by Stage-7B isolation.
+
+Minecraft raw command text can contain `return` directly or beneath an `execute`
+chain. `return` exits the currently executing Minecraft function, but Core models the
+literal unsafe form as an ordered statement with a continuation. Emitting the raw line
+directly into a compiler-created block function would therefore make behavior depend
+on physical block placement: block fusion or helper selection could change which
+Minecraft function the same raw line returns from. Treating `return` as impossible
+would also be unjustified because the compiler deliberately does not parse unsafe
+Brigadier text.
+
+Stage 7B gives every reachable raw instruction a dedicated one-line target helper.
+The containing generated block executes an ordinary `function <helper>` command.
+Consequently, direct or nested `return` exits only the isolation helper, the caller
+continues at the next MDL statement, and Core optimization cannot change that
+boundary. The helper and call are explicit planned resources with independent
+verification, provenance, cost census, and deterministic naming. The raw line still
+has unknown effects, outcome, forks, context, and transitive work; isolation does not
+make it safe or permit semantic inspection.
+
+This is the same structural rule used by established compiler IRs: opaque assembly
+may not secretly branch through an ordinary instruction. LLVM represents explicit
+opaque branch destinations with `callbr`, while Rust inline assembly requires control
+behavior such as `noreturn` to be part of the declared interface. MDL currently offers
+no raw-command control-flow contract, so containment is the only conservative
+statement semantics.
+
+- LLVM inline assembly and `callbr`: <https://llvm.org/docs/LangRef.html#callbr-instruction>
+- Rust inline assembly `noreturn` contract: <https://doc.rust-lang.org/reference/inline-assembly.html#options>
+- Minecraft Java 1.20.3 `return run` behavior: <https://feedback.minecraft.net/hc/en-us/articles/21968446892173-Minecraft-Java-Edition-1-20-3>
+
+## A-019 — Local executor proof versus an export's ambient executor contract
+
+**Status:** implemented and differentially verified for the Stage 7 captured-executor
+slice; future source ABI syntax remains deferred.
+
+`ExecutionContext::function_entry()` currently marks the executor unavailable. That
+is correct for lexical proof: a function body cannot manufacture a typed
+`Executor<T>` capture without a modifier such as `.as(query)`. It is not equivalent
+to proving that a Minecraft caller can never supply `@s`. Stage 7 also permits an
+exported function to retain an inferred ambient-context requirement, so treating
+“not established inside this body” as “cannot be required from the caller” would
+make those two policies contradict each other.
+
+The current `.as` slice does not expose the conflict because no typed source
+operation consumes an inherited executor. Behavior inference nevertheless keeps the
+domains separate: lexical context facts govern captures, while
+`FunctionBehavior::required_ambient_context` is an outward source-ABI requirement.
+Unsafe raw text remains `Unknown`, and `.as` can discharge its executor requirement
+without pretending the other frame components are known.
+
+The Stage 7 resolution keeps the layers distinct:
+
+1. HIR source checking requires an exact active lexical capture for
+   `Executor<T>.say`; `Unavailable` means only that the source body has no such local
+   proof.
+2. HIR verification replays that exact proof. HIR-to-Core then erases it rather than
+   manufacturing an SSA executor value or retaining a lexical scope ID across an
+   outlined-function boundary.
+3. The Core semantic operation retains the instantiated executor kind and contributes
+   a symbolic ambient requirement. A deterministic Core call-graph analysis propagates
+   it through ordinary calls and zero-modifier scopes, while `.as(kind)` discharges a
+   matching requirement.
+4. Mapped unoptimized HIR/Core entry requirements are compared independently, and
+   optimized Core entry requirements are published for generated functions.
+
+This makes a nested outlined body honest without granting source code an implicit
+executor variable. A future feature that lets an arbitrary datapack caller supply a
+typed executor capture still needs explicit source syntax and call-site rules; Stage
+7 does not infer that authority from Minecraft's possible runtime `@s` alone.
+
+The implementation independently infers HIR behavior and unoptimized Core ambient
+requirements, rejects disagreement at their boundary, retains one optimized
+`CoreAmbientAnalysis`, and verifies it again during physical planning. Scale tests
+cover 20,000-function chains, fanout, and recursive cycles without recursive host
+traversal. The generated function ABI publishes the remaining executor requirement;
+the pack-wide execution contract does not pretend it applies uniformly.
+
+## A-020 — Plain typed `say` is smaller than native `minecraft:message`
+
+**Status:** Stage 7 literal subset implemented and measured on Java 26.2; boundary
+whitespace and selector interpolation remain intentionally unavailable rather than
+implementation-defined.
+
+Java 26.2 exposes `say <message>` through Brigadier's `minecraft:message` parser.
+That native parser can recognize entity-selector syntax, while an `.mcfunction`
+line ending in a backslash participates in physical line continuation. Treating an
+arbitrary source string as though it were inert text would therefore give the same
+characters different context reads and physical structure.
+
+Stage 7 resolves the first slice conservatively:
+
+1. target-independent `MessageLiteral` rejects empty text, Unicode control
+   characters, and `@`; it otherwise owns and preserves the decoded source text;
+2. the Java 26.2 recipe additionally rejects leading/trailing whitespace and a
+   terminal backslash until their exact native/physical round trip is specified;
+3. target preflight counts the native 256-code-unit bound in Java UTF-16 and checks
+   the complete rendered `say ` command independently; and
+4. structured target `Say` reads the executor, produces `OUTPUT`, never forks,
+   continues locally, and retains native result `Exact(1)` separately from the
+   source operation's discarded `Void` result.
+
+The pinned clientless-server differential now exercises doubled internal spaces,
+quotes, a nonterminal backslash, and `π` in one message and observes them exactly
+under the named armor stand executor. Removing the queried entity skips the output.
+A separate handwritten `execute store result ... run say ...` probe measures result
+`1`; the compiler does not infer that from the Brigadier report. An automated report
+audit regenerates the official 26.2 `commands.json` from the exact server bundle and
+asserts `say -> message: minecraft:message`, using that evidence only for syntax.
+
+Future structured text or selector interpolation must receive its own semantic type,
+context/effect descriptor, recipe, and conformance tests. Until then these cases are
+compile-time rejection, not compiler undefined behavior.
+
+- Minecraft Java Edition 26.2 and official server bundle:
+  <https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2>
+- Mojang-generated command report reproduction:
+  [`../mcfunction/execute-chains.md`](../mcfunction/execute-chains.md)
+
+## A-021 — Entity movement does not update the inherited execution frame
+
+**Status:** Stage 7.5 policy implemented and measured on Java 26.2; generalized
+teleport outcome remains conservative.
+
+Minecraft has two states that source syntax can easily conflate: the target entity's
+world position and the execution frame used to interpret later relative/local
+coordinates. A `teleport` command mutates the entity, but it does not retroactively
+change the position, rotation, dimension, or anchor inherited by the next command in
+the same function invocation. Likewise, `execute as <entity>` changes the executor
+without copying that entity's spatial frame; `execute at @s` is required when the
+entity's position/dimension/rotation should become current.
+
+Stage 7.5 therefore gives the two source methods intentionally different meanings:
+
+```text
+executor.teleport(~, ~1, ~) // relative to the current execution frame
+executor.move_by(0, 1, 0)   // relative to the receiver via `execute at @s`
+```
+
+The clientless Java 26.2 probes establish the following facts:
+
+1. `as` preserves the incoming spatial frame, while `at` copies the selected
+   entity's dimension, position, and rotation;
+2. sequential modifiers consume the frame produced by the preceding modifier;
+3. local coordinates respond to current rotation and feet/eyes anchor;
+4. `in` transforms the current position with the documented Overworld/Nether scale,
+   so exchanging `in` and `positioned` is observable;
+5. a successful one-target teleport reports success/result `1`, while an empty
+   target reports `0`; and
+6. commands after teleport continue to interpret coordinates in the original
+   inherited execution frame.
+
+The semantic operation discards Minecraft's native result and returns source
+`Void`. Target analysis still classifies the general teleport native outcome as
+`Unknown`: the two measured cases do not prove every target count, collision,
+dimension, loading, or failure condition. Optimizers may not use the measurements to
+invent a universally exact result or to rewrite frame-relative teleport into
+receiver-relative movement.
+
+Evidence:
+
+- [`../../crates/mdl-test/tests/spatial_command_semantics.rs`](../../crates/mdl-test/tests/spatial_command_semantics.rs)
+- [`../../crates/mdl-test/tests/stage75_server.rs`](../../crates/mdl-test/tests/stage75_server.rs)
+- [`../mcfunction/coordinate-frames.md`](../mcfunction/coordinate-frames.md)
+
+## A-022 — Synchronous activation order and abnormal recursive-frame residue
+
+**Status:** Java 26.2 behavior measured; Stage 8 explicit-recovery policy implemented.
+
+An `execute as` redirect may invoke one outlined body many times, but runtime
+multiplicity does not imply simultaneously live activations. A pinned clientless
+Java 26.2 fixture ran three armor-stand contexts through a nested function while
+sharing one score. Each child observed and completed its full before/nested/after
+sequence before the next child began. Selector iteration order remains unspecified;
+complete child unwind is the property the compiler relies on. Consequently bounded
+many-context source scopes may reuse static score homes when no value escapes the
+child activation.
+
+Recursive calls are genuinely reentrant and use a compiler-private command-storage
+tail list. Java 26.2 accepts append, `[-1]`/`[-2]` reads and writes, typed score/NBT
+bridges, and tail removal with the expected synchronous behavior. Compiler-generated
+direct and mutual recursion passed under all four Core/Minecraft optimization
+policies, including a caller value live across the recursive edge.
+
+Command-sequence interruption is not stack unwinding. With the sequence limit
+reduced after a frame append, Java aborted the root before the normal pop and the
+frame remained observable. Stage 8 therefore makes no transactional claim: world
+writes and private frames may remain after abnormal termination. The generated
+`<namespace>:__mdl/load` function is the explicit recovery entry; it replaces the
+private frame list with `[]` before performing ordinary initialization. External
+callers must not invoke another MDL export while the runtime is known to be poisoned;
+they must invoke the load/recovery entry or reload the datapack first. Internal calls
+never use that recovery entry.
+
+Evidence:
+
+- [`../../crates/mdl-test/tests/stage8_activation_contract.rs`](../../crates/mdl-test/tests/stage8_activation_contract.rs)
+- [`../../crates/mdl-test/tests/stage8_compiler_server.rs`](../../crates/mdl-test/tests/stage8_compiler_server.rs)
+- [`stage-8/8-0-contract-and-evidence.md`](stage-8/8-0-contract-and-evidence.md)

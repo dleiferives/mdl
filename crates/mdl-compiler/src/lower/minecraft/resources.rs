@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
-use crate::ir::core::{BlockId, CoreProgram, FunctionId};
+use crate::ir::core::{BlockId, CoreOp, CoreProgram, FunctionId, InstId};
 use crate::ir::minecraft::FunctionResourceId;
 use crate::source::OriginId;
 
@@ -13,7 +13,7 @@ use super::analysis::{CoreEdgeKind, SemanticInventory};
 use super::edge_transfer::EdgeTransferPlan;
 use super::placement::{BlockPlacement, ControlRecipePlan, FunctionControlRecipePlan};
 use super::plan::{BranchEdge, PlannedFunctionId, PlannedFunctionRole};
-use super::{GeneratedNames, LoweringOptions, MinecraftOptimizationLevel};
+use super::{GeneratedNames, LoweringOptions, MinecraftOptimizationLevel, TargetPreflight};
 
 const SCAFFOLDING_RESOURCE_COUNT: u64 = 2;
 const MAX_PLANNED_FUNCTION_COUNT: u64 = u32::MAX as u64 + 1;
@@ -41,6 +41,7 @@ pub(crate) struct ResourceFunction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FunctionResourceInventory {
     block_functions: Box<[Option<PlannedFunctionId>]>,
+    external_helpers: Box<[Option<PlannedFunctionId>]>,
     branch_helpers: Box<[Option<PlannedFunctionId>]>,
 }
 
@@ -58,7 +59,7 @@ impl ResourceInventory {
         transfers: &EdgeTransferPlan,
         options: &LoweringOptions,
     ) -> Result<Self, ResourceInventoryError> {
-        Self::build(core, inventory, transfers, None, options)
+        Self::build(core, inventory, transfers, None, None, options)
     }
 
     /// Rebuilds generated resources from the frozen control placement.
@@ -67,9 +68,17 @@ impl ResourceInventory {
         inventory: &SemanticInventory,
         transfers: &EdgeTransferPlan,
         control: &ControlRecipePlan,
+        preflight: &TargetPreflight,
         options: &LoweringOptions,
     ) -> Result<Self, ResourceInventoryError> {
-        Self::build(core, inventory, transfers, Some(control), options)
+        Self::build(
+            core,
+            inventory,
+            transfers,
+            Some(control),
+            Some(preflight),
+            options,
+        )
     }
 
     #[allow(
@@ -81,6 +90,7 @@ impl ResourceInventory {
         inventory: &SemanticInventory,
         transfers: &EdgeTransferPlan,
         control: Option<&ControlRecipePlan>,
+        preflight: Option<&TargetPreflight>,
         options: &LoweringOptions,
     ) -> Result<Self, ResourceInventoryError> {
         let level = options.optimization_level();
@@ -113,7 +123,7 @@ impl ResourceInventory {
                 control.len(),
             )?;
         }
-        let required = required_resource_count(core, inventory, transfers, control)?;
+        let required = required_resource_count(core, inventory, transfers, control, preflight)?;
         validate_resource_capacity(required)?;
 
         let mut builder = ResourceInventoryBuilder::new(options.generated_names());
@@ -147,6 +157,27 @@ impl ResourceInventory {
                 let planned =
                     builder.allocate(PlannedFunctionRole::Block { function, block }, origin)?;
                 set_block_resource(&mut block_functions, function, block, planned)?;
+            }
+
+            let mut external_helpers = vec![None; body.instruction_counts().allocated];
+            for instruction in semantic.reachable_instructions().iter().copied() {
+                let data = body.instruction(instruction).ok_or(
+                    ResourceInventoryError::InvalidInstruction {
+                        function,
+                        instruction,
+                    },
+                )?;
+                if !external_requires_helper(data.op(), preflight) {
+                    continue;
+                }
+                let planned = builder.allocate(
+                    PlannedFunctionRole::ExternalHelper {
+                        function,
+                        instruction,
+                    },
+                    data.origin(),
+                )?;
+                set_external_helper(&mut external_helpers, function, instruction, planned)?;
             }
 
             let mut branch_helpers = vec![None; transfer.edges().len()];
@@ -186,6 +217,7 @@ impl ResourceInventory {
             let assigned = functions
                 .push(FunctionResourceInventory {
                     block_functions: block_functions.into_boxed_slice(),
+                    external_helpers: external_helpers.into_boxed_slice(),
                     branch_helpers: branch_helpers.into_boxed_slice(),
                 })
                 .map_err(|EntityLimitError| ResourceInventoryError::EntityLimit)?;
@@ -207,7 +239,7 @@ impl ResourceInventory {
                 actual: result.planned_functions.len(),
             });
         }
-        result.validate(core, inventory, transfers, control, options)?;
+        result.validate(core, inventory, transfers, control, preflight, options)?;
         Ok(result)
     }
 
@@ -278,6 +310,7 @@ impl ResourceInventory {
         inventory: &SemanticInventory,
         transfers: &EdgeTransferPlan,
         control: Option<&ControlRecipePlan>,
+        preflight: Option<&TargetPreflight>,
         options: &LoweringOptions,
     ) -> Result<(), ResourceInventoryError> {
         if !self.matches_level(options.optimization_level()) || !transfers.matches_level(self.level)
@@ -330,6 +363,7 @@ impl ResourceInventory {
             names.load_function(),
             &mut owners,
         )?;
+
         self.validate_owner(
             self.init_try_create,
             PlannedFunctionRole::InitTryCreate,
@@ -355,6 +389,7 @@ impl ResourceInventory {
                 semantic,
                 transfer,
                 placement,
+                preflight,
                 names,
                 &mut owners,
             )?;
@@ -384,6 +419,7 @@ impl ResourceInventory {
         semantic: &super::analysis::FunctionSemanticInventory,
         transfer: &super::edge_transfer::FunctionEdgeTransferPlan,
         placement: Option<&FunctionControlRecipePlan>,
+        preflight: Option<&TargetPreflight>,
         names: GeneratedNames<'_>,
         owners: &mut [u8],
     ) -> Result<(), ResourceInventoryError> {
@@ -393,12 +429,102 @@ impl ResourceInventory {
         validate_resource_slot_counts(
             function,
             body.block_counts().allocated,
+            body.instruction_counts().allocated,
             transfer.edges().len(),
             function_resources,
             placement,
         )?;
         validate_edge_alignment(function, semantic.edges(), transfer.edges())?;
 
+        self.validate_external_helpers(
+            function,
+            body,
+            semantic,
+            function_resources,
+            preflight,
+            names,
+            owners,
+        )?;
+        self.validate_block_functions(
+            function,
+            body,
+            semantic,
+            placement,
+            function_resources,
+            names,
+            owners,
+        )?;
+        self.validate_branch_helpers(
+            function,
+            body,
+            transfer,
+            placement,
+            function_resources,
+            names,
+            owners,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "helper ownership validation needs the semantic, physical, naming, and owner tables together"
+    )]
+    fn validate_external_helpers(
+        &self,
+        function: FunctionId,
+        body: &crate::ir::core::FunctionBody,
+        semantic: &super::analysis::FunctionSemanticInventory,
+        function_resources: &FunctionResourceInventory,
+        preflight: Option<&TargetPreflight>,
+        names: GeneratedNames<'_>,
+        owners: &mut [u8],
+    ) -> Result<(), ResourceInventoryError> {
+        for (instruction_index, helper) in function_resources
+            .external_helpers
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let instruction = indexed_instruction(instruction_index)?;
+            let data = body.instruction(instruction);
+            let expected = semantic.contains_instruction(instruction)
+                && data.is_some_and(|data| external_requires_helper(data.op(), preflight));
+            if expected != helper.is_some() {
+                return Err(ResourceInventoryError::ExternalHelperOwnershipMismatch {
+                    function,
+                    instruction,
+                });
+            }
+            if let (Some(data), Some(planned)) = (data, helper) {
+                self.validate_owner(
+                    planned,
+                    PlannedFunctionRole::ExternalHelper {
+                        function,
+                        instruction,
+                    },
+                    data.origin(),
+                    names.external_helper_function(function, instruction),
+                    owners,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "local verification keeps frozen placement, semantic inventory, and ownership explicit"
+    )]
+    fn validate_block_functions(
+        &self,
+        function: FunctionId,
+        body: &crate::ir::core::FunctionBody,
+        semantic: &super::analysis::FunctionSemanticInventory,
+        placement: Option<&FunctionControlRecipePlan>,
+        function_resources: &FunctionResourceInventory,
+        names: GeneratedNames<'_>,
+        owners: &mut [u8],
+    ) -> Result<(), ResourceInventoryError> {
         for (block_index, planned) in function_resources
             .block_functions
             .iter()
@@ -425,7 +551,23 @@ impl ResourceInventory {
                 )?;
             }
         }
+        Ok(())
+    }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "branch-helper verification joins frozen transfers, placement, naming, and ownership"
+    )]
+    fn validate_branch_helpers(
+        &self,
+        function: FunctionId,
+        body: &crate::ir::core::FunctionBody,
+        transfer: &super::edge_transfer::FunctionEdgeTransferPlan,
+        placement: Option<&FunctionControlRecipePlan>,
+        function_resources: &FunctionResourceInventory,
+        names: GeneratedNames<'_>,
+        owners: &mut [u8],
+    ) -> Result<(), ResourceInventoryError> {
         for (edge_index, (edge, helper)) in transfer
             .edges()
             .iter()
@@ -522,6 +664,7 @@ impl ResourceInventory {
 fn validate_resource_slot_counts(
     function: FunctionId,
     block_slots: usize,
+    instruction_slots: usize,
     edge_slots: usize,
     resources: &FunctionResourceInventory,
     placement: Option<&FunctionControlRecipePlan>,
@@ -541,6 +684,13 @@ fn validate_resource_slot_counts(
                 actual: placement.placement_slots().len(),
             });
         }
+    }
+    if resources.external_helpers.len() != instruction_slots {
+        return Err(ResourceInventoryError::ExternalHelperSlotCountMismatch {
+            function,
+            expected: instruction_slots,
+            actual: resources.external_helpers.len(),
+        });
     }
     if resources.branch_helpers.len() != edge_slots {
         return Err(ResourceInventoryError::HelperSlotCountMismatch {
@@ -583,6 +733,14 @@ impl FunctionResourceInventory {
         self.branch_helpers.get(edge_index).copied().flatten()
     }
 
+    pub(crate) fn external_helper(&self, instruction: InstId) -> Option<PlannedFunctionId> {
+        usize::try_from(instruction.index())
+            .ok()
+            .and_then(|index| self.external_helpers.get(index))
+            .copied()
+            .flatten()
+    }
+
     pub(crate) fn block_slots(&self) -> &[Option<PlannedFunctionId>] {
         &self.block_functions
     }
@@ -613,6 +771,10 @@ impl<'a> ResourceInventoryBuilder<'a> {
         let resource = match role {
             PlannedFunctionRole::Load => self.names.load_function(),
             PlannedFunctionRole::InitTryCreate => self.names.init_try_create_function(),
+            PlannedFunctionRole::ExternalHelper {
+                function,
+                instruction,
+            } => self.names.external_helper_function(function, instruction),
             PlannedFunctionRole::Block { function, block } => {
                 self.names.block_function(function, block)
             }
@@ -641,6 +803,7 @@ fn required_resource_count(
     inventory: &SemanticInventory,
     transfers: &EdgeTransferPlan,
     control: Option<&ControlRecipePlan>,
+    preflight: Option<&TargetPreflight>,
 ) -> Result<u64, ResourceInventoryError> {
     let mut required = SCAFFOLDING_RESOURCE_COUNT;
     for (function, declaration) in core.functions() {
@@ -681,9 +844,37 @@ fn required_resource_count(
                 Ok(count)
             }
         })?;
+        let external_helpers =
+            semantic
+                .reachable_instructions()
+                .iter()
+                .try_fold(0_usize, |count, instruction| {
+                    let data = declaration
+                        .body()
+                        .and_then(|body| body.instruction(*instruction))
+                        .ok_or(ResourceInventoryError::InvalidInstruction {
+                            function,
+                            instruction: *instruction,
+                        })?;
+                    if external_requires_helper(data.op(), preflight) {
+                        count
+                            .checked_add(1)
+                            .ok_or(ResourceInventoryError::CapacityOverflow)
+                    } else {
+                        Ok(count)
+                    }
+                })?;
         required = checked_resource_count(required, blocks, helpers)?;
+        required = checked_resource_count(required, external_helpers, 0)?;
     }
     Ok(required)
+}
+
+fn external_requires_helper(operation: &CoreOp, preflight: Option<&TargetPreflight>) -> bool {
+    let CoreOp::External(external) = operation else {
+        return false;
+    };
+    preflight.is_none_or(|preflight| preflight.selected_recipe(*external).is_none())
 }
 
 fn is_materialized(
@@ -808,9 +999,38 @@ fn set_branch_helper(
     Ok(())
 }
 
+fn set_external_helper(
+    slots: &mut [Option<PlannedFunctionId>],
+    function: FunctionId,
+    instruction: InstId,
+    planned: PlannedFunctionId,
+) -> Result<(), ResourceInventoryError> {
+    let slot = usize::try_from(instruction.index())
+        .ok()
+        .and_then(|index| slots.get_mut(index))
+        .ok_or(ResourceInventoryError::InvalidInstruction {
+            function,
+            instruction,
+        })?;
+    if slot.is_some() {
+        return Err(ResourceInventoryError::DuplicateExternalHelper {
+            function,
+            instruction,
+        });
+    }
+    *slot = Some(planned);
+    Ok(())
+}
+
 fn indexed_block(index: usize) -> Result<BlockId, ResourceInventoryError> {
     u32::try_from(index)
         .map(BlockId::from_index)
+        .map_err(|_| ResourceInventoryError::CapacityOverflow)
+}
+
+fn indexed_instruction(index: usize) -> Result<InstId, ResourceInventoryError> {
+    u32::try_from(index)
+        .map(InstId::from_index)
         .map_err(|_| ResourceInventoryError::CapacityOverflow)
 }
 
@@ -884,6 +1104,10 @@ pub(crate) enum ResourceInventoryError {
         function: FunctionId,
         block: BlockId,
     },
+    InvalidInstruction {
+        function: FunctionId,
+        instruction: InstId,
+    },
     MissingTerminator {
         function: FunctionId,
         block: BlockId,
@@ -903,6 +1127,11 @@ pub(crate) enum ResourceInventoryError {
         expected: usize,
         actual: usize,
     },
+    ExternalHelperSlotCountMismatch {
+        function: FunctionId,
+        expected: usize,
+        actual: usize,
+    },
     DuplicateBlockResource {
         function: FunctionId,
         block: BlockId,
@@ -911,6 +1140,10 @@ pub(crate) enum ResourceInventoryError {
         function: FunctionId,
         edge_index: usize,
     },
+    DuplicateExternalHelper {
+        function: FunctionId,
+        instruction: InstId,
+    },
     BlockOwnershipMismatch {
         function: FunctionId,
         block: BlockId,
@@ -918,6 +1151,10 @@ pub(crate) enum ResourceInventoryError {
     HelperOwnershipMismatch {
         function: FunctionId,
         edge_index: usize,
+    },
+    ExternalHelperOwnershipMismatch {
+        function: FunctionId,
+        instruction: InstId,
     },
     InvalidPlannedFunction {
         planned: PlannedFunctionId,
@@ -1343,7 +1580,7 @@ mod tests {
 
         assert_eq!(
             resources
-                .validate(&fixture.core, &inventory, &transfers, None, &options)
+                .validate(&fixture.core, &inventory, &transfers, None, None, &options)
                 .unwrap_err(),
             ResourceInventoryError::DuplicateResource {
                 first: load,

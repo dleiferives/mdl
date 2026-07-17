@@ -141,6 +141,22 @@ fn dump_instruction(output: &mut String, instruction: usize, plan: &InstructionP
         InstructionPlan::OmittedPure => {
             writeln!(output, "  instruction {instruction} omitted-pure").unwrap();
         }
+        InstructionPlan::External { helper } => {
+            writeln!(
+                output,
+                "  instruction {instruction} external helper={}",
+                helper.index()
+            )
+            .unwrap();
+        }
+        InstructionPlan::Minecraft { external, recipe } => {
+            writeln!(
+                output,
+                "  instruction {instruction} minecraft external={} recipe={recipe:?}",
+                external.index(),
+            )
+            .unwrap();
+        }
         InstructionPlan::Scalar { operands, results } => {
             writeln!(output, "  instruction {instruction} scalar").unwrap();
             for (operand_index, home) in operands.iter().enumerate() {
@@ -219,7 +235,10 @@ fn dump_steps(output: &mut String, steps: &[super::MoveStep]) {
 mod tests {
     use crate::analysis::minecraft::CommandLimitAssumptions;
     use crate::entity::{EntityId, EntityVec};
+    use crate::ir::core::{CoreAmbientAnalysis, CoreProgram};
     use crate::ir::minecraft::{ObjectiveName, PackNamespace};
+    use crate::lower::minecraft::TargetPreflight;
+    use crate::lower::minecraft::analysis::SemanticInventory;
     use crate::lower::minecraft::{LoweringOptions, MinecraftOptimizationLevel};
     use crate::target::JavaEditionTarget;
 
@@ -258,10 +277,35 @@ mod tests {
         )
         .unwrap()
         .with_optimization_level(optimization_level);
+        let core = CoreProgram::new();
+        let inventory = SemanticInventory::new(&core).unwrap();
+        let assignment =
+            crate::lower::minecraft::assignment::HomeAssignment::for_none(&core, &inventory)
+                .unwrap();
+        let physical =
+            crate::lower::minecraft::realization::PhysicalRealizationPlan::for_score_compatibility(
+                &core,
+                &inventory,
+                &assignment,
+                None,
+                crate::lower::minecraft::realization::PhysicalPlanningLimits::DEFAULT,
+            )
+            .unwrap();
+        let evidence = crate::lower::minecraft::CommandLimitEvidence::new(
+            CommandLimitAssumptions::for_target(target),
+            CommandLimitAssumptions::for_target(target),
+            0,
+        );
+        let physical_preflight =
+            crate::lower::minecraft::physical_preflight::PhysicalPreflight::new(target, &physical)
+                .unwrap();
         LoweringPlan {
             optimization_level,
             target,
-            command_limit_assumptions: CommandLimitAssumptions::for_target(target),
+            preflight: TargetPreflight::new(&core, &inventory, target, evidence).unwrap(),
+            physical,
+            physical_preflight,
+            ambient: CoreAmbientAnalysis::analyze(&core).unwrap(),
             namespace: options.namespace().clone(),
             pack_abi: PackAbi {
                 register_objective: options.register_objective().clone(),

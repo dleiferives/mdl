@@ -1,0 +1,16 @@
+export fn move_worker() {
+    run
+        .as(mc.entities(ArmorStand).with_tag("worker").limit(1))
+        .at_executor()
+        .positioned(~10, ~, ~)
+        .rotated(~90, ~)
+        .in(mc.dimension.overworld)
+        .anchored(mc.anchor.eyes)
+        .align(mc.axes.xz)
+        |worker|
+    {
+        worker.say("moving");
+        worker.teleport(~, ~1, ~);
+        worker.move_by(0, 2, 0);
+    }
+}

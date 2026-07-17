@@ -1,10 +1,11 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::ir::command_line::{CommandLineShapeError, validate_command_line_shape};
 use crate::source::OriginId;
 use crate::target::JavaEditionTarget;
 
-use super::{CallableRef, DataCommand, ExecuteCommand, ScoreCommand};
+use super::{CallableRef, DataCommand, ExecuteCommand, SayCommand, ScoreCommand, TeleportCommand};
 
 /// Initial maximum nesting depth for recursive commands.
 pub const MAX_COMMAND_DEPTH: usize = 64;
@@ -54,6 +55,8 @@ impl CommandNode {
             CommandKind::Return(ReturnCommand::Run(command)) => command.depth(),
             CommandKind::Score(_)
             | CommandKind::Data(_)
+            | CommandKind::Say(_)
+            | CommandKind::Teleport(_)
             | CommandKind::Function(_)
             | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
             | CommandKind::Raw(_) => 0,
@@ -80,6 +83,10 @@ pub enum CommandKind {
     Score(ScoreCommand),
     /// Storage-data command.
     Data(DataCommand),
+    /// Literal native `say` command.
+    Say(SayCommand),
+    /// Teleport the current executor to a structured position.
+    Teleport(TeleportCommand),
     /// Ordered execute chain.
     Execute(ExecuteCommand),
     /// Function or function-tag invocation.
@@ -229,7 +236,18 @@ impl UnsafeRawCommand {
     /// Rejects physical-line hazards, reserved prefixes, boundary whitespace, and
     /// target-length overflow.
     pub fn new(line: &str) -> Result<Self, RawCommandError> {
-        validate_raw_line(line)?;
+        Self::new_for_target(line, JavaEditionTarget::V26_2)
+    }
+
+    /// Validates one physical raw command against an explicit Java target.
+    ///
+    /// This does not parse Brigadier syntax or establish semantic contracts.
+    ///
+    /// # Errors
+    ///
+    /// Rejects target-independent physical-line hazards and target-length overflow.
+    pub fn new_for_target(line: &str, target: JavaEditionTarget) -> Result<Self, RawCommandError> {
+        validate_raw_line(line, target)?;
         Ok(Self(line.into()))
     }
 
@@ -240,29 +258,17 @@ impl UnsafeRawCommand {
     }
 }
 
-fn validate_raw_line(line: &str) -> Result<(), RawCommandError> {
-    if line.is_empty() {
-        return Err(RawCommandError::Empty);
-    }
-    if line.contains(['\r', '\n']) {
-        return Err(RawCommandError::PhysicalNewline);
-    }
-    if line.starts_with(char::is_whitespace) || line.ends_with(char::is_whitespace) {
-        return Err(RawCommandError::BoundaryWhitespace);
-    }
-    if let Some(prefix @ ('/' | '#' | '$')) = line.chars().next() {
-        return Err(RawCommandError::ReservedPrefix(prefix));
-    }
-    if line.ends_with('\\') {
-        return Err(RawCommandError::TerminalContinuation);
-    }
+fn validate_raw_line(line: &str, target: JavaEditionTarget) -> Result<(), RawCommandError> {
+    validate_command_line_shape(line).map_err(|error| match error {
+        CommandLineShapeError::Empty => RawCommandError::Empty,
+        CommandLineShapeError::PhysicalNewline => RawCommandError::PhysicalNewline,
+        CommandLineShapeError::BoundaryWhitespace => RawCommandError::BoundaryWhitespace,
+        CommandLineShapeError::ReservedPrefix(prefix) => RawCommandError::ReservedPrefix(prefix),
+        CommandLineShapeError::TerminalContinuation => RawCommandError::TerminalContinuation,
+    })?;
     let units = line.encode_utf16().count();
-    let max = usize::try_from(
-        JavaEditionTarget::V26_2
-            .spec()
-            .max_logical_command_utf16_units(),
-    )
-    .expect("target command length fits usize");
+    let max = usize::try_from(target.spec().max_logical_command_utf16_units())
+        .expect("target command length fits usize");
     if units > max {
         return Err(RawCommandError::TooLong { units, max });
     }

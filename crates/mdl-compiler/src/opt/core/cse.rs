@@ -761,9 +761,9 @@ fn build_expression_key(
         CoreOp::I32AddOverflowing => CseOpKey::I32AddOverflowing,
         CoreOp::I32Compare(predicate) => CseOpKey::I32Compare(*predicate),
         CoreOp::BoolNot => CseOpKey::BoolNot,
-        CoreOp::Call(_) => {
+        CoreOp::Call(_) | CoreOp::External(_) => {
             return Err(CseError::InconsistentVerifiedBody(
-                "structurally opaque call passed the CSE eligibility gate",
+                "structurally opaque operation passed the CSE eligibility gate",
             ));
         }
     };

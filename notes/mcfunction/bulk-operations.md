@@ -35,15 +35,19 @@ Status: **Measured** on vanilla 26.2.
 
 ## Increment multiple fake players
 
-The special score-holder target `*` updates every holder that already has a score in
-the objective:
+The special score-holder target `*` updates every globally tracked score holder and
+can create the selected objective for holders that previously had scores only in
+other objectives:
 
 ```mcfunction
 scoreboard players add * mdl.vector 1
 ```
 
-Three initialized fake players all moved from 0 to 1 in one command. The command
-reported updating all existing holders in the objective, including unrelated holders.
+An earlier test with three initialized fake players moved all three from 0 to 1. A
+broader 26.2 test then created two values in `mdl.vector` while twelve other holders
+existed only in another objective. `add * mdl.vector 3` reported fourteen targets and
+created `mdl.vector = 3` for those twelve holders. Score-holder membership is global,
+not scoped to one objective.
 
 This suggests a compiler layout optimization: place values that frequently receive
 the same operation in a dedicated objective, then operate on the whole objective.
@@ -51,11 +55,20 @@ The objective becomes a physical vector.
 
 Important constraints:
 
-- `*` affects every existing score holder in that objective;
-- absent scores are not created by the wildcard operation;
-- there is no observed prefix/pattern wildcard for choosing three arbitrary fake
-  player names;
-- unrelated values must not share the vectorized objective.
+- `*` affects every holder currently tracked by the scoreboard service;
+- absent scores in the selected objective are created for tracked holders;
+- only the complete token `*` is special; prefix, suffix, glob, and regex-looking
+  holder names are literals;
+- an objective does not provide a closed vector membership set; unrelated holders
+  elsewhere in the scoreboard service are enough to be affected.
+
+This makes target `*` unsuitable for compiler-private objective vectorization unless
+whole-world holder membership is proven closed. Explicit entity selectors, generated
+known-holder commands, or another layout are safer baselines.
+
+The full expansion table, reduction/broadcast candidates, reset/team behavior,
+snapshot timing, and alias/partial-failure hazards are recorded in
+[`scoreboard-wildcard.md`](scoreboard-wildcard.md).
 
 ## Apply one runtime scalar to every score
 
@@ -82,6 +95,12 @@ vector = max(vector, scalar)
 ```
 
 Each exact scoreboard operator and edge case still needs a test matrix.
+
+The command grammar also admits multiple source holders. A measured selector test
+showed Cartesian repeated-update behavior: every target consumed every source. Four
+sources with value 1 and four with value 2 added 12 to each target. This is useful
+for intentional reductions but is not a zip operation; baseline recipes should
+require an at-most-one source.
 
 ## Update multiple NBT paths
 
@@ -244,4 +263,3 @@ data size.
 ## Primary source
 
 - [Mojang's multi-match NBT path and data operation specification](https://feedback.minecraft.net/hc/en-us/articles/360018363512-Minecraft-Java-Edition-Snapshot-18W43C)
-

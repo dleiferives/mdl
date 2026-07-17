@@ -458,6 +458,36 @@ impl TestServer {
         }
     }
 
+    /// Returns newly attributed output lines containing `expected` since a checkpoint.
+    ///
+    /// Callers can send and await a unique console barrier before taking this
+    /// observation to prove that an earlier command did, or did not, produce a
+    /// particular line without relying on a timing sleep.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the checkpoint belongs to another server history or
+    /// lies beyond the output collected for this server.
+    pub fn matching_log_lines_since(
+        &mut self,
+        checkpoint: LogCheckpoint,
+        expected: &str,
+    ) -> Result<Vec<String>> {
+        self.drain_available_log();
+        if checkpoint.history_id != self.log_history_id
+            || checkpoint.line_index > self.log_lines.len()
+        {
+            return Err(HarnessError::InvalidConfig(
+                "log checkpoint does not belong to this server history".to_owned(),
+            ));
+        }
+        Ok(self.log_lines[checkpoint.line_index..]
+            .iter()
+            .filter(|line| line.text.contains(expected))
+            .map(|line| line.text.clone())
+            .collect())
+    }
+
     /// Returns recent output collected by waits performed so far.
     #[must_use]
     pub fn recent_log(&self) -> String {

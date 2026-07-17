@@ -1,17 +1,17 @@
 #+title: Minecraft Datapack Language
 
 MDL is a typed compiler for Minecraft Java Edition datapacks, implemented in Rust.
-It currently compiles a bounded single-file scalar language through resolved typed
-HIR, verified Core SSA, Core optimization, structured Minecraft lowering, target
-cost analysis, and deterministic datapack emission. Generated packs are tested on
-the official vanilla Java 26.2 dedicated server; no client is required.
+It compiles a bounded typed source language through resolved HIR, verified Core SSA,
+Core optimization, target preflight, structured Minecraft lowering, target-cost
+analysis, and deterministic datapack emission. Generated packs are tested on the
+official vanilla Java 26.2 dedicated server; no client is required.
 
 * Quick start
 
 Create =example.mdl=:
 
 #+begin_src text
-fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
+export fn choose(flag: Bool, left: Int32, right: Int32) -> Int32 {
     var selected: Int32;
     if (flag) {
         selected = left;
@@ -35,7 +35,8 @@ cargo run -p mdl -- compile example.mdl \
 #+end_src
 
 The CLI refuses to overwrite a nonempty output directory. On success it prints each
-source function's generated entry resource and ordered typed scoreboard ABI homes.
+exported source function's generated entry resource, ordered typed scoreboard ABI
+homes, inferred behavior, generated entry requirement, and fork deployment contract.
 
 * Current source language
 
@@ -47,19 +48,44 @@ The first complete language slice includes:
 - immutable =const= and mutable =var= locals;
 - forward calls and recursion at the frontend level;
 - =if=, =else if=, =else=, assignment, and =return=;
-- Boolean negation and typed equality/ordered comparisons; and
+- Boolean negation and typed equality/ordered comparisons;
+- rooted in-memory packages, Zig-like named imports, visibility, and explicit
+  datapack exports;
+- literal-only =unsafe minecraft("...")= as a conservative opaque boundary;
+- typed static entity queries and ordered =run= scopes with =as=, =at=,
+  =at_executor=, =positioned=, =rotated=, =in=, =anchored=, and =align=;
+- exact compiler-known absolute, relative (=~=), and local (=^=) spatial arguments;
+- method-oriented =Executor<ArmorStand>.say=, =teleport=, and =move_by=
+  operations; and
 - exact source diagnostics, definite assignment, and return-completeness checking.
 
 Arguments evaluate left to right. Types match exactly; there are no implicit
 conversions. The current Minecraft backend deliberately rejects recursive call
-graphs with a typed lowering error. Arithmetic, strings, lists, structs, loops,
-Minecraft context/entity APIs, raw commands, scheduling, and macros are not yet
-source features.
+graphs with a typed lowering error. General arithmetic, first-class strings, lists,
+structs, loops, entity handles, scheduling, and macros are not yet source features.
+String literals exist only in compiler-known contexts such as imports, query tags,
+unsafe commands, and typed messages.
 
-The reviewed next contracts keep logical module identity separate from filenames
-and route typed Minecraft effects through Core before structured target lowering.
-See [[file:notes/compiler/stage-6-modules-plan.md][the module plan]] and
-[[file:notes/compiler/stage-6-effects-plan.md][the typed-effect plan]].
+For example, one captured executor can use an ordered frame and structured spatial
+commands:
+
+#+begin_src text
+export fn move_worker() {
+    run.as(mc.entities(ArmorStand).with_tag("worker").limit(1))
+        .at_executor()
+        .positioned(~10, ~, ~) |worker| {
+        worker.say("moving");
+        worker.teleport(~, ~1, ~);
+        worker.move_by(0, 2, 0);
+    }
+}
+#+end_src
+
+The query is an explicit possible fork; the capture proves the current executor only
+inside its lexical scope. =teleport= is relative to the current execution frame,
+while =move_by= deliberately re-establishes the receiver's frame. Typed operations
+never fall back to raw command text. Spatial arguments are compiler-known attributes,
+not yet ordinary runtime values.
 
 * Verification
 
@@ -90,6 +116,39 @@ cargo test -p mdl --test server \
   cli_materialized_pack_runs_on_vanilla_26_2 \
   -- --ignored --exact --nocapture
 #+end_src
+
+The Stage 7 typed-command proof compiles all four optimization combinations, summons
+a tagged armor stand in a force-loaded chunk, checks executor-attributed output and
+empty-query skipping, and measures the native result without a client:
+
+#+begin_src sh
+MDL_SERVER_JAR=/path/to/minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test source_compilation \
+  stage7_typed_say_runs_as_captured_executor_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+#+end_src
+
+The Stage 7.5 gate audits Mojang's command tree, measures handwritten spatial
+semantics, and executes compiler-generated packs under all four policies:
+
+#+begin_src sh
+MDL_SERVER_JAR=/path/to/minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test \
+  --test official_command_report \
+  --test spatial_command_semantics \
+  --test stage75_server \
+  -- --ignored --nocapture
+#+end_src
+
+Stage 7.5's execution-frame and static spatial-semantics slice is complete; its
+verified boundary is recorded in the
+[[file:notes/compiler/stage-7-5-handoff.md][Stage 7.5 to Stage 8 handoff]]. Stage 8 is
+complete for scalar physical realizations, synchronous serial run contexts, and
+recursive-SCC-only typed spill frames. Its final evidence and downstream contract
+are in the [[file:notes/compiler/stage-8-completion-audit.md][Stage 8 completion audit]]
+and [[file:notes/compiler/stage-8-handoff.md][Stage 8 handoff]].
 
 Compiler architecture, pass proofs, semantic ambiguities, and the implementation
 roadmap live under [[file:notes/compiler/README.md][notes/compiler]]. Backend command

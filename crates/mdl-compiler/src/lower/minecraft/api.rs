@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::fmt::Write as _;
 
 use crate::analysis::minecraft::{
     CommandLimitAssumptions, TargetExecutionAnalysisFailure, TargetExecutionAnalysisLimits,
@@ -9,13 +10,15 @@ use crate::analysis::minecraft::{
 };
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityId;
-use crate::ir::core::{CoreProgram, CoreType, FunctionId};
-use crate::ir::minecraft::{
-    FakeScoreHolder, FunctionResourceId, FunctionTagResourceId, MinecraftProgram, ObjectiveName,
-    verify_program,
+use crate::ir::core::{
+    CoreAmbientAnalysis, CoreFunctionLinkage, CoreProgram, CoreType, FunctionId, InstId,
 };
+use crate::ir::minecraft::{
+    CommandId, FakeScoreHolder, FunctionResourceId, FunctionTagResourceId, McFunctionId,
+    MinecraftProgram, ObjectiveName, verify_program,
+};
+use crate::ir::semantic::AmbientContextRequirements;
 use crate::source::{OriginId, SourceContext};
-use crate::target::JavaEditionTarget;
 
 use super::analysis::{AnalysisError, SemanticInventory};
 use super::assignment::{AssignmentError, HomeAssignment};
@@ -24,36 +27,62 @@ use super::demand::{DemandError, RuntimeDemand, RuntimeDemandLimits};
 use super::edge_transfer::{EdgeTransferError, EdgeTransferPlan};
 use super::emit::construct_program;
 use super::liveness::{LivenessError, LivenessLimits, LivenessResult};
+use super::physical_preflight::{PhysicalPreflight, PhysicalPreflightError};
 use super::placement::{ControlRecipePlan, ControlRecipePlanError};
 use super::plan::{
     LoweringDecisionReport, LoweringPlan, PlanBuildError, PlanFinishError, PlanTable,
     verify_constructed_control_recipes,
 };
+use super::realization::{PhysicalPlanError, PhysicalPlanningLimits, PhysicalRealizationPlan};
 use super::resources::{ResourceInventory, ResourceInventoryError};
-use super::{LoweringOptions, LoweringOptionsError, MinecraftOptimizationLevel};
+use super::{LoweringOptions, LoweringOptionsError, MinecraftOptimizationLevel, TargetPreflight};
 
-/// Required activation discipline for the Stage 4 fixed-slot ABI.
+/// Required activation discipline for the scalar synchronous ABI.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ActivationContract {
-    /// Invocations must not overlap, re-enter, recurse, or execute in forked contexts.
-    SingleContextNonReentrant,
+    /// Synchronous invocations may repeat across serial command contexts but may
+    /// not recurse or preserve a live activation across ticks.
+    SynchronousSerial,
+    /// Recursive SCCs use compiler-owned synchronous activation frames. Abnormal
+    /// command-sequence termination is not transactional; a reload clears residue.
+    SynchronousRecursiveStack,
 }
 
-/// Runtime command-budget responsibility retained by the caller.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct CommandLimitContract {
-    assumptions: CommandLimitAssumptions,
+/// Who supplies the bound on live synchronous activation depth.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ActivationDepthContract {
+    /// No reachable recursive SCC requires a dynamic activation depth.
+    Static,
+    /// The compiler preserves arbitrary synchronous recursion until Minecraft's
+    /// configured command limit stops the root; it invents no truncation or trap.
+    CallerBounded,
+}
+
+/// Successful legality inputs and the derived structured-redirect requirement.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CommandLimitEvidence {
+    configured_assumptions: CommandLimitAssumptions,
     target_defaults: CommandLimitAssumptions,
+    minimum_max_command_forks: u64,
 }
 
-impl CommandLimitContract {
-    /// Returns the configured server values required by retained safety proofs.
-    ///
-    /// Lower actual gamerule values invalidate `ProvenWithin`; this contract never
-    /// configures the server itself.
+impl CommandLimitEvidence {
+    pub(crate) const fn new(
+        configured_assumptions: CommandLimitAssumptions,
+        target_defaults: CommandLimitAssumptions,
+        minimum_max_command_forks: u64,
+    ) -> Self {
+        Self {
+            configured_assumptions,
+            target_defaults,
+            minimum_max_command_forks,
+        }
+    }
+
+    /// Returns the server values configured for this compilation's safety proofs.
     #[must_use]
-    pub const fn assumptions(self) -> CommandLimitAssumptions {
-        self.assumptions
+    pub const fn configured_assumptions(self) -> CommandLimitAssumptions {
+        self.configured_assumptions
     }
 
     /// Returns the selected target's immutable default server values.
@@ -61,26 +90,80 @@ impl CommandLimitContract {
     pub const fn target_defaults(self) -> CommandLimitAssumptions {
         self.target_defaults
     }
+
+    /// Returns the lowest `minecraft:max_command_forks` proven sufficient for
+    /// every reachable compiler-structured ordinary redirect in this generated pack.
+    #[must_use]
+    pub const fn minimum_max_command_forks(self) -> u64 {
+        self.minimum_max_command_forks
+    }
+}
+
+/// Runtime command-budget responsibility retained by the caller.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct CommandLimitContract {
+    evidence: CommandLimitEvidence,
+}
+
+impl CommandLimitContract {
+    pub(crate) const fn new(evidence: CommandLimitEvidence) -> Self {
+        Self { evidence }
+    }
+
+    /// Returns the complete retained proof input and derived deployment requirement.
+    #[must_use]
+    pub const fn evidence(self) -> CommandLimitEvidence {
+        self.evidence
+    }
+
+    /// Returns the configured server values required by retained safety proofs.
+    ///
+    /// Lower actual gamerule values invalidate `ProvenWithin`; this contract never
+    /// configures the server itself.
+    #[must_use]
+    pub const fn configured_assumptions(self) -> CommandLimitAssumptions {
+        self.evidence.configured_assumptions()
+    }
+
+    /// Returns the selected target's immutable default server values.
+    #[must_use]
+    pub const fn target_defaults(self) -> CommandLimitAssumptions {
+        self.evidence.target_defaults()
+    }
+
+    /// Returns the lowest `minecraft:max_command_forks` proven sufficient for
+    /// every reachable compiler-structured ordinary redirect in this generated pack.
+    #[must_use]
+    pub const fn minimum_max_command_forks(self) -> u64 {
+        self.evidence.minimum_max_command_forks()
+    }
 }
 
 impl fmt::Debug for CommandLimitContract {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.assumptions == self.target_defaults {
-            formatter
-                .debug_struct("CallerBoundedToTarget")
-                .field(
-                    "max_command_sequence_length",
-                    &self.assumptions.max_command_sequence_length(),
-                )
-                .field("max_command_forks", &self.assumptions.max_command_forks())
-                .finish()
-        } else {
-            formatter
-                .debug_struct("CallerBoundedToAssumptions")
-                .field("assumptions", &self.assumptions)
-                .field("target_defaults", &self.target_defaults)
-                .finish()
-        }
+        formatter
+            .debug_struct("CommandLimitContract")
+            .field(
+                "configured_max_command_sequence_length",
+                &self.configured_assumptions().max_command_sequence_length(),
+            )
+            .field(
+                "configured_max_command_forks",
+                &self.configured_assumptions().max_command_forks(),
+            )
+            .field(
+                "target_default_max_command_sequence_length",
+                &self.target_defaults().max_command_sequence_length(),
+            )
+            .field(
+                "target_default_max_command_forks",
+                &self.target_defaults().max_command_forks(),
+            )
+            .field(
+                "derived_minimum_max_command_forks",
+                &self.minimum_max_command_forks(),
+            )
+            .finish()
     }
 }
 
@@ -88,19 +171,27 @@ impl fmt::Debug for CommandLimitContract {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ExecutionContract {
     activation: ActivationContract,
+    activation_depth: ActivationDepthContract,
     command_limits: CommandLimitContract,
 }
 
 impl ExecutionContract {
-    pub(crate) fn new(target: JavaEditionTarget, assumptions: CommandLimitAssumptions) -> Self {
-        let target_defaults = CommandLimitAssumptions::for_target(target);
-        let command_limits = CommandLimitContract {
-            assumptions,
-            target_defaults,
-        };
+    pub(crate) const fn new(
+        command_limit_evidence: CommandLimitEvidence,
+        has_recursive_activation: bool,
+    ) -> Self {
         Self {
-            activation: ActivationContract::SingleContextNonReentrant,
-            command_limits,
+            activation: if has_recursive_activation {
+                ActivationContract::SynchronousRecursiveStack
+            } else {
+                ActivationContract::SynchronousSerial
+            },
+            activation_depth: if has_recursive_activation {
+                ActivationDepthContract::CallerBounded
+            } else {
+                ActivationDepthContract::Static
+            },
+            command_limits: CommandLimitContract::new(command_limit_evidence),
         }
     }
 
@@ -108,6 +199,12 @@ impl ExecutionContract {
     #[must_use]
     pub const fn activation(&self) -> ActivationContract {
         self.activation
+    }
+
+    /// Returns the ownership of the synchronous recursion-depth bound.
+    #[must_use]
+    pub const fn activation_depth(&self) -> ActivationDepthContract {
+        self.activation_depth
     }
 
     /// Returns the caller-owned target command-limit deployment contract.
@@ -145,28 +242,117 @@ impl RegisterSlot {
 /// Read-only target ABI for one Core function.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoweredFunction {
+    linkage: CoreFunctionLinkage,
     entry_resource: FunctionResourceId,
+    generated_entry_requirement: AmbientContextRequirements,
     parameter_homes: Box<[(CoreType, RegisterSlot)]>,
     result_homes: Box<[(CoreType, RegisterSlot)]>,
 }
 
+/// Exact target placement of one directly lowered semantic Core occurrence.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LoweredCommand {
+    function: McFunctionId,
+    command: CommandId,
+}
+
+impl LoweredCommand {
+    pub(crate) const fn new(function: McFunctionId, command: CommandId) -> Self {
+        Self { function, command }
+    }
+
+    /// Returns the generated target function containing the command.
+    #[must_use]
+    pub const fn function(self) -> McFunctionId {
+        self.function
+    }
+
+    /// Returns the command's exact function-local target identity.
+    #[must_use]
+    pub const fn command(self) -> CommandId {
+        self.command
+    }
+}
+
+/// Exact selected recipe and target placement of one Core run modifier.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LoweredRunModifier {
+    function: McFunctionId,
+    command: CommandId,
+    modifier_index: usize,
+    recipe: super::RunModifierRecipeId,
+}
+
+impl LoweredRunModifier {
+    pub(crate) const fn new(
+        function: McFunctionId,
+        command: CommandId,
+        modifier_index: usize,
+        recipe: super::RunModifierRecipeId,
+    ) -> Self {
+        Self {
+            function,
+            command,
+            modifier_index,
+            recipe,
+        }
+    }
+
+    #[must_use]
+    pub const fn function(self) -> McFunctionId {
+        self.function
+    }
+    #[must_use]
+    pub const fn command(self) -> CommandId {
+        self.command
+    }
+    #[must_use]
+    pub const fn modifier_index(self) -> usize {
+        self.modifier_index
+    }
+    #[must_use]
+    pub const fn recipe(self) -> super::RunModifierRecipeId {
+        self.recipe
+    }
+}
+
 impl LoweredFunction {
     pub(crate) fn new(
+        linkage: CoreFunctionLinkage,
         entry_resource: FunctionResourceId,
+        generated_entry_requirement: AmbientContextRequirements,
         parameter_homes: Vec<(CoreType, RegisterSlot)>,
         result_homes: Vec<(CoreType, RegisterSlot)>,
     ) -> Self {
         Self {
+            linkage,
             entry_resource,
+            generated_entry_requirement,
             parameter_homes: parameter_homes.into_boxed_slice(),
             result_homes: result_homes.into_boxed_slice(),
         }
+    }
+
+    /// Returns whether this ABI is internal or a supported datapack entry.
+    #[must_use]
+    pub const fn linkage(&self) -> CoreFunctionLinkage {
+        self.linkage
     }
 
     /// Returns the generated entry function resource.
     #[must_use]
     pub const fn entry_resource(&self) -> &FunctionResourceId {
         &self.entry_resource
+    }
+
+    /// Returns the optimized Core function's required incoming Minecraft context.
+    ///
+    /// This is a generated-entry requirement, independently recomputed after Core
+    /// optimization. It is intentionally distinct from the source HIR behavior
+    /// published by the frontend.
+    #[must_use]
+    pub const fn generated_entry_requirement(&self) -> AmbientContextRequirements {
+        self.generated_entry_requirement
     }
 
     /// Returns ordered `(Core type, target slot)` parameters.
@@ -195,14 +381,44 @@ impl LoweredFunction {
 pub struct LoweringMap {
     execution: ExecutionContract,
     functions: Box<[LoweredFunction]>,
+    semantic_commands: Box<[Box<[Option<LoweredCommand>]>]>,
+    run_modifiers: Box<[Box<[Option<LoweredRunModifier>]>]>,
+    export_count: usize,
 }
 
 impl LoweringMap {
-    pub(crate) fn new(execution: ExecutionContract, functions: Vec<LoweredFunction>) -> Self {
+    pub(crate) fn new(
+        execution: ExecutionContract,
+        functions: Vec<LoweredFunction>,
+        semantic_commands: Vec<Box<[Option<LoweredCommand>]>>,
+        run_modifiers: Vec<Box<[Option<LoweredRunModifier>]>>,
+    ) -> Self {
+        debug_assert_eq!(functions.len(), semantic_commands.len());
+        let export_count = functions
+            .iter()
+            .filter(|function| function.linkage == CoreFunctionLinkage::DatapackExport)
+            .count();
         Self {
             execution,
             functions: functions.into_boxed_slice(),
+            semantic_commands: semantic_commands.into_boxed_slice(),
+            run_modifiers: run_modifiers.into_boxed_slice(),
+            export_count,
         }
+    }
+
+    /// Returns one source/Core modifier's selected recipe and exact physical placement.
+    #[must_use]
+    pub fn run_modifier(
+        &self,
+        scope: crate::ir::core::RunScopeId,
+        modifier_index: usize,
+    ) -> Option<LoweredRunModifier> {
+        self.run_modifiers
+            .get(usize::try_from(scope.index()).ok()?)?
+            .get(modifier_index)
+            .copied()
+            .flatten()
     }
 
     /// Returns the execution restrictions of this generated pack.
@@ -219,10 +435,88 @@ impl LoweringMap {
             .and_then(|index| self.functions.get(index))
     }
 
+    /// Looks up the exact generated command for one directly lowered semantic
+    /// Core occurrence. Nonsemantic, omitted, helper-based, and invalid identities
+    /// return `None`.
+    #[must_use]
+    pub fn semantic_command(
+        &self,
+        function: FunctionId,
+        instruction: InstId,
+    ) -> Option<LoweredCommand> {
+        let function = usize::try_from(function.index()).ok()?;
+        let instruction = usize::try_from(instruction.index()).ok()?;
+        self.semantic_commands
+            .get(function)?
+            .get(instruction)
+            .copied()
+            .flatten()
+    }
+
+    /// Iterates every direct semantic occurrence and its exact generated command
+    /// in stable Core function/instruction order.
+    pub fn semantic_commands(
+        &self,
+    ) -> impl Iterator<Item = (FunctionId, InstId, LoweredCommand)> + '_ {
+        self.semantic_commands
+            .iter()
+            .enumerate()
+            .flat_map(|(function, instructions)| {
+                instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(instruction, location)| {
+                        Some((
+                            FunctionId::from_index(u32::try_from(function).ok()?),
+                            InstId::from_index(u32::try_from(instruction).ok()?),
+                            (*location)?,
+                        ))
+                    })
+            })
+    }
+
+    /// Renders deterministic post-construction semantic-command correlations.
+    #[must_use]
+    pub fn dump_semantic_commands(&self) -> String {
+        let mut output = String::new();
+        for (function, instruction, location) in self.semantic_commands() {
+            writeln!(
+                output,
+                "constructed-semantic-command core-function={} instruction={} target-function={} command={}",
+                function.index(),
+                instruction.index(),
+                location.function().index(),
+                location.command().index(),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        output
+    }
+
+    /// Iterates supported datapack entries in stable Core function order.
+    pub fn exported_functions(&self) -> impl Iterator<Item = (FunctionId, &LoweredFunction)> + '_ {
+        self.functions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, lowered)| {
+                if lowered.linkage != CoreFunctionLinkage::DatapackExport {
+                    return None;
+                }
+                let function = FunctionId::from_index(u32::try_from(index).ok()?);
+                Some((function, lowered))
+            })
+    }
+
     /// Returns the number of mapped Core functions.
     #[must_use]
     pub fn len(&self) -> usize {
         self.functions.len()
+    }
+
+    /// Returns the number of supported datapack entries.
+    #[must_use]
+    pub const fn export_count(&self) -> usize {
+        self.export_count
     }
 
     /// Returns whether no Core functions are mapped.
@@ -262,7 +556,9 @@ impl LoweringOutput {
     /// Dumps deterministic lowering decisions without exposing mutable plan state.
     #[must_use]
     pub fn dump_lowering(&self) -> String {
-        self.report.dump()
+        let mut output = self.report.dump();
+        output.push_str(&self.map.dump_semantic_commands());
+        output
     }
 
     /// Consumes the output into its independently owned target, ABI map, and report.
@@ -282,7 +578,7 @@ impl LoweringOutput {
         &self,
         limits: TargetExecutionAnalysisLimits,
     ) -> Result<TargetExecutionCostReport, TargetExecutionAnalysisFailure> {
-        let root_capacity = self.map.functions.len().checked_add(1).ok_or_else(|| {
+        let root_capacity = self.map.export_count.checked_add(1).ok_or_else(|| {
             TargetExecutionAnalysisFailure::internal(
                 TargetExecutionAnalysisPhase::Construction,
                 "target-cost.root-capacity-overflow",
@@ -295,7 +591,12 @@ impl LoweringOutput {
             .functions()
             .map(|(function, data)| (data.resource(), function))
             .collect::<HashMap<_, _>>();
-        for lowered in &self.map.functions {
+        for lowered in self
+            .map
+            .functions
+            .iter()
+            .filter(|function| function.linkage == CoreFunctionLinkage::DatapackExport)
+        {
             let function = function_ids
                 .get(lowered.entry_resource())
                 .copied()
@@ -327,7 +628,7 @@ impl LoweringOutput {
                 )
             })?;
         roots.push(TargetExecutionRoot::FunctionTag(load_tag));
-        let assumptions = self.map.execution.command_limits().assumptions();
+        let assumptions = self.map.execution.command_limits().configured_assumptions();
         analyze_verified_target_execution(&self.program, &roots, assumptions, limits)
     }
 }
@@ -429,9 +730,13 @@ enum LoweringMeasurementPhase {
     Options,
     SemanticInventory,
     Legality,
+    AmbientAnalysis,
+    TargetPreflight,
     RuntimeDemand,
     Liveness,
     Assignment,
+    PhysicalRealizations,
+    PhysicalPreflight,
     EdgeTransfers,
     ControlRecipes,
     Resources,
@@ -446,8 +751,6 @@ trait LoweringInstrumentation {
     fn before_phase(&mut self, _phase: LoweringMeasurementPhase) {}
 
     fn after_phase(&mut self, _phase: LoweringMeasurementPhase, _succeeded: bool) {}
-
-    fn skipped(&mut self, _phase: LoweringMeasurementPhase, _reason: &'static str) {}
 }
 
 struct NoLoweringInstrumentation;
@@ -490,9 +793,9 @@ fn lower_to_minecraft_with_instrumentation<I>(
 where
     I: LoweringInstrumentation,
 {
-    let (inventory, demand, liveness) =
+    let (inventory, preflight, ambient, demand, liveness) =
         analyze_lowering_request(core, sources, options, instrumentation)?;
-    let (assignment, transfers) = assign_lowering_homes(
+    let (assignment, physical, physical_preflight, transfers) = assign_lowering_homes(
         core,
         &inventory,
         &demand,
@@ -503,12 +806,16 @@ where
     let (plan, report) = freeze_lowering_plan(
         core,
         &inventory,
+        preflight,
+        ambient,
         assignment,
+        physical,
+        physical_preflight,
         transfers,
         options,
         instrumentation,
     )?;
-    let program = instrument_lowering_phase(
+    let constructed = instrument_lowering_phase(
         instrumentation,
         LoweringMeasurementPhase::Construction,
         || {
@@ -517,13 +824,16 @@ where
             })
         },
     )?;
+    let (program, command_map) = constructed.into_parts();
     instrument_lowering_phase(
         instrumentation,
         LoweringMeasurementPhase::Reconciliation,
         || {
-            verify_constructed_control_recipes(core, &plan, &program).map_err(|diagnostics| {
-                LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
-            })
+            verify_constructed_control_recipes(core, &plan, &program, &command_map).map_err(
+                |diagnostics| {
+                    LoweringFailure::after_plan(LoweringPhase::Construction, diagnostics, &report)
+                },
+            )
         },
     )?;
     instrument_lowering_phase(
@@ -535,7 +845,7 @@ where
             })
         },
     )?;
-    let map = report.map();
+    let map = report.map(&command_map);
     Ok(LoweringOutput {
         program,
         map,
@@ -543,12 +853,25 @@ where
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the lowering analysis boundary instruments each dependency-ordered phase explicitly"
+)]
 fn analyze_lowering_request<I>(
     core: &CoreProgram,
     sources: &SourceContext,
     options: &LoweringOptions,
     instrumentation: &mut I,
-) -> Result<(SemanticInventory, RuntimeDemand, Option<LivenessResult>), LoweringFailure>
+) -> Result<
+    (
+        SemanticInventory,
+        TargetPreflight,
+        CoreAmbientAnalysis,
+        RuntimeDemand,
+        Option<LivenessResult>,
+    ),
+    LoweringFailure,
+>
 where
     I: LoweringInstrumentation,
 {
@@ -575,11 +898,47 @@ where
             })
         },
     )?;
-    instrument_lowering_phase(instrumentation, LoweringMeasurementPhase::Legality, || {
-        audit_legality(core, &inventory).map_err(|diagnostics| {
-            LoweringFailure::before_plan(LoweringPhase::Legality, diagnostics)
-        })
-    })?;
+    let command_limits =
+        instrument_lowering_phase(instrumentation, LoweringMeasurementPhase::Legality, || {
+            audit_legality(
+                core,
+                &inventory,
+                options.target(),
+                options.command_limit_assumptions(),
+            )
+            .map_err(|diagnostics| {
+                LoweringFailure::before_plan(LoweringPhase::Legality, diagnostics)
+            })
+        })?;
+    let ambient = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::AmbientAnalysis,
+        || {
+            let ambient = CoreAmbientAnalysis::analyze(core).map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, ambient_diagnostics(&error))
+            })?;
+            ambient.verify(core).map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, ambient_diagnostics(&error))
+            })?;
+            Ok(ambient)
+        },
+    )?;
+    let preflight = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::TargetPreflight,
+        || {
+            let preflight =
+                TargetPreflight::new(core, &inventory, options.target(), command_limits).map_err(
+                    |diagnostics| {
+                        LoweringFailure::before_plan(LoweringPhase::Legality, diagnostics)
+                    },
+                )?;
+            preflight.verify(core, &inventory).map_err(|diagnostics| {
+                LoweringFailure::before_plan(LoweringPhase::Legality, diagnostics)
+            })?;
+            Ok(preflight)
+        },
+    )?;
     let demand = instrument_lowering_phase(
         instrumentation,
         LoweringMeasurementPhase::RuntimeDemand,
@@ -595,29 +954,23 @@ where
             })
         },
     )?;
-    let liveness = match options.optimization_level() {
-        MinecraftOptimizationLevel::None => {
-            instrumentation.skipped(
-                LoweringMeasurementPhase::Liveness,
-                "physical-optimization-disabled",
-            );
-            None
-        }
-        MinecraftOptimizationLevel::Baseline => Some(instrument_lowering_phase(
-            instrumentation,
-            LoweringMeasurementPhase::Liveness,
-            || {
-                LivenessResult::for_baseline(core, &inventory, &demand, LivenessLimits::derived())
-                    .map_err(|error| {
-                        LoweringFailure::before_plan(
-                            LoweringPhase::Planning,
-                            liveness_diagnostics(&error),
-                        )
-                    })
-            },
-        )?),
-    };
-    Ok((inventory, demand, liveness))
+    let liveness = Some(instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::Liveness,
+        || {
+            LivenessResult::for_level(
+                core,
+                &inventory,
+                &demand,
+                options.optimization_level(),
+                LivenessLimits::derived(),
+            )
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, liveness_diagnostics(&error))
+            })
+        },
+    )?);
+    Ok((inventory, preflight, ambient, demand, liveness))
 }
 
 fn assign_lowering_homes<I>(
@@ -627,7 +980,15 @@ fn assign_lowering_homes<I>(
     liveness: Option<&LivenessResult>,
     options: &LoweringOptions,
     instrumentation: &mut I,
-) -> Result<(HomeAssignment, EdgeTransferPlan), LoweringFailure>
+) -> Result<
+    (
+        HomeAssignment,
+        PhysicalRealizationPlan,
+        PhysicalPreflight,
+        EdgeTransferPlan,
+    ),
+    LoweringFailure,
+>
 where
     I: LoweringInstrumentation,
 {
@@ -641,13 +1002,44 @@ where
                     core,
                     inventory,
                     demand,
-                    liveness.expect("baseline liveness was constructed in the preceding phase"),
+                    liveness.expect("physical liveness was constructed in the preceding phase"),
                 ),
             }
             .map_err(|error| {
                 LoweringFailure::before_plan(
                     LoweringPhase::Planning,
                     assignment_diagnostics(&error),
+                )
+            })
+        },
+    )?;
+    let physical = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::PhysicalRealizations,
+        || {
+            PhysicalRealizationPlan::for_score_compatibility(
+                core,
+                inventory,
+                &assignment,
+                liveness,
+                PhysicalPlanningLimits::DEFAULT,
+            )
+            .map_err(|error| {
+                LoweringFailure::before_plan(
+                    LoweringPhase::Planning,
+                    physical_plan_diagnostics(&error),
+                )
+            })
+        },
+    )?;
+    let physical_preflight = instrument_lowering_phase(
+        instrumentation,
+        LoweringMeasurementPhase::PhysicalPreflight,
+        || {
+            PhysicalPreflight::new(options.target(), &physical).map_err(|error| {
+                LoweringFailure::before_plan(
+                    LoweringPhase::Planning,
+                    physical_preflight_diagnostics(error),
                 )
             })
         },
@@ -669,13 +1061,21 @@ where
             })
         },
     )?;
-    Ok((assignment, transfers))
+    Ok((assignment, physical, physical_preflight, transfers))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "freezing consumes each independently verified immutable phase product exactly once"
+)]
 fn freeze_lowering_plan<I>(
     core: &CoreProgram,
     inventory: &SemanticInventory,
+    preflight: TargetPreflight,
+    ambient: CoreAmbientAnalysis,
     assignment: HomeAssignment,
+    physical: PhysicalRealizationPlan,
+    physical_preflight: PhysicalPreflight,
     transfers: EdgeTransferPlan,
     options: &LoweringOptions,
     instrumentation: &mut I,
@@ -701,25 +1101,33 @@ where
     )?;
     let resources =
         instrument_lowering_phase(instrumentation, LoweringMeasurementPhase::Resources, || {
-            ResourceInventory::for_control_plan(core, inventory, &transfers, &control, options)
-                .map_err(|error| {
-                    LoweringFailure::before_plan(
-                        LoweringPhase::Planning,
-                        resource_diagnostics(&error),
-                    )
-                })
+            ResourceInventory::for_control_plan(
+                core, inventory, &transfers, &control, &preflight, options,
+            )
+            .map_err(|error| {
+                LoweringFailure::before_plan(LoweringPhase::Planning, resource_diagnostics(&error))
+            })
         })?;
     let (plan, report) = instrument_lowering_phase(
         instrumentation,
         LoweringMeasurementPhase::PlanFreeze,
         || {
             let plan = LoweringPlan::from_selected_parts(
-                core, options, assignment, transfers, control, resources,
+                core,
+                options,
+                preflight,
+                ambient,
+                assignment,
+                physical,
+                physical_preflight,
+                transfers,
+                control,
+                resources,
             )
             .map_err(|error| {
                 LoweringFailure::before_plan(LoweringPhase::Planning, finish_diagnostics(error))
             })?;
-            let report = plan.report();
+            let report = plan.report(core);
             Ok::<_, LoweringFailure>((plan, report))
         },
     )?;
@@ -754,6 +1162,30 @@ fn liveness_diagnostics(error: &LivenessError) -> Diagnostics {
     one_diagnostic(Diagnostic::new(
         "lower.liveness-invariant",
         format!("Minecraft liveness computation failed: {error:?}"),
+        OriginId::UNKNOWN,
+    ))
+}
+
+fn physical_preflight_diagnostics(error: PhysicalPreflightError) -> Diagnostics {
+    one_diagnostic(Diagnostic::new(
+        "lower.physical-preflight-invariant",
+        format!("Minecraft physical preflight failed: {error}"),
+        OriginId::UNKNOWN,
+    ))
+}
+
+fn physical_plan_diagnostics(error: &PhysicalPlanError) -> Diagnostics {
+    one_diagnostic(Diagnostic::new(
+        "lower.physical-realization-invariant",
+        format!("Minecraft physical realization planning failed: {error}"),
+        OriginId::UNKNOWN,
+    ))
+}
+
+fn ambient_diagnostics(error: &crate::ir::core::CoreAmbientAnalysisError) -> Diagnostics {
+    one_diagnostic(Diagnostic::new(
+        "lower.ambient-invariant",
+        format!("Core ambient-context analysis failed: {error}"),
         OriginId::UNKNOWN,
     ))
 }
@@ -855,7 +1287,6 @@ mod tests {
     #[derive(Debug)]
     enum TimedLoweringOutcome {
         Completed { elapsed_nanoseconds: u128 },
-        Skipped { reason: &'static str },
     }
 
     #[derive(Debug)]
@@ -892,14 +1323,6 @@ mod tests {
                 outcome: TimedLoweringOutcome::Completed {
                     elapsed_nanoseconds: started.elapsed().as_nanos(),
                 },
-            });
-        }
-
-        fn skipped(&mut self, phase: LoweringMeasurementPhase, reason: &'static str) {
-            assert!(self.active.is_none());
-            self.samples.push(TimedLoweringSample {
-                phase,
-                outcome: TimedLoweringOutcome::Skipped { reason },
             });
         }
     }
@@ -996,9 +1419,8 @@ mod tests {
         let convenience = output.analyze_target_execution(limits).unwrap();
         let mut roots = output
             .map
-            .functions
-            .iter()
-            .map(|lowered| {
+            .exported_functions()
+            .map(|(_, lowered)| {
                 let function = output
                     .program
                     .functions()
@@ -1022,16 +1444,17 @@ mod tests {
 
         assert_eq!(convenience, explicit);
         let contract = output.map().execution_contract().command_limits();
-        assert_eq!(contract.assumptions(), assumptions);
+        assert_eq!(contract.configured_assumptions(), assumptions);
         assert_eq!(
             contract.target_defaults(),
             CommandLimitAssumptions::for_target(JavaEditionTarget::V26_2)
         );
-        assert!(
-            output
-                .dump_lowering()
-                .contains("CallerBoundedToAssumptions")
-        );
+        assert_eq!(contract.minimum_max_command_forks(), 0);
+        let dump = output.dump_lowering();
+        assert!(dump.contains("configured_max_command_sequence_length: 10"));
+        assert!(dump.contains("configured_max_command_forks: 4"));
+        assert!(dump.contains("target_default_max_command_forks: 65536"));
+        assert!(dump.contains("derived_minimum_max_command_forks: 0"));
         assert_eq!(convenience.assumptions(), assumptions);
         assert_eq!(
             convenience.target_defaults(),
@@ -1057,9 +1480,13 @@ mod tests {
             LoweringMeasurementPhase::Options,
             LoweringMeasurementPhase::SemanticInventory,
             LoweringMeasurementPhase::Legality,
+            LoweringMeasurementPhase::AmbientAnalysis,
+            LoweringMeasurementPhase::TargetPreflight,
             LoweringMeasurementPhase::RuntimeDemand,
             LoweringMeasurementPhase::Liveness,
             LoweringMeasurementPhase::Assignment,
+            LoweringMeasurementPhase::PhysicalRealizations,
+            LoweringMeasurementPhase::PhysicalPreflight,
             LoweringMeasurementPhase::EdgeTransfers,
             LoweringMeasurementPhase::ControlRecipes,
             LoweringMeasurementPhase::Resources,
@@ -1092,10 +1519,6 @@ mod tests {
                         "lowering-phase level={level:?} phase={:?} status=completed elapsed_nanoseconds={elapsed_nanoseconds}",
                         sample.phase,
                     ),
-                    TimedLoweringOutcome::Skipped { reason } => eprintln!(
-                        "lowering-phase level={level:?} phase={:?} status=skipped reason={reason}",
-                        sample.phase,
-                    ),
                 }
             }
 
@@ -1106,14 +1529,6 @@ mod tests {
                     .map(|sample| sample.phase)
                     .collect::<Vec<_>>(),
                 phases
-            );
-            assert_eq!(
-                recorder
-                    .samples
-                    .iter()
-                    .filter(|sample| matches!(sample.outcome, TimedLoweringOutcome::Skipped { .. }))
-                    .count(),
-                usize::from(level == MinecraftOptimizationLevel::None)
             );
             assert_eq!(output.report(), expected.report());
             assert_eq!(

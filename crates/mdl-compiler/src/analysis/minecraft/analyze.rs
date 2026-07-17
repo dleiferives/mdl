@@ -443,19 +443,20 @@ fn graph_failure(error: GraphBuildError) -> TargetExecutionAnalysisFailure {
 mod tests {
     use crate::entity::EntityId;
     use crate::ir::minecraft::{
-        AtMostOneSelector, CommandKind, CommandNode, Condition, DimensionId, ExecuteCommand,
-        ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FakeScoreHolder, FunctionCall,
-        FunctionResourceId, FunctionTagEntry, FunctionTagMerge, FunctionTagResourceId,
-        InternalCallableRef, MinecraftProgramBuilder, ObjectiveName, ReturnCommand, ScoreCommand,
-        ScoreHolders, ScoreSelection, UnboundedSelector, UnsafeRawCommand,
+        AtMostOneSelector, CommandKind, CommandNode, Condition, DimensionId, EntitySelector,
+        ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FakeScoreHolder,
+        FunctionCall, FunctionResourceId, FunctionTagEntry, FunctionTagMerge,
+        FunctionTagResourceId, InternalCallableRef, MinecraftProgramBuilder, ObjectiveName,
+        ReturnCommand, SayCommand, SayMessage, ScoreCommand, ScoreHolders, ScoreSelection,
+        UnboundedSelector, UnsafeRawCommand,
     };
     use crate::source::OriginId;
     use crate::target::JavaEditionTarget;
 
     use super::*;
     use crate::analysis::minecraft::{
-        AnalysisArithmeticCaps, CommandLimitStatus, CountUpperKind, NoFiniteBoundReason,
-        TargetExecutionAnalysisPhase,
+        AnalysisArithmeticCaps, CommandLimitStatus, CommandOutcome, CountUpperKind,
+        NoFiniteBoundReason, ReturnValueClass, TargetExecutionAnalysisPhase,
     };
 
     fn assumptions() -> CommandLimitAssumptions {
@@ -492,6 +493,14 @@ mod tests {
         .unwrap()
     }
 
+    fn say(message: &str) -> CommandNode {
+        CommandNode::new(
+            CommandKind::Say(SayCommand::new(SayMessage::new(message).unwrap())),
+            OriginId::UNKNOWN,
+        )
+        .unwrap()
+    }
+
     fn call(target: impl Into<crate::ir::minecraft::CallableRef>) -> CommandNode {
         CommandNode::new(
             CommandKind::Function(FunctionCall::new(target.into())),
@@ -509,6 +518,60 @@ mod tests {
             OriginId::UNKNOWN,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn structured_say_cost_and_exact_native_result_reach_global_solver() {
+        let mut builder = MinecraftProgramBuilder::new(JavaEditionTarget::V26_2);
+        let entry = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:say_entry").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let predicate = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:say_predicate").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let mut body = builder.begin_function(entry).unwrap();
+        body.push(execute(
+            ExecuteModifierKind::If(Condition::Function(predicate)),
+            score(),
+        ))
+        .unwrap();
+        body.push(score()).unwrap();
+        body.finish();
+        let mut body = builder.begin_function(predicate).unwrap();
+        body.push(
+            CommandNode::new(
+                CommandKind::Return(ReturnCommand::run(say("hello"))),
+                OriginId::UNKNOWN,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        body.finish();
+        let program = builder.finish().unwrap();
+
+        let report = analyze_target_execution(
+            &program,
+            &SourceContext::new(),
+            &[TargetExecutionRoot::Function(entry)],
+            assumptions(),
+            limits(1_000, 1_000),
+        )
+        .unwrap();
+        let root = &report.roots()[0];
+        assert_eq!(root.sequence_operations(), CountBound::exact(5));
+        assert_eq!(root.score_nbt_command_executions(), CountBound::exact(2));
+        assert_eq!(report.census().say_commands(), 1);
+        assert_eq!(report.census().raw_commands(), 0);
+        assert_eq!(
+            report.functions()[usize::try_from(predicate.index()).unwrap()].steps()[0].outcomes(),
+            &[CommandOutcome::Return(ReturnValueClass::NonZero)]
+        );
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -882,6 +945,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bounded_execute_contexts_keep_finite_body_cost_and_prefix_peak() {
+        let mut builder = MinecraftProgramBuilder::new(JavaEditionTarget::V26_2);
+        let entry = builder
+            .declare_function(
+                FunctionResourceId::parse("mdl:bounded_fork").unwrap(),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let selector = EntitySelector::armor_stands(vec![], Some(2))
+            .unwrap()
+            .into();
+        let mut body = builder.begin_function(entry).unwrap();
+        body.push(execute(ExecuteModifierKind::As(selector), score()))
+            .unwrap();
+        body.push(score()).unwrap();
+        body.finish();
+
+        let report = analyze_target_execution(
+            &builder.finish().unwrap(),
+            &SourceContext::new(),
+            &[TargetExecutionRoot::Function(entry)],
+            assumptions(),
+            limits(1_000, 1_000),
+        )
+        .unwrap();
+        let root = &report.roots()[0];
+        assert_eq!(
+            root.sequence_operations().upper().kind(),
+            CountUpperKind::Finite(5)
+        );
+        assert_eq!(
+            root.score_nbt_command_executions().upper().kind(),
+            CountUpperKind::Finite(3)
+        );
+        assert_eq!(root.maximum_chain_expansion().lower(), 0);
+        assert_eq!(
+            root.maximum_chain_expansion().upper().kind(),
+            CountUpperKind::Finite(2)
+        );
+        assert_eq!(
+            report.functions()[usize::try_from(entry.index()).unwrap()].steps()[0]
+                .maximum_chain_expansion()
+                .upper()
+                .kind(),
+            CountUpperKind::Finite(2)
+        );
     }
 
     #[test]

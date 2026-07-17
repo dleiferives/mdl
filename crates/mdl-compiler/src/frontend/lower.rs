@@ -8,14 +8,19 @@ use std::fmt;
 use std::cell::Cell;
 
 use super::hir::{
-    CheckedFrontendOutput, FunctionResult, HirBlock, HirCall, HirComparisonOp, HirExpression,
-    HirExpressionKind, HirFunction, HirIf, HirStatement, HirStatementKind, LocalId,
-    SourceFunctionId, ValueType,
+    CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBlock, HirCall, HirComparisonOp,
+    HirEntityQuery, HirEntityQueryStep, HirExpression, HirExpressionKind, HirExternalOp,
+    HirExternalSemantic, HirFunction, HirIf, HirMinecraftOperationAttributes, HirRun,
+    HirRunModifier, HirStatement, HirStatementKind, LocalId, SourceExternalOpId, SourceFunctionId,
+    SourceRunId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
 use crate::ir::core::{
-    BlockId, BlockTarget, BuildError, CoreProgram, CoreType, FunctionBody, FunctionBuilder,
-    FunctionId, I32Predicate, ProgramError, Terminator, TerminatorKind, ValueId, verify_program,
+    BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
+    CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityQueryDecl, EntityQueryStep,
+    ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder, FunctionId, I32Predicate,
+    InstId, MinecraftOperationAttributes, MinecraftOperationOrigins, ProgramError,
+    RunModifierInstance, TargetFragment, Terminator, TerminatorKind, ValueId, verify_program,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -27,13 +32,114 @@ use crate::source::{OriginId, SourceContext};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceToCoreMap {
     functions: Box<[(SourceFunctionId, FunctionId)]>,
+    external_operations: Box<[(SourceExternalOpId, ExternalOpId)]>,
+    semantic_operations: Box<[Option<SourceSemanticCoreOccurrence>]>,
+    run_scopes: Box<[Option<crate::ir::core::RunScopeId>]>,
+}
+
+/// Exact generated Core identity of one typed source-semantic operation occurrence.
+///
+/// Unsafe source externals and structured run-scope invocations deliberately do not
+/// inhabit this map. `external` identifies the normalized Core declaration, while
+/// `function` and `instruction` identify its one attached invocation occurrence.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SourceSemanticCoreOccurrence {
+    external: ExternalOpId,
+    function: FunctionId,
+    instruction: InstId,
+}
+
+impl SourceSemanticCoreOccurrence {
+    const fn new(external: ExternalOpId, function: FunctionId, instruction: InstId) -> Self {
+        Self {
+            external,
+            function,
+            instruction,
+        }
+    }
+
+    /// Returns the normalized Core external declaration used by this occurrence.
+    #[must_use]
+    pub const fn external(self) -> ExternalOpId {
+        self.external
+    }
+
+    /// Returns the Core function containing this occurrence.
+    #[must_use]
+    pub const fn function(self) -> FunctionId {
+        self.function
+    }
+
+    /// Returns the function-local Core instruction identity of this occurrence.
+    #[must_use]
+    pub const fn instruction(self) -> InstId {
+        self.instruction
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExternalToCoreMap {
+    operations: Box<[(SourceExternalOpId, ExternalOpId)]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RunCoreLink {
+    function: FunctionId,
+    operation: Option<ExternalOpId>,
+    scope: Option<crate::ir::core::RunScopeId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RunToCoreMap {
+    links: Box<[RunCoreLink]>,
+}
+
+impl RunToCoreMap {
+    fn link(&self, source: SourceRunId) -> Option<RunCoreLink> {
+        self.links.get(source.as_usize()?).copied()
+    }
+}
+
+impl ExternalToCoreMap {
+    fn new(operations: Vec<(SourceExternalOpId, ExternalOpId)>) -> Self {
+        Self {
+            operations: operations.into_boxed_slice(),
+        }
+    }
+
+    fn operation(&self, source: SourceExternalOpId) -> Option<ExternalOpId> {
+        let (mapped_source, operation) = self.operations.get(source.as_usize()?).copied()?;
+        (mapped_source == source).then_some(operation)
+    }
 }
 
 impl SourceToCoreMap {
     fn new(functions: Vec<(SourceFunctionId, FunctionId)>) -> Self {
         Self {
             functions: functions.into_boxed_slice(),
+            external_operations: Box::new([]),
+            semantic_operations: Box::new([]),
+            run_scopes: Box::new([]),
         }
+    }
+
+    fn install_external_correlations(
+        &mut self,
+        externals: Vec<(SourceExternalOpId, ExternalOpId)>,
+        operations: Vec<Option<SourceSemanticCoreOccurrence>>,
+    ) {
+        self.external_operations = externals.into_boxed_slice();
+        self.semantic_operations = operations.into_boxed_slice();
+    }
+
+    fn install_run_correlations(&mut self, runs: &RunToCoreMap) {
+        self.run_scopes = runs.links.iter().map(|link| link.scope).collect();
+    }
+
+    /// Returns the generated Core run-scope identity for a source run with modifiers.
+    #[must_use]
+    pub fn run_scope(&self, source: SourceRunId) -> Option<crate::ir::core::RunScopeId> {
+        self.run_scopes.get(source.as_usize()?).copied().flatten()
     }
 
     /// Returns the generated Core identity for one source function.
@@ -48,6 +154,52 @@ impl SourceToCoreMap {
     #[must_use]
     pub fn functions(&self) -> impl ExactSizeIterator<Item = (SourceFunctionId, FunctionId)> + '_ {
         self.functions.iter().copied()
+    }
+
+    /// Returns the generated Core declaration for one general source external.
+    ///
+    /// This includes unsafe source commands. Structured run scopes remain in their
+    /// distinct [`SourceRunId`] identity domain and therefore never appear here.
+    #[must_use]
+    pub fn external_operation(&self, source: SourceExternalOpId) -> Option<ExternalOpId> {
+        let (mapped_source, external) =
+            self.external_operations.get(source.as_usize()?).copied()?;
+        (mapped_source == source).then_some(external)
+    }
+
+    /// Iterates general source-external declaration correlations in canonical source order.
+    #[must_use]
+    pub fn external_operations(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (SourceExternalOpId, ExternalOpId)> + '_ {
+        self.external_operations.iter().copied()
+    }
+
+    /// Returns the exact generated Core occurrence for one typed source-semantic
+    /// external. Unsafe externals, unreachable source operations, and identities
+    /// outside this compilation return `None`.
+    #[must_use]
+    pub fn semantic_operation(
+        &self,
+        source: SourceExternalOpId,
+    ) -> Option<SourceSemanticCoreOccurrence> {
+        self.semantic_operations
+            .get(source.as_usize()?)
+            .copied()
+            .flatten()
+    }
+
+    /// Iterates all generated typed source-semantic occurrences in canonical source
+    /// external-operation order.
+    pub fn semantic_operations(
+        &self,
+    ) -> impl Iterator<Item = (SourceExternalOpId, SourceSemanticCoreOccurrence)> + '_ {
+        self.semantic_operations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, occurrence)| {
+                Some((SourceExternalOpId::from_index(index)?, (*occurrence)?))
+            })
     }
 
     /// Returns the number of correlated source functions.
@@ -104,6 +256,46 @@ pub enum CoreGenerationInvariant {
     MissingFunctionMapping {
         /// Missing source function.
         source_function: SourceFunctionId,
+    },
+    /// A source external operation was absent from the predeclared Core map.
+    MissingExternalMapping {
+        /// Missing source external operation.
+        source_external: SourceExternalOpId,
+    },
+    /// A typed source-semantic operation did not correlate to exactly its generated
+    /// attached Core invocation.
+    InvalidSemanticOperationCorrelation {
+        /// Source external operation with the invalid correlation.
+        source_external: SourceExternalOpId,
+    },
+    /// The typed semantic-correlation inventory was not dense over source externals.
+    SemanticOperationCorrelationCount {
+        /// Number of source external-operation slots.
+        expected: usize,
+        /// Number of retained correlation slots.
+        actual: usize,
+    },
+    /// A structured run scope was absent from the predeclared Core map.
+    MissingRunMapping {
+        /// Missing source run scope.
+        source_run: SourceRunId,
+    },
+    /// A lowered run invocation exposed a non-`Void` result unexpectedly.
+    InvalidRunScope {
+        /// Invalid source run scope.
+        source_run: SourceRunId,
+    },
+    /// HIR run-scope count disagreed with its independently traversed inventory.
+    RunInventoryCount {
+        /// Count recorded by checked HIR.
+        expected: usize,
+        /// Count found by deterministic traversal.
+        actual: usize,
+    },
+    /// Verified HIR retained an invalid unsafe command fragment.
+    InvalidUnsafeCommand {
+        /// Invalid source external operation.
+        source_external: SourceExternalOpId,
     },
     /// A checked function name could not be recovered from its provenance.
     MissingFunctionName {
@@ -171,6 +363,22 @@ pub enum CoreGenerationInvariant {
         /// Source function with the invalid path.
         source_function: SourceFunctionId,
     },
+    /// Target-independent Core ambient analysis rejected generated Core.
+    AmbientAnalysis {
+        /// Concrete analysis invariant failure.
+        error: CoreAmbientAnalysisError,
+    },
+    /// Independent HIR and unoptimized Core ambient requirements disagreed.
+    AmbientRequirementMismatch {
+        /// Source function whose direct Core mapping disagreed.
+        source_function: SourceFunctionId,
+        /// Generated Core function.
+        core_function: FunctionId,
+        /// Requirement inferred over checked HIR.
+        expected: crate::ir::semantic::AmbientContextRequirements,
+        /// Requirement independently inferred over Core.
+        actual: crate::ir::semantic::AmbientContextRequirements,
+    },
 }
 
 impl fmt::Display for CoreGenerationInvariant {
@@ -179,6 +387,31 @@ impl fmt::Display for CoreGenerationInvariant {
             Self::MissingFunctionMapping { source_function } => {
                 write!(formatter, "missing Core mapping for {source_function:?}")
             }
+            Self::MissingExternalMapping { source_external } => {
+                write!(formatter, "missing Core mapping for {source_external:?}")
+            }
+            Self::InvalidSemanticOperationCorrelation { source_external } => write!(
+                formatter,
+                "invalid typed semantic Core correlation for {source_external:?}"
+            ),
+            Self::SemanticOperationCorrelationCount { expected, actual } => write!(
+                formatter,
+                "source inventories {expected} external operations but the typed semantic Core correlation has {actual} slots"
+            ),
+            Self::MissingRunMapping { source_run } => {
+                write!(formatter, "missing Core mapping for {source_run:?}")
+            }
+            Self::InvalidRunScope { source_run } => {
+                write!(formatter, "invalid modifier plan for {source_run:?}")
+            }
+            Self::RunInventoryCount { expected, actual } => write!(
+                formatter,
+                "HIR inventories {expected} run scopes but traversal found {actual}"
+            ),
+            Self::InvalidUnsafeCommand { source_external } => write!(
+                formatter,
+                "invalid unsafe command reached Core lowering for {source_external:?}"
+            ),
             Self::MissingFunctionName { source_function } => {
                 write!(formatter, "missing source name for {source_function:?}")
             }
@@ -231,6 +464,21 @@ impl fmt::Display for CoreGenerationInvariant {
                 formatter,
                 "value-returning function {source_function:?} retained a fallthrough path"
             ),
+            Self::AmbientAnalysis { error } => {
+                write!(
+                    formatter,
+                    "cannot infer generated Core ambient requirements: {error}"
+                )
+            }
+            Self::AmbientRequirementMismatch {
+                source_function,
+                core_function,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "ambient requirements disagree for {source_function:?}/{core_function:?}: HIR {expected:?}, Core {actual:?}"
+            ),
         }
     }
 }
@@ -264,6 +512,20 @@ pub enum CoreGenerationFailure {
         /// Source function being declared.
         source_function: SourceFunctionId,
         /// Concrete Core declaration failure.
+        error: ProgramError,
+    },
+    /// A source external operation could not be linked into Core inventories.
+    ExternalDeclaration {
+        /// Source external operation being linked.
+        source_external: SourceExternalOpId,
+        /// Concrete Core inventory failure.
+        error: ProgramError,
+    },
+    /// A structured run scope could not be linked into Core inventories.
+    RunDeclaration {
+        /// Source run scope being linked.
+        source_run: SourceRunId,
+        /// Concrete Core inventory failure.
         error: ProgramError,
     },
     /// The Core body builder rejected a construction request.
@@ -315,6 +577,17 @@ impl fmt::Display for CoreGenerationFailure {
                 formatter,
                 "cannot declare Core function for {source_function:?}: {error}"
             ),
+            Self::ExternalDeclaration {
+                source_external,
+                error,
+            } => write!(
+                formatter,
+                "cannot declare Core external operation for {source_external:?}: {error}"
+            ),
+            Self::RunDeclaration { source_run, error } => write!(
+                formatter,
+                "cannot declare Core run scope for {source_run:?}: {error}"
+            ),
             Self::Construction {
                 source_function,
                 error,
@@ -361,7 +634,10 @@ impl fmt::Display for CoreGenerationFailure {
 impl Error for CoreGenerationFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Declaration { error, .. } | Self::Definition { error, .. } => Some(error),
+            Self::Declaration { error, .. }
+            | Self::ExternalDeclaration { error, .. }
+            | Self::RunDeclaration { error, .. }
+            | Self::Definition { error, .. } => Some(error),
             Self::Construction { error, .. } => Some(error),
             Self::BodyVerification { diagnostics, .. }
             | Self::ProgramVerification { diagnostics } => Some(diagnostics),
@@ -416,12 +692,308 @@ pub(super) fn lower_hir(
     max_join_edge_operands: usize,
 ) -> Result<CoreGenerationOutput, CoreGenerationFailure> {
     let mut program = CoreProgram::new();
-    let mut correlations = Vec::with_capacity(checked.function_count());
     let mut budget = CoreGenerationBudget::new(max_join_edge_operands);
+    let mut source_to_core = declare_functions(&mut program, checked, sources)?;
+    let run_to_core = declare_run_scopes(&mut program, checked)?;
+    let external_to_core = declare_external_operations(&mut program, checked)?;
+    let mut semantic_operations = vec![None; checked.external_operation_count()];
+    let links = CoreLinks {
+        functions: &source_to_core,
+        externals: &external_to_core,
+        runs: &run_to_core,
+    };
 
+    for function in checked.functions() {
+        let core_function =
+            source_to_core
+                .function(function.id)
+                .ok_or(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::MissingFunctionMapping {
+                        source_function: function.id,
+                    },
+                ))?;
+        let body = BodyLowerer::new(
+            BodyLoweringContext::new(&program, sources, checked, links),
+            function,
+            core_function,
+            &mut budget,
+            &mut semantic_operations,
+        )?
+        .lower()?;
+        program
+            .define_function(core_function, body)
+            .map_err(|error| CoreGenerationFailure::Definition {
+                source_function: function.id,
+                error,
+            })?;
+    }
+
+    for (owner, run) in collect_run_scopes(checked) {
+        let link = run_to_core
+            .link(run.id)
+            .ok_or(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::MissingRunMapping { source_run: run.id },
+            ))?;
+        let body = BodyLowerer::new(
+            BodyLoweringContext::new(&program, sources, checked, links),
+            owner,
+            link.function,
+            &mut budget,
+            &mut semantic_operations,
+        )?
+        .lower_run_body(&run.body)?;
+        program
+            .define_function(link.function, body)
+            .map_err(|error| CoreGenerationFailure::RunDeclaration {
+                source_run: run.id,
+                error,
+            })?;
+    }
+
+    verify_program(&program, sources)
+        .map_err(|diagnostics| CoreGenerationFailure::ProgramVerification { diagnostics })?;
+    verify_source_semantic_correlations(
+        checked,
+        &program,
+        &external_to_core,
+        &semantic_operations,
+    )?;
+    let ambient = CoreAmbientAnalysis::analyze(&program).map_err(|error| {
+        CoreGenerationFailure::Invariant(CoreGenerationInvariant::AmbientAnalysis { error })
+    })?;
+    for (source_function, core_function) in source_to_core.functions() {
+        let expected = checked
+            .function_behavior(source_function)
+            .expect("verified checked HIR has one dense behavior summary")
+            .required_ambient_context();
+        let actual = ambient
+            .requirement(core_function)
+            .expect("Core ambient analysis is dense over generated functions");
+        if expected != actual {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::AmbientRequirementMismatch {
+                    source_function,
+                    core_function,
+                    expected,
+                    actual,
+                },
+            ));
+        }
+    }
+    source_to_core
+        .install_external_correlations(external_to_core.operations.to_vec(), semantic_operations);
+    source_to_core.install_run_correlations(&run_to_core);
+    Ok(CoreGenerationOutput {
+        program,
+        source_to_core,
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "declaration exhaustively translates the closed ordered modifier vocabulary"
+)]
+fn declare_run_scopes(
+    program: &mut CoreProgram,
+    checked: &CheckedFrontendOutput,
+) -> Result<RunToCoreMap, CoreGenerationFailure> {
+    let scopes = collect_run_scopes(checked);
+    let mut links = Vec::with_capacity(scopes.len());
+    for (_owner, run) in scopes {
+        if run.id.as_usize() != Some(links.len()) {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::MissingRunMapping { source_run: run.id },
+            ));
+        }
+        let function = program
+            .declare_function(
+                Some(format!("run{}", run.id.index())),
+                vec![],
+                vec![],
+                run.origin,
+            )
+            .map_err(|error| CoreGenerationFailure::RunDeclaration {
+                source_run: run.id,
+                error,
+            })?;
+        let (operation, scope) = if run.modifiers.is_empty() {
+            (None, None)
+        } else {
+            let mut modifiers = Vec::with_capacity(run.modifiers.len());
+            for modifier in &run.modifiers {
+                let lowered = match modifier {
+                    HirRunModifier::As { query, origin } | HirRunModifier::At { query, origin } => {
+                        let query_id = program
+                            .declare_entity_query(lower_entity_query_decl(query))
+                            .map_err(|error| CoreGenerationFailure::RunDeclaration {
+                                source_run: run.id,
+                                error,
+                            })?;
+                        if matches!(modifier, HirRunModifier::As { .. }) {
+                            RunModifierInstance::AsEntityQuery {
+                                query: query_id,
+                                origin: *origin,
+                            }
+                        } else {
+                            RunModifierInstance::AtEntityQuery {
+                                query: query_id,
+                                origin: *origin,
+                            }
+                        }
+                    }
+                    HirRunModifier::AtExecutor { kind, origin, .. } => {
+                        RunModifierInstance::AtExecutor {
+                            kind: *kind,
+                            origin: *origin,
+                        }
+                    }
+                    HirRunModifier::Positioned { position, origin } => {
+                        RunModifierInstance::Positioned {
+                            position: position.clone(),
+                            origin: *origin,
+                        }
+                    }
+                    HirRunModifier::Rotated { rotation, origin } => RunModifierInstance::Rotated {
+                        rotation: rotation.clone(),
+                        origin: *origin,
+                    },
+                    HirRunModifier::In { dimension, origin } => RunModifierInstance::In {
+                        dimension: *dimension,
+                        origin: *origin,
+                    },
+                    HirRunModifier::Anchored { anchor, origin } => RunModifierInstance::Anchored {
+                        anchor: *anchor,
+                        origin: *origin,
+                    },
+                    HirRunModifier::Align { axes, origin } => RunModifierInstance::Align {
+                        axes: *axes,
+                        origin: *origin,
+                    },
+                };
+                modifiers.push(lowered);
+            }
+            let scope = program
+                .declare_run_scope(modifiers, function, run.origin)
+                .map_err(|error| CoreGenerationFailure::RunDeclaration {
+                    source_run: run.id,
+                    error,
+                })?;
+            let operation = Some(
+                program
+                    .declare_external_op(
+                        ExternalSemanticBinding::MinecraftRunScope(scope),
+                        vec![],
+                        vec![],
+                        run.origin,
+                    )
+                    .map_err(|error| CoreGenerationFailure::RunDeclaration {
+                        source_run: run.id,
+                        error,
+                    })?,
+            );
+            (operation, Some(scope))
+        };
+        links.push(RunCoreLink {
+            function,
+            operation,
+            scope,
+        });
+    }
+    if links.len() != checked.run_scope_count() {
+        return Err(CoreGenerationFailure::Invariant(
+            CoreGenerationInvariant::RunInventoryCount {
+                expected: checked.run_scope_count(),
+                actual: links.len(),
+            },
+        ));
+    }
+    Ok(RunToCoreMap {
+        links: links.into_boxed_slice(),
+    })
+}
+
+fn lower_entity_query_decl(query: &HirEntityQuery) -> EntityQueryDecl {
+    let steps = query
+        .steps
+        .iter()
+        .map(|step| match step {
+            HirEntityQueryStep::Entities {
+                kind,
+                origin,
+                kind_origin,
+            } => EntityQueryStep::Entities {
+                kind: *kind,
+                origin: *origin,
+                kind_origin: *kind_origin,
+            },
+            HirEntityQueryStep::WithTag {
+                tag,
+                origin,
+                value_origin,
+            } => EntityQueryStep::WithTag {
+                tag: tag.clone(),
+                origin: *origin,
+                value_origin: *value_origin,
+            },
+            HirEntityQueryStep::Limit {
+                maximum,
+                origin,
+                value_origin,
+            } => EntityQueryStep::Limit {
+                maximum: *maximum,
+                origin: *origin,
+                value_origin: *value_origin,
+            },
+        })
+        .collect();
+    EntityQueryDecl::new(query.semantic.clone(), steps)
+}
+
+fn collect_run_scopes(output: &CheckedFrontendOutput) -> Vec<(&HirFunction, &HirRun)> {
+    let mut scopes = Vec::with_capacity(output.run_scope_count());
+    for function in output.functions() {
+        collect_run_scopes_in_block(function, &function.body, &mut scopes);
+    }
+    scopes
+}
+
+fn collect_run_scopes_in_block<'a>(
+    owner: &'a HirFunction,
+    block: &'a HirBlock,
+    scopes: &mut Vec<(&'a HirFunction, &'a HirRun)>,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            HirStatementKind::Run(run) => {
+                scopes.push((owner, run));
+                collect_run_scopes_in_block(owner, &run.body, scopes);
+            }
+            HirStatementKind::If(conditional) => {
+                for arm in &conditional.arms {
+                    collect_run_scopes_in_block(owner, &arm.body, scopes);
+                }
+                if let Some(body) = &conditional.else_body {
+                    collect_run_scopes_in_block(owner, body, scopes);
+                }
+            }
+            HirStatementKind::Declaration { .. }
+            | HirStatementKind::Assignment { .. }
+            | HirStatementKind::Call(_)
+            | HirStatementKind::External(_)
+            | HirStatementKind::Return(_) => {}
+        }
+    }
+}
+
+fn declare_functions(
+    program: &mut CoreProgram,
+    checked: &CheckedFrontendOutput,
+    sources: &SourceContext,
+) -> Result<SourceToCoreMap, CoreGenerationFailure> {
     // Signatures are deliberately predeclared before any body is constructed, so
     // forward calls, direct recursion, and mutual recursion all have ordinary Core
     // call targets.
+    let mut correlations = Vec::with_capacity(checked.function_count());
     for function in checked.functions() {
         let name = function_name(sources, function)?;
         let parameters = function
@@ -434,49 +1006,280 @@ pub(super) fn lower_hir(
             FunctionResult::Void => vec![],
             FunctionResult::Value(ty) => vec![core_type(ty)],
         };
+        let linkage = match function.visibility {
+            FunctionVisibility::Private | FunctionVisibility::Public => {
+                CoreFunctionLinkage::Internal
+            }
+            FunctionVisibility::DatapackExport => CoreFunctionLinkage::DatapackExport,
+        };
         let core_function = program
-            .declare_function(Some(name), parameters, results, function.origin)
+            .declare_function_with_linkage(
+                Some(name),
+                linkage,
+                parameters,
+                results,
+                function.origin,
+            )
             .map_err(|error| CoreGenerationFailure::Declaration {
                 source_function: function.id,
                 error,
             })?;
         correlations.push((function.id, core_function));
     }
-    let source_to_core = SourceToCoreMap::new(correlations);
+    Ok(SourceToCoreMap::new(correlations))
+}
 
-    for function in checked.functions() {
-        let core_function =
-            source_to_core
-                .function(function.id)
-                .ok_or(CoreGenerationFailure::Invariant(
-                    CoreGenerationInvariant::MissingFunctionMapping {
-                        source_function: function.id,
+fn declare_external_operations(
+    program: &mut CoreProgram,
+    checked: &CheckedFrontendOutput,
+) -> Result<ExternalToCoreMap, CoreGenerationFailure> {
+    let mut external_correlations = Vec::with_capacity(checked.external_operation_count());
+    for external in checked.external_ops() {
+        let binding = match &external.semantic {
+            HirExternalSemantic::UnsafeMinecraftCommand { command, .. } => {
+                let fragment = TargetFragment::unsafe_minecraft_command(command).map_err(|_| {
+                    CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidUnsafeCommand {
+                            source_external: external.id,
+                        },
+                    )
+                })?;
+                let fragment = program.declare_target_fragment(fragment).map_err(|error| {
+                    CoreGenerationFailure::ExternalDeclaration {
+                        source_external: external.id,
+                        error,
+                    }
+                })?;
+                ExternalSemanticBinding::UnsafeTargetFragment(fragment)
+            }
+            HirExternalSemantic::MinecraftOperation {
+                key,
+                receiver_kind,
+                attributes,
+                call_origin,
+                member_origin,
+                receiver_origin,
+                ..
+            } => {
+                let attributes = match attributes {
+                    HirMinecraftOperationAttributes::Say {
+                        message,
+                        message_origin,
+                    } => MinecraftOperationAttributes::Say {
+                        message: message.clone(),
+                        message_origin: *message_origin,
                     },
-                ))?;
-        let body = BodyLowerer::new(
-            &program,
-            sources,
-            checked,
-            &source_to_core,
-            function,
-            core_function,
-            &mut budget,
-        )?
-        .lower()?;
-        program
-            .define_function(core_function, body)
-            .map_err(|error| CoreGenerationFailure::Definition {
-                source_function: function.id,
+                    HirMinecraftOperationAttributes::Teleport {
+                        position,
+                        component_origins,
+                    } => MinecraftOperationAttributes::Teleport {
+                        position: position.clone(),
+                        component_origins: *component_origins,
+                    },
+                    HirMinecraftOperationAttributes::MoveBy {
+                        offset,
+                        component_origins,
+                    } => MinecraftOperationAttributes::MoveBy {
+                        offset: offset.clone(),
+                        component_origins: *component_origins,
+                    },
+                };
+                let operation = program
+                    .declare_minecraft_operation(
+                        *key,
+                        *receiver_kind,
+                        attributes,
+                        MinecraftOperationOrigins::new(
+                            *call_origin,
+                            *member_origin,
+                            *receiver_origin,
+                        ),
+                    )
+                    .map_err(|error| CoreGenerationFailure::ExternalDeclaration {
+                        source_external: external.id,
+                        error,
+                    })?;
+                ExternalSemanticBinding::MinecraftOperation(operation)
+            }
+        };
+        let operation = program
+            .declare_external_op(binding, vec![], vec![], external.origin)
+            .map_err(|error| CoreGenerationFailure::ExternalDeclaration {
+                source_external: external.id,
                 error,
             })?;
+        external_correlations.push((external.id, operation));
+    }
+    Ok(ExternalToCoreMap::new(external_correlations))
+}
+
+fn verify_source_semantic_correlations(
+    checked: &CheckedFrontendOutput,
+    program: &CoreProgram,
+    externals: &ExternalToCoreMap,
+    semantic_operations: &[Option<SourceSemanticCoreOccurrence>],
+) -> Result<(), CoreGenerationFailure> {
+    let expected = checked.external_operation_count();
+    if semantic_operations.len() != expected || externals.operations.len() != expected {
+        return Err(CoreGenerationFailure::Invariant(
+            CoreGenerationInvariant::SemanticOperationCorrelationCount {
+                expected,
+                actual: semantic_operations.len(),
+            },
+        ));
     }
 
-    verify_program(&program, sources)
-        .map_err(|diagnostics| CoreGenerationFailure::ProgramVerification { diagnostics })?;
-    Ok(CoreGenerationOutput {
-        program,
-        source_to_core,
-    })
+    let attached = collect_attached_external_occurrences(program);
+    for external in checked.external_ops() {
+        verify_source_semantic_correlation(
+            external,
+            program,
+            externals,
+            semantic_operations,
+            &attached,
+        )?;
+    }
+    Ok(())
+}
+
+fn collect_attached_external_occurrences(
+    program: &CoreProgram,
+) -> BTreeMap<ExternalOpId, Vec<(FunctionId, InstId, OriginId)>> {
+    let mut attached = BTreeMap::<ExternalOpId, Vec<(FunctionId, InstId, OriginId)>>::new();
+    for (function, declaration) in program.functions() {
+        let Some(body) = declaration.body() else {
+            continue;
+        };
+        for block in body.block_order() {
+            let block = body
+                .block(*block)
+                .expect("verified generated Core layout names attached blocks");
+            for instruction in block.instructions() {
+                let instruction_data = body
+                    .instruction(*instruction)
+                    .expect("verified generated Core blocks name attached instructions");
+                if let CoreOp::External(external) = instruction_data.op() {
+                    attached.entry(*external).or_default().push((
+                        function,
+                        *instruction,
+                        instruction_data.origin(),
+                    ));
+                }
+            }
+        }
+    }
+    attached
+}
+
+fn verify_source_semantic_correlation(
+    external: &HirExternalOp,
+    program: &CoreProgram,
+    externals: &ExternalToCoreMap,
+    semantic_operations: &[Option<SourceSemanticCoreOccurrence>],
+    attached: &BTreeMap<ExternalOpId, Vec<(FunctionId, InstId, OriginId)>>,
+) -> Result<(), CoreGenerationFailure> {
+    let invalid = || {
+        CoreGenerationFailure::Invariant(
+            CoreGenerationInvariant::InvalidSemanticOperationCorrelation {
+                source_external: external.id,
+            },
+        )
+    };
+    let core_external = externals.operation(external.id).ok_or_else(invalid)?;
+    let declaration = program.external_op(core_external).ok_or_else(invalid)?;
+    if declaration.origin() != external.origin {
+        return Err(invalid());
+    }
+    let slot = semantic_operations
+        .get(external.id.as_usize().ok_or_else(invalid)?)
+        .copied()
+        .flatten();
+
+    match &external.semantic {
+        HirExternalSemantic::UnsafeMinecraftCommand { .. } => {
+            if !matches!(
+                declaration.binding(),
+                ExternalSemanticBinding::UnsafeTargetFragment(_)
+            ) || slot.is_some()
+            {
+                return Err(invalid());
+            }
+        }
+        HirExternalSemantic::MinecraftOperation {
+            key,
+            receiver_kind,
+            attributes,
+            call_origin,
+            member_origin,
+            receiver_origin,
+            ..
+        } => {
+            let ExternalSemanticBinding::MinecraftOperation(operation) = declaration.binding()
+            else {
+                return Err(invalid());
+            };
+            let operation = program.minecraft_operation(operation).ok_or_else(invalid)?;
+            let attributes_match = match (attributes, operation.attributes()) {
+                (
+                    HirMinecraftOperationAttributes::Say {
+                        message,
+                        message_origin,
+                    },
+                    MinecraftOperationAttributes::Say {
+                        message: core_message,
+                        message_origin: core_message_origin,
+                    },
+                ) => message == core_message && message_origin == core_message_origin,
+                (
+                    HirMinecraftOperationAttributes::Teleport {
+                        position,
+                        component_origins,
+                    },
+                    MinecraftOperationAttributes::Teleport {
+                        position: core_position,
+                        component_origins: core_origins,
+                    },
+                ) => position == core_position && component_origins == core_origins,
+                (
+                    HirMinecraftOperationAttributes::MoveBy {
+                        offset,
+                        component_origins,
+                    },
+                    MinecraftOperationAttributes::MoveBy {
+                        offset: core_offset,
+                        component_origins: core_origins,
+                    },
+                ) => offset == core_offset && component_origins == core_origins,
+                _ => false,
+            };
+            if operation.key() != *key
+                || operation.receiver_kind() != *receiver_kind
+                || !attributes_match
+                || operation.origins()
+                    != MinecraftOperationOrigins::new(
+                        *call_origin,
+                        *member_origin,
+                        *receiver_origin,
+                    )
+            {
+                return Err(invalid());
+            }
+
+            match attached.get(&core_external).map_or(&[][..], Vec::as_slice) {
+                [] if slot.is_none() => {}
+                [(function, instruction, instruction_origin)]
+                    if *instruction_origin == external.origin
+                        && slot
+                            == Some(SourceSemanticCoreOccurrence::new(
+                                core_external,
+                                *function,
+                                *instruction,
+                            )) => {}
+                _ => return Err(invalid()),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn function_name(
@@ -796,33 +1599,65 @@ impl MergeAggregate {
 struct BodyLowerer<'program, 'budget> {
     builder: FunctionBuilder<'program>,
     checked: &'program CheckedFrontendOutput,
-    source_to_core: &'program SourceToCoreMap,
+    links: CoreLinks<'program>,
     function: &'program HirFunction,
+    core_function: FunctionId,
     budget: &'budget mut CoreGenerationBudget,
+    semantic_operations: &'budget mut [Option<SourceSemanticCoreOccurrence>],
+}
+
+#[derive(Clone, Copy)]
+struct BodyLoweringContext<'program> {
+    program: &'program CoreProgram,
+    sources: &'program SourceContext,
+    checked: &'program CheckedFrontendOutput,
+    links: CoreLinks<'program>,
+}
+
+impl<'program> BodyLoweringContext<'program> {
+    const fn new(
+        program: &'program CoreProgram,
+        sources: &'program SourceContext,
+        checked: &'program CheckedFrontendOutput,
+        links: CoreLinks<'program>,
+    ) -> Self {
+        Self {
+            program,
+            sources,
+            checked,
+            links,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CoreLinks<'program> {
+    functions: &'program SourceToCoreMap,
+    externals: &'program ExternalToCoreMap,
+    runs: &'program RunToCoreMap,
 }
 
 impl<'program, 'budget> BodyLowerer<'program, 'budget> {
     fn new(
-        program: &'program CoreProgram,
-        sources: &'program SourceContext,
-        checked: &'program CheckedFrontendOutput,
-        source_to_core: &'program SourceToCoreMap,
+        context: BodyLoweringContext<'program>,
         function: &'program HirFunction,
         core_function: FunctionId,
         budget: &'budget mut CoreGenerationBudget,
+        semantic_operations: &'budget mut [Option<SourceSemanticCoreOccurrence>],
     ) -> Result<Self, CoreGenerationFailure> {
-        let builder = FunctionBuilder::new(program, sources, core_function).map_err(|error| {
-            CoreGenerationFailure::Construction {
+        let builder = FunctionBuilder::new(context.program, context.sources, core_function)
+            .map_err(|error| CoreGenerationFailure::Construction {
                 source_function: function.id,
                 error,
-            }
-        })?;
+            })?;
         Ok(Self {
             builder,
-            checked,
-            source_to_core,
+            checked: context.checked,
+            links: context.links,
             function,
+            core_function,
             budget,
+            semantic_operations,
         })
     }
 
@@ -871,6 +1706,22 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             )?;
         }
 
+        self.builder
+            .finish()
+            .map_err(|diagnostics| CoreGenerationFailure::BodyVerification {
+                source_function: self.function.id,
+                diagnostics,
+            })
+    }
+
+    fn lower_run_body(mut self, body: &HirBlock) -> Result<FunctionBody, CoreGenerationFailure> {
+        let entry = self.builder.entry_block();
+        let mut environment = Environment::new(self.function.bindings.len());
+        let continuation = self.lower_block(entry, &mut environment, body)?;
+        if let Some(block) = continuation {
+            self.switch_to(block)?;
+            self.terminate(TerminatorKind::Return(vec![]), body.closing_brace_origin)?;
+        }
         self.builder
             .finish()
             .map_err(|diagnostics| CoreGenerationFailure::BodyVerification {
@@ -935,7 +1786,15 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 let _ = self.lower_call(&mut block, environment, call)?;
                 Ok(Some(block))
             }
+            HirStatementKind::External(external) => {
+                self.lower_external(*external, statement.origin)?;
+                Ok(Some(block))
+            }
             HirStatementKind::If(conditional) => self.lower_if(block, environment, conditional),
+            HirStatementKind::Run(run) => {
+                self.lower_run(run, statement.origin)?;
+                Ok(Some(block))
+            }
             HirStatementKind::Return(value) => {
                 let values = value
                     .as_ref()
@@ -950,6 +1809,97 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 Ok(None)
             }
         }
+    }
+
+    fn lower_external(
+        &mut self,
+        external: SourceExternalOpId,
+        origin: OriginId,
+    ) -> Result<(), CoreGenerationFailure> {
+        let operation =
+            self.links
+                .externals
+                .operation(external)
+                .ok_or(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::MissingExternalMapping {
+                        source_external: external,
+                    },
+                ))?;
+        let (instruction, results) = self
+            .builder
+            .external_with_identity(operation, vec![], origin)
+            .map_err(|error| self.construction(error))?;
+        if matches!(
+            self.checked
+                .external_op(external)
+                .map(|external| &external.semantic),
+            Some(HirExternalSemantic::MinecraftOperation { .. })
+        ) {
+            self.record_semantic_operation(external, operation, instruction)?;
+        }
+        if !results.is_empty() {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::InvalidUnsafeCommand {
+                    source_external: external,
+                },
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_semantic_operation(
+        &mut self,
+        external: SourceExternalOpId,
+        operation: ExternalOpId,
+        instruction: InstId,
+    ) -> Result<(), CoreGenerationFailure> {
+        let invalid = || {
+            CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::InvalidSemanticOperationCorrelation {
+                    source_external: external,
+                },
+            )
+        };
+        let slot = self
+            .semantic_operations
+            .get_mut(external.as_usize().ok_or_else(invalid)?)
+            .ok_or_else(invalid)?;
+        if slot
+            .replace(SourceSemanticCoreOccurrence::new(
+                operation,
+                self.core_function,
+                instruction,
+            ))
+            .is_some()
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    fn lower_run(&mut self, run: &HirRun, origin: OriginId) -> Result<(), CoreGenerationFailure> {
+        let link = self
+            .links
+            .runs
+            .link(run.id)
+            .ok_or(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::MissingRunMapping { source_run: run.id },
+            ))?;
+        let results = if let Some(operation) = link.operation {
+            self.builder
+                .external(operation, vec![], origin)
+                .map_err(|error| self.construction(error))?
+        } else {
+            self.builder
+                .call(link.function, vec![], origin)
+                .map_err(|error| self.construction(error))?
+        };
+        if !results.is_empty() {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::InvalidRunScope { source_run: run.id },
+            ));
+        }
+        Ok(())
     }
 
     fn lower_if(
@@ -1218,7 +2168,8 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         }
         self.switch_to(*block)?;
         let core_callee =
-            self.source_to_core
+            self.links
+                .functions
                 .function(call.callee)
                 .ok_or(CoreGenerationFailure::Invariant(
                     CoreGenerationInvariant::MissingFunctionMapping {
@@ -1384,8 +2335,10 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::{
-        CoreGenerationFailure, CoreGenerationOutput, CoreGenerationResource, SourceToCoreMap,
+        CoreGenerationFailure, CoreGenerationInvariant, CoreGenerationOutput,
+        CoreGenerationResource, ExternalToCoreMap, SourceSemanticCoreOccurrence, SourceToCoreMap,
         environment_work_counters, lower_hir, reset_environment_work_counters,
+        verify_source_semantic_correlations,
     };
     use crate::entity::EntityId;
     use crate::frontend::FrontendLimits;
@@ -1394,7 +2347,8 @@ mod tests {
     use crate::frontend::lexer::lex;
     use crate::frontend::parser::parse;
     use crate::ir::core::{
-        CanonicalPrinter, CoreOp, TerminatorKind, reset_verifier_counters, verifier_counters,
+        CanonicalPrinter, CoreOp, EntityQueryStep, RunModifierInstance, TerminatorKind,
+        reset_verifier_counters, verifier_counters,
     };
     use crate::source::SourceContext;
 
@@ -1470,6 +2424,53 @@ fn invoke() { first(1); }
                 "}\n",
             )
         );
+    }
+
+    #[test]
+    fn lowers_repeated_as_modifiers_as_one_ordered_core_scope() {
+        let source = r#"fn scoped() {
+            run.as(mc.entities(ArmorStand).with_tag("first").limit(1))
+                .as(mc.entities(ArmorStand).with_tag("second").limit(1)) {}
+        }"#;
+        let (sources, _, generated) = lower(source);
+        let program = generated.program();
+        let queries = program.entity_queries().collect::<Vec<_>>();
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[0].1.semantic().tags()[0].as_str(), "first");
+        assert_eq!(queries[1].1.semantic().tags()[0].as_str(), "second");
+
+        let (_, scope) = program.run_scopes().next().unwrap();
+        assert_eq!(scope.modifiers().len(), 2);
+        let RunModifierInstance::AsEntityQuery { query: first, .. } = scope.modifiers()[0] else {
+            panic!("expected as")
+        };
+        let RunModifierInstance::AsEntityQuery { query: second, .. } = scope.modifiers()[1] else {
+            panic!("expected as")
+        };
+        assert_eq!(first, queries[0].0);
+        assert_eq!(second, queries[1].0);
+        assert_eq!(scope.invocation_bounds().lower(), 0);
+        assert_eq!(scope.invocation_bounds().upper(), Some(1));
+
+        let [
+            EntityQueryStep::Entities { kind_origin, .. },
+            EntityQueryStep::WithTag { value_origin, .. },
+            EntityQueryStep::Limit {
+                value_origin: limit_origin,
+                ..
+            },
+        ] = queries[0].1.steps()
+        else {
+            panic!("expected the exact root/tag/limit occurrence trace");
+        };
+        for (origin, expected) in [
+            (*kind_origin, "ArmorStand"),
+            (*value_origin, "\"first\""),
+            (*limit_origin, "1"),
+        ] {
+            let span = sources.resolve_origin_span(origin).unwrap();
+            assert_eq!(sources.files().slice(span).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -1757,6 +2758,103 @@ fn choose(a: Bool, b: Bool, left: Int32, right: Int32) -> Int32 {
         assert_eq!(
             first.source_to_core().functions().collect::<Vec<_>>(),
             second.source_to_core().functions().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn typed_source_external_correlations_are_exact_verified_and_deterministic() {
+        let text = r#"export fn mixed() {
+            unsafe minecraft("say unsafe");
+            run.as(mc.entities(ArmorStand).limit(1)) |speaker| {
+                speaker.say("first");
+                speaker.say("second");
+            }
+        }"#;
+        let (sources, checked, generated) = lower(text);
+        let (repeated_sources, _, repeated) = lower(text);
+        assert_eq!(generated.source_to_core(), repeated.source_to_core());
+
+        let source_ids = checked.external_operation_ids().collect::<Vec<_>>();
+        let [unsafe_source, first_source, second_source] = source_ids.as_slice() else {
+            panic!("fixture must contain one unsafe and two typed source externals")
+        };
+        let map = generated.source_to_core();
+        let unsafe_external = map.external_operation(*unsafe_source).unwrap();
+        assert_eq!(map.semantic_operation(*unsafe_source), None);
+        let first = map.semantic_operation(*first_source).unwrap();
+        let second = map.semantic_operation(*second_source).unwrap();
+        assert_ne!(first.external(), second.external());
+        assert_eq!(first.function(), second.function());
+        assert_ne!(first.instruction(), second.instruction());
+        let source_function = map
+            .function(checked.function_ids().next().unwrap())
+            .unwrap();
+        assert_ne!(
+            first.function(),
+            source_function,
+            "typed operations inside run scope belong to the outlined Core body"
+        );
+        let first_instruction = generated
+            .program()
+            .function(first.function())
+            .and_then(|function| function.body())
+            .and_then(|body| body.instruction(first.instruction()))
+            .unwrap();
+        assert_eq!(
+            first_instruction.origin(),
+            checked.external_op(*first_source).unwrap().origin
+        );
+
+        let external_map = ExternalToCoreMap::new(map.external_operations().collect());
+        let valid = map.semantic_operations.to_vec();
+        assert_eq!(
+            verify_source_semantic_correlations(
+                &checked,
+                generated.program(),
+                &external_map,
+                &valid,
+            ),
+            Ok(())
+        );
+        let invalid_for = |slots: &[Option<SourceSemanticCoreOccurrence>], source| {
+            matches!(
+                verify_source_semantic_correlations(
+                    &checked,
+                    generated.program(),
+                    &external_map,
+                    slots,
+                ),
+                Err(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::InvalidSemanticOperationCorrelation {
+                        source_external,
+                    }
+                )) if source_external == source
+            )
+        };
+
+        let mut missing = valid.clone();
+        missing[first_source.as_usize().unwrap()] = None;
+        assert!(invalid_for(&missing, *first_source));
+
+        let mut wrong_external = valid.clone();
+        wrong_external[first_source.as_usize().unwrap()] = Some(SourceSemanticCoreOccurrence::new(
+            unsafe_external,
+            first.function(),
+            first.instruction(),
+        ));
+        assert!(invalid_for(&wrong_external, *first_source));
+
+        let mut unsafe_slot = valid.clone();
+        unsafe_slot[unsafe_source.as_usize().unwrap()] = Some(first);
+        assert!(invalid_for(&unsafe_slot, *unsafe_source));
+
+        let mut duplicate = valid;
+        duplicate[second_source.as_usize().unwrap()] = Some(first);
+        assert!(invalid_for(&duplicate, *second_source));
+
+        assert_eq!(
+            print(&generated, &sources),
+            print(&repeated, &repeated_sources)
         );
     }
 

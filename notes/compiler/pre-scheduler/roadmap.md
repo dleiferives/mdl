@@ -1,6 +1,6 @@
 # Stage 8.5 Roadmap
 
-Status: **Stage 8.5 complete through PS-3; Stage 9 is next**
+Status: **PS-1 through PS-3 complete; PS-4 planned before Stage 9 resumes**
 
 ## Why the roadmap changes here
 
@@ -47,8 +47,28 @@ PS-3 Brainfuck capstone
   +-> controlled exact-one holder proof; connected player remains deferred
   +-> output, failure, cost, and cleanup evidence
   |
+PS-4 enums, switch, and inclusive range patterns
+  |
+  +-> authoritative EBNF and grammar-conformance cases
+  +-> nominal fieldless enums and exhaustive scalar switches
+  +-> one mechanical native score-range lowering
+  |
 Stage 9 persistent continuations and scheduling
 ```
+
+## Accepted PS-4 language slice
+
+PS-4 adds closed fieldless enums, Zig-style exhaustive `switch`, and inclusive
+integer range patterns through a complete source/HIR/Core/evaluator/Minecraft test
+path. It is scheduled before Stage 9 by explicit work order, not because suspension
+depends on enums. Its plan and checklist are:
+
+- [`ps-4-enums-switch-ranges-plan.md`](ps-4-enums-switch-ranges-plan.md)
+- [`ps-4-enums-switch-ranges-todo.md`](ps-4-enums-switch-ranges-todo.md)
+
+PS-4 deliberately uses one mechanical range/switch lowering, permits large
+generated datapacks, and records rather than optimizes footprint. Dispatch trees,
+macros, profile-guided selection, and `List<Enum>` remain measured follow-ups.
 
 PS-2 is developed as vertical capability slices. It must not implement every
 frontend feature first, then every Core feature, and only later discover that none

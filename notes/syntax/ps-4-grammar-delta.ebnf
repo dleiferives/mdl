@@ -1,0 +1,79 @@
+(*
+  Proposed PS-4 grammar delta
+  ===========================
+
+  Status: planned, not accepted by trunk.
+
+  Apply these replacements/additions to grammar.ebnf only when the PS-4 parser,
+  recovery, AST goldens, and grammar-conformance tests land together.
+*)
+
+ModuleItem = ImportDeclaration
+           | StructDeclaration
+           | EnumDeclaration
+           | FunctionDeclaration
+           ;
+
+EnumDeclaration = "const", Name, "=", "enum", "{",
+                  EnumVariant, { ",", EnumVariant }, [ "," ],
+                  "}", ";" ;
+
+EnumVariant = Name ;
+
+Statement = DeclarationStatement
+          | AssignmentStatement
+          | CallStatement
+          | IfStatement
+          | WhileStatement
+          | SwitchStatement
+          | BreakStatement
+          | ContinueStatement
+          | ReturnStatement
+          | RunStatement
+          | UnsafeMinecraftStatement
+          ;
+
+SwitchStatement = "switch", "(", Expression, ")", "{",
+                  SwitchStatementArm, { ",", SwitchStatementArm }, [ "," ],
+                  "}" ;
+
+SwitchStatementArm = PatternList, "=>", Block
+                   | "else", "=>", Block
+                   ;
+
+(* Replace the implemented PrimaryExpression production with this production. *)
+PrimaryExpression = BooleanLiteral
+                  | IntegerLiteral
+                  | DecimalNumber
+                  | StaticDecimal
+                  | StringLiteral
+                  | InferredEnumLiteral
+                  | SwitchExpression
+                  | Name, [ StructLiteralBody ]
+                  | "(", Expression, ")"
+                  ;
+
+InferredEnumLiteral = ".", Name ;
+
+SwitchExpression = "switch", "(", Expression, ")", "{",
+                   SwitchExpressionArm, { ",", SwitchExpressionArm }, [ "," ],
+                   "}" ;
+
+SwitchExpressionArm = PatternList, "=>", Expression
+                    | "else", "=>", Expression
+                    ;
+
+PatternList = Pattern, { ",", Pattern } ;
+
+Pattern = SignedInteger
+        | ClosedIntegerRange
+        | InferredEnumLiteral
+        | QualifiedEnumVariant
+        ;
+
+ClosedIntegerRange = SignedInteger, "...", SignedInteger ;
+SignedInteger = [ "-" ], IntegerLiteral ;
+QualifiedEnumVariant = Name, ".", Name ;
+
+(* Add `enum` and `switch` to Keyword. Add `=>` and `...` as longest-match
+   punctuation tokens before `=`, `>`, and `.` respectively. *)

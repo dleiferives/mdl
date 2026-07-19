@@ -243,6 +243,55 @@ tests.
 
 ## Switch and pattern matching
 
+### MDL implementation split
+
+Decision recorded 2026-07-19: implement the typed language and baseline target path
+before adding cost-directed switch selection.
+
+The first source slice should provide closed enums and exhaustive Zig-style
+`switch` expressions/statements. Integer switch prongs should support exact values,
+inclusive closed ranges, multiple patterns with one body, and `else`; enum prongs
+should support inferred enum literals such as `.running`. The checker owns duplicate,
+overlap, unreachable-prong, type, result-join, and exhaustiveness diagnostics. These
+are language semantics and must not depend on a Minecraft optimization profile.
+
+For this first slice, generated datapack size is not a selection constraint. The
+baseline may emit many helper functions, hardcoded cases, and repeated static command
+forms when that keeps the implementation direct and the runtime behavior credible.
+Continue recording function, line, and byte counts, but do not reject or compact a
+correct program merely because those counts are large.
+
+HIR/Core should retain the fact that a test is an exact value or integer range long
+enough for Minecraft lowering to emit the existing typed
+`Condition::ScoreMatches(ScoreRef, ScoreRange)` primitive. The initial backend may
+use one deterministic, source-ordered test chain with the existing safe branch
+lowering and a default target. Correct code generation is the gate; it does not need
+to choose an optimal dispatch shape yet.
+
+The implementation scope deliberately stops at syntax, name/type/flow checking,
+target-independent evaluation, and one mechanical target legalization. Do not add
+case reordering, range coalescing, balanced trees, macro dispatch, profile-guided
+layout, or range-analysis-driven specialization to the first slice. Emitting native
+`execute if score ... matches ...` for one source range is legalization of that
+range, not a dispatch optimization.
+
+TODO after the baseline is measured: add a semantics-preserving, target-owned
+dispatch chooser. It should compare coalesced range tests, source/hotness-ordered
+linear dispatch, balanced range trees, and validated macro dispatch. Do not encode a
+magic threshold such as `case_count < 100` in source semantics. If an early tuning
+knob is useful, make a target/optimization option such as
+`max_linear_switch_cases`, with a deterministic default and the fallback always
+available. The eventual cost model must account for executed command steps, function
+calls, emitted lines/bytes, case density, shared destinations, known value ranges,
+profile information, and Minecraft macro cache behavior.
+
+TODO after representative programs exist: benchmark runtime work and wall-clock
+behavior across switch widths, densities, value distributions, shared destinations,
+and repeated invocations. Record generated function/line/byte counts alongside those
+measurements, then decide whether and where datapack size should enter `speed`,
+`balanced`, and `size` optimization profiles. Until that evidence exists, prefer the
+simple static lowering even when it produces a large pack.
+
 ### Small or probability-skewed switch
 
 Use a linear early-return dispatcher, ordering hot cases first:
@@ -395,4 +444,3 @@ is required, but context/live locals must still be preserved across the tick.
 
 - [Mojang's `return run`, function result, and `execute if function` semantics](https://feedback.minecraft.net/hc/en-us/articles/21968446892173-Minecraft-Java-Edition-1-20-3)
 - [Mojang's execute operation accounting](https://www.minecraft.net/en-us/article/minecraft-java-edition-1-20-3)
-

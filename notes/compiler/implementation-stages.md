@@ -504,7 +504,7 @@ Exit criteria:
 
 ## Stage 8.5: Pre-scheduler capability validation
 
-Status: **complete through PS-3.** See the
+Status: **PS-1 through PS-3 complete; PS-4 enums/switch/ranges planned.** See the
 [`Stage 8.5 documentation index`](pre-scheduler/README.md) and
 [`roadmap`](pre-scheduler/roadmap.md).
 
@@ -552,6 +552,13 @@ Exit criteria:
 
 PS-4 and later validation programs are individually accepted using the Stage 8.5
 template. They do not silently extend this stage's required exit after PS-3.
+
+PS-4 is now explicitly accepted as the next post-capstone language slice. It adds
+closed fieldless enums, exhaustive Zig-style switch expressions/statements, and
+inclusive integer range patterns with one mechanical Minecraft lowering. It does
+not add dispatch optimization, a datapack-size constraint, generic enum collections,
+or scheduling. See
+[`pre-scheduler/ps-4-enums-switch-ranges-plan.md`](pre-scheduler/ps-4-enums-switch-ranges-plan.md).
 
 Completion evidence and the concrete state that Stage 9 must persist are recorded
 in [`pre-scheduler/ps-3-handoff.md`](pre-scheduler/ps-3-handoff.md).

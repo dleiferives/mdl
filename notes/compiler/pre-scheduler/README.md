@@ -1,6 +1,6 @@
 # Stage 8.5: Pre-Scheduler Capability Validation
 
-Status: **PS-1, PS-2, and PS-3 complete; Stage 8.5 handed to Stage 9**
+Status: **PS-1 through PS-3 complete; PS-4 enums/switch/ranges planned**
 
 Stage 8.5 sits between the completed scalar synchronous Stage 8 and Stage 9's
 persistent, multi-tick scheduler. Its purpose is to make MDL capable of expressing,
@@ -13,21 +13,24 @@ compiler-specific shortcuts. Every capability added for it must have coherent
 language semantics, verified IR, independently testable lowering, and a reusable
 public surface.
 
-## Required substages
+## Accepted substages
 
 | Substage | Outcome | Plan | Checklist |
 | --- | --- | --- | --- |
 | PS-1 | Semantic and vanilla-server test oracles | [plan](ps-1-testing-plan.md) | [complete handoff](ps-1-handoff.md) |
 | PS-2 | General synchronous capabilities required by Brainfuck | [plan](ps-2-capability-expansion-plan.md) | [complete handoff](ps-2-handoff.md) |
 | PS-3 | Complete Brainfuck capstone compiled and run on vanilla | [plan](ps-3-brainfuck-capstone-plan.md) | [complete handoff](ps-3-handoff.md) |
+| PS-4 | Closed enums, exhaustive switch, and inclusive range patterns | [plan](ps-4-enums-switch-ranges-plan.md) | [checklist](ps-4-enums-switch-ranges-todo.md) |
 
 The exact implemented PS-2 boundary and remaining nonblocking breadth are frozen in
 the [PS-2 to PS-3 handoff](ps-2-handoff.md).
 The completed capstone evidence and persistent-state requirements are in the
 [PS-3 to Stage 9 handoff](ps-3-handoff.md).
 
-PS-1 through PS-3 are the frozen required path. PS-4 and later validation programs
-are accepted individually using [the validation-program template](validation-program-template.md).
+PS-1 through PS-3 are the frozen original required path. PS-4 is an explicitly
+accepted post-capstone language-capability milestone and is next by work order, but
+Stage 9 does not semantically depend on enums. Later validation programs are accepted
+individually using [the validation-program template](validation-program-template.md).
 
 PS-2.0's frozen language, budget, book, and ownership choices are recorded in
 [`ps-2-0-decisions.md`](ps-2-0-decisions.md).

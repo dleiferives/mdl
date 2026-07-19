@@ -4,6 +4,19 @@ This directory is the durable design ledger for MDL source syntax. It records
 decisions independently of frontend implementation work so that syntax design does
 not accidentally inherit a temporary IR or runtime representation.
 
+## Grammar authority
+
+[`grammar.ebnf`](grammar.ebnf) is the authoritative grammar for syntax accepted by
+the compiler on trunk. Syntax decision notes may describe selected future work and
+therefore may be ahead of the parser; they do not enter the implemented grammar until
+the parser, recovery behavior, AST tests, and EBNF update land together.
+
+Planned syntax is written as an explicit delta rather than silently mixed into the
+implemented grammar. The first such document is the
+[`PS-4 grammar delta`](ps-4-grammar-delta.ebnf). Every future syntax-changing stage
+must update `grammar.ebnf` in the same change and add positive/negative parser tests
+for the changed productions.
+
 The decisions below were reviewed on 2026-07-13. They are working language-design
 decisions: changing one requires an explicit follow-up decision, not an incidental
 parser or lowering change.
@@ -46,6 +59,7 @@ the constructs that remain deferred.
 - [S-037 — Indexed List Removal Returns the Element](list-remove.md)
 - [S-038 — Checked Last-Element `pop`](list-pop.md)
 - [S-039 — `push` Appends and Returns `Void`](list-push.md)
+- [S-040 — Enums, Switches, and Inclusive Range Patterns](enum-switch-range-patterns.md)
 
 ## S-001 — Explicit declarations
 

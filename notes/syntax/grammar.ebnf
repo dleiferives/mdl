@@ -1,0 +1,189 @@
+(*
+  MDL implemented source grammar
+  =================================
+
+  Authority: syntax accepted by crates/mdl-compiler on trunk.
+  Updated: 2026-07-19, before PS-4 implementation.
+
+  This grammar describes successful parses, not recovery productions or semantic
+  restrictions. The lexer/parser tests remain executable conformance evidence.
+
+  Notation:
+    "text"        terminal text
+    A | B         alternative
+    [ A ]         optional
+    { A }         zero or more repetitions
+    ( A )         grouping
+    ? prose ?     a lexically defined set
+
+  Trivia may occur between any two tokens and is omitted from syntactic
+  productions. Lexing chooses the longest valid punctuation/numeric token before
+  parsing these productions.
+*)
+
+CompilationUnit = { ModuleItem }, EOF ;
+
+ModuleItem = ImportDeclaration
+           | StructDeclaration
+           | FunctionDeclaration
+           ;
+
+ImportDeclaration = "const", Name, "=", "import", "(", StringLiteral, ")", ";" ;
+
+StructDeclaration = "const", Name, "=", "struct", "{",
+                    [ StructField, { ",", StructField }, [ "," ] ],
+                    "}", ";" ;
+
+StructField = Name, ":", ValueType ;
+
+FunctionDeclaration = [ Visibility ], "fn", Name, "(",
+                      [ Parameter, { ",", Parameter }, [ "," ] ],
+                      ")", [ "->", ResultType ], Block ;
+
+Visibility = "pub" | "export" ;
+Parameter  = Name, ":", ValueType ;
+ResultType = ValueType | "Void" ;
+
+ValueType = "Bool"
+          | "Int32"
+          | "String"
+          | "List", "<", "Int32", ">"
+          | TypeName
+          ;
+
+Block = "{", { Statement }, "}" ;
+
+Statement = DeclarationStatement
+          | AssignmentStatement
+          | CallStatement
+          | IfStatement
+          | WhileStatement
+          | BreakStatement
+          | ContinueStatement
+          | ReturnStatement
+          | RunStatement
+          | UnsafeMinecraftStatement
+          ;
+
+DeclarationStatement = ConstDeclarationStatement
+                     | VarDeclarationStatement
+                     ;
+
+ConstDeclarationStatement = "const", Name, ":", ValueType,
+                            "=", Expression, ";" ;
+VarDeclarationStatement = "var", Name, ":", ValueType,
+                          [ "=", Expression ], ";" ;
+
+AssignmentStatement = Name, "=", Expression, ";" ;
+
+CallStatement = StatementCallExpression, ";" ;
+
+(* A call statement must begin with an identifier-like token and its outermost
+   postfix node must be a call. At statement start, `run.` is reserved for
+   RunStatement while `run(` remains an ordinary call. *)
+StatementCallExpression = Identifier, [ StructLiteralBody ], PostfixSequenceEndingCall
+                        | "run", Arguments, [ PostfixSequenceEndingCall ]
+                        ;
+
+PostfixSequenceEndingCall = { PostfixSuffix }, Arguments ;
+
+IfStatement = "if", "(", Expression, ")", Block,
+              { "else", "if", "(", Expression, ")", Block },
+              [ "else", Block ] ;
+
+WhileStatement    = "while", "(", Expression, ")", Block ;
+BreakStatement    = "break", ";" ;
+ContinueStatement = "continue", ";" ;
+ReturnStatement   = "return", [ Expression ], ";" ;
+
+RunStatement = "run", { RunModifier }, [ ExecutorCapture ], Block ;
+RunModifier = ".", Name, Arguments ;
+ExecutorCapture = "|", Name, "|" ;
+
+UnsafeMinecraftStatement = "unsafe", "minecraft", "(", StringLiteral, ")", ";" ;
+
+Expression = WrappingExpression,
+             [ ComparisonOperator, WrappingExpression ] ;
+
+ComparisonOperator = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+
+WrappingExpression = PrefixExpression,
+                     { ( "+%" | "-%" ), PrefixExpression } ;
+
+PrefixExpression = "!", PrefixExpression
+                 | PostfixExpression
+                 ;
+
+PostfixExpression = PrimaryExpression, { PostfixSuffix } ;
+
+PostfixSuffix = ".", Name
+              | Arguments
+              ;
+
+Arguments = "(", [ Expression, { ",", Expression }, [ "," ] ], ")" ;
+
+PrimaryExpression = BooleanLiteral
+                  | IntegerLiteral
+                  | DecimalNumber
+                  | StaticDecimal
+                  | StringLiteral
+                  | Name, [ StructLiteralBody ]
+                  | "(", Expression, ")"
+                  ;
+
+(* The parser admits a struct literal only when its type starts as one bare Name. *)
+StructLiteralBody = "{",
+                    [ StructFieldValue, { ",", StructFieldValue }, [ "," ] ],
+                    "}" ;
+
+StructFieldValue = ".", Name, "=", Expression ;
+
+BooleanLiteral = "true" | "false" ;
+IntegerLiteral = Digit, { Digit } ;
+DecimalNumber  = Digit, { Digit }, ".", Digit, { Digit } ;
+
+(* StaticDecimal is accepted syntactically as an expression and receives a useful
+   type only in the compiler-known coordinate contexts that admit it. A sigil form
+   may omit digits, matching Minecraft's bare relative/local coordinate atoms. *)
+StaticDecimal = "-", ( IntegerLiteral | DecimalNumber )
+              | ( "~" | "^" ), [ "-" ], [ IntegerLiteral | DecimalNumber ]
+              ;
+
+(* `run` is retained as an identifier-like spelling in the implemented parser for
+   compatibility, even though it is also a keyword at statement start. *)
+Name = Identifier | "run" ;
+TypeName = Identifier ;
+
+Identifier = IdentifierStart, { IdentifierContinue } ;
+IdentifierStart = ASCIIUpper | ASCIILower | "_" ;
+IdentifierContinue = IdentifierStart | Digit ;
+
+StringLiteral = DQuote, { StringCharacter | EscapeSequence }, DQuote ;
+StringCharacter = ? any Unicode scalar except '"', "\\", LF, or CR ? ;
+EscapeSequence = Backslash, ( DQuote | Backslash | "n" | "r" | "t" | "0" ) ;
+
+Trivia = { Whitespace | LineComment } ;
+Whitespace = " " | HT | LF | CR ;
+LineComment = "//", { ? any Unicode scalar except LF ? }, [ LF ] ;
+
+ASCIIUpper = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I"
+           | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R"
+           | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" ;
+ASCIILower = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
+           | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r"
+           | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" ;
+Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+(* Tokens with identifier spellings that are not Identifier tokens. *)
+Keyword = "fn" | "pub" | "export" | "import" | "struct"
+        | "unsafe" | "minecraft" | "run" | "const" | "var"
+        | "if" | "else" | "while" | "break" | "continue" | "return"
+        | "true" | "false" | "Bool" | "Int32" | "Void"
+        ;
+
+EOF = ? end of source file ? ;
+HT  = ? U+0009 CHARACTER TABULATION ? ;
+LF  = ? U+000A LINE FEED ? ;
+CR  = ? U+000D CARRIAGE RETURN ? ;
+DQuote = ? U+0022 QUOTATION MARK ? ;
+Backslash = ? U+005C REVERSE SOLIDUS ? ;

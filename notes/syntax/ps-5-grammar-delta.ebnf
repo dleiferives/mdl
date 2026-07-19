@@ -1,0 +1,96 @@
+(*
+  Proposed PS-5 grammar delta
+  ===========================
+
+  Status: planned, not accepted by trunk.
+
+  Apply these replacements/additions to grammar.ebnf only when the PS-5 parser,
+  recovery, AST goldens, and grammar-conformance tests land together.
+
+  This delta is written against the implemented grammar. Where PS-4's delta also
+  replaces PrimaryExpression, the two deltas compose: each only adds alternatives.
+  `.` followed by `{` begins an InferredStructLiteral; `.` followed by a Name
+  begins PS-4's InferredEnumLiteral. One token of lookahead separates them.
+*)
+
+(* Replace the implemented ValueType production. The parser distinguishes the two
+   anonymous forms by whether the token after the first field Name is `:`; a
+   single bare Name inside braces is a positional element type. *)
+ValueType = "Bool"
+          | "Int32"
+          | "String"
+          | "List", "<", "Int32", ">"
+          | TypeName
+          | AnonStructType
+          ;
+
+AnonStructType = "{", StructField, { ",", StructField }, [ "," ], "}"
+               | "{", ValueType, { ",", ValueType }, [ "," ], "}"
+               ;
+
+(* Replace the implemented declaration productions. `:=` is one token, scanned
+   longest-match before `:`. *)
+ConstDeclarationStatement = "const", Name, ":", ValueType, "=", Expression, ";"
+                          | "const", Name, ":=", Expression, ";"
+                          ;
+
+VarDeclarationStatement = "var", Name, ":", ValueType, [ "=", Expression ], ";"
+                        | "var", Name, ":=", Expression, ";"
+                        ;
+
+Statement = DeclarationStatement
+          | AssignmentStatement
+          | CallStatement
+          | DestructuringStatement
+          | IfStatement
+          | WhileStatement
+          | BreakStatement
+          | ContinueStatement
+          | ReturnStatement
+          | RunStatement
+          | UnsafeMinecraftStatement
+          ;
+
+(* No other statement begins with `|`. `<=` is the existing comparison token
+   reused in a position where comparison cannot occur. A target spelled `_`
+   is a discard, not a binding; this is semantic, not lexical. *)
+DestructuringStatement = "|", DestructureTarget, { ",", DestructureTarget },
+                         [ "," ], "|", "<=", Expression, ";" ;
+
+DestructureTarget = "const", Name
+                  | "var", Name
+                  | Name
+                  ;
+
+(* Replace the implemented PostfixSuffix production. The index is restricted to a
+   nonnegative decimal IntegerLiteral; semantic checking restricts indexing to
+   positional anonymous struct values and enforces compile-time bounds. `[` and
+   `]` are new closed tokens, consistent with the S-032/S-033 bracket surface. *)
+PostfixSuffix = ".", Name
+              | Arguments
+              | "[", IntegerLiteral, "]"
+              ;
+
+(* Add InferredStructLiteral to PrimaryExpression alongside the implemented
+   alternatives (and PS-4's, when both land). *)
+PrimaryExpression = BooleanLiteral
+                  | IntegerLiteral
+                  | DecimalNumber
+                  | StaticDecimal
+                  | StringLiteral
+                  | InferredStructLiteral
+                  | Name, [ StructLiteralBody ]
+                  | "(", Expression, ")"
+                  ;
+
+(* Inside `.{ ... }`, an entry starting `.` Name `=` is a named field value; an
+   entry starting `.` Name without `=` is an expression beginning with an
+   inferred enum literal, so the element list is positional. Two tokens of
+   lookahead after the dot separate the forms. Named and positional entries
+   must not be mixed; that restriction is semantic. *)
+InferredStructLiteral = ".", StructLiteralBody
+                      | ".", "{", Expression, { ",", Expression }, [ "," ], "}"
+                      ;
+
+(* Add `:=`, `[`, and `]` as tokens. `:=` scans longest-match before `:`.
+   No new keyword is added. *)

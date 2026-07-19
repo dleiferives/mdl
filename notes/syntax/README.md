@@ -13,7 +13,8 @@ the parser, recovery behavior, AST tests, and EBNF update land together.
 
 Planned syntax is written as an explicit delta rather than silently mixed into the
 implemented grammar. The first such document is the
-[`PS-4 grammar delta`](ps-4-grammar-delta.ebnf). Every future syntax-changing stage
+[`PS-4 grammar delta`](ps-4-grammar-delta.ebnf); the second is the
+[`PS-5 grammar delta`](ps-5-grammar-delta.ebnf). Every future syntax-changing stage
 must update `grammar.ebnf` in the same change and add positive/negative parser tests
 for the changed productions.
 
@@ -60,6 +61,7 @@ the constructs that remain deferred.
 - [S-038 — Checked Last-Element `pop`](list-pop.md)
 - [S-039 — `push` Appends and Returns `Void`](list-push.md)
 - [S-040 — Enums, Switches, and Inclusive Range Patterns](enum-switch-range-patterns.md)
+- [S-041 — Anonymous Structs, Multiple Results, and Pipe Destructuring](anonymous-structs-and-destructuring.md)
 
 ## S-001 — Explicit declarations
 

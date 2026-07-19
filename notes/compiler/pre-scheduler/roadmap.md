@@ -1,6 +1,6 @@
 # Stage 8.5 Roadmap
 
-Status: **PS-1 through PS-3 complete; PS-4 planned before Stage 9 resumes**
+Status: **PS-1 through PS-3 complete; PS-4 and PS-5 planned before Stage 9 resumes**
 
 ## Why the roadmap changes here
 
@@ -53,6 +53,12 @@ PS-4 enums, switch, and inclusive range patterns
   +-> nominal fieldless enums and exhaustive scalar switches
   +-> one mechanical native score-range lowering
   |
+PS-5 anonymous structs, multiple results, and destructuring
+  |
+  +-> structural multiple-result types over the existing struct ABI
+  +-> inferred `:=` declarations and context-inferred `.{}` literals
+  +-> pipe destructuring and compile-time positional indexing
+  |
 Stage 9 persistent continuations and scheduling
 ```
 
@@ -69,6 +75,23 @@ depends on enums. Its plan and checklist are:
 PS-4 deliberately uses one mechanical range/switch lowering, permits large
 generated datapacks, and records rather than optimizes footprint. Dispatch trees,
 macros, profile-guided selection, and `List<Enum>` remain measured follow-ups.
+
+## Accepted PS-5 language slice
+
+PS-5 adds structural anonymous struct types (named and positional), context-
+inferred `.{}` literals, compile-time positional indexing, the `|targets| <= value;`
+destructuring statement, and `:=` inferred declarations implementing S-003. It is
+scheduled after PS-4 and before Stage 9 resumes by explicit work order. Its plan
+and checklist are:
+
+- [`ps-5-anon-structs-destructuring-plan.md`](ps-5-anon-structs-destructuring-plan.md)
+- [`ps-5-anon-structs-destructuring-todo.md`](ps-5-anon-structs-destructuring-todo.md)
+
+PS-5 deliberately adds no Core operation and no Minecraft recipe: anonymous structs
+ride the existing scalarized struct ABI, which is also the substrate the deferred
+S-004 `mut` parameter sugar will lower through. By-name destructuring, aggregate
+equality, export-ABI anonymous structs, and `List<T>` generalization remain
+explicit follow-ups.
 
 PS-2 is developed as vertical capability slices. It must not implement every
 frontend feature first, then every Core feature, and only later discover that none

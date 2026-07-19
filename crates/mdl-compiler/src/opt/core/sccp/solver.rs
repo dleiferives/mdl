@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use super::lattice::{
     LatticeTypeError, LatticeValue, bool_not, i32_add_overflowing, i32_add_wrapping, i32_compare,
+    i32_sub_wrapping,
 };
 use super::{
     SccpDecision, SccpInvariantError, SccpLimit, SccpLimitReason, SccpLimits, SccpSolveResult,
@@ -562,6 +563,12 @@ impl<'a> Solver<'a> {
                 let result = only_result(data.results(), instruction)?;
                 self.join_value(result, fact)?;
             }
+            CoreOp::I32SubWrapping => {
+                let [lhs, rhs] = two_operands(data.operands(), instruction)?;
+                let fact = i32_sub_wrapping(self.value_fact(lhs)?, self.value_fact(rhs)?)?;
+                let result = only_result(data.results(), instruction)?;
+                self.join_value(result, fact)?;
+            }
             CoreOp::I32AddOverflowing => {
                 let [lhs, rhs] = two_operands(data.operands(), instruction)?;
                 let facts = i32_add_overflowing(self.value_fact(lhs)?, self.value_fact(rhs)?)?;
@@ -586,6 +593,19 @@ impl<'a> Solver<'a> {
                 let fact = bool_not(self.value_fact(operand)?)?;
                 let result = only_result(data.results(), instruction)?;
                 self.join_value(result, fact)?;
+            }
+            CoreOp::ListI32Empty
+            | CoreOp::ListI32Length
+            | CoreOp::ListI32Push
+            | CoreOp::ListI32LastOrZero
+            | CoreOp::ListI32WithoutLast
+            | CoreOp::StringConstant(_)
+            | CoreOp::StringLength
+            | CoreOp::StringEndsWithAscii(_)
+            | CoreOp::StringWithoutLastUnit => {
+                for &result in data.results() {
+                    self.join_value(result, LatticeValue::Overdefined)?;
+                }
             }
             CoreOp::Call(_) | CoreOp::External(_) => {
                 let result_count = data.results().len();

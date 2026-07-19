@@ -9,6 +9,7 @@ mod ambient;
 mod analysis;
 mod builder;
 mod edit;
+mod eval;
 mod external;
 mod minecraft;
 mod print;
@@ -30,6 +31,10 @@ pub use builder::{BuildError, FunctionBuilder};
 pub use edit::{EditError, FunctionEditor, ValueReplacement};
 pub(crate) use edit::{
     JumpFusionApplicationStatistics, JumpFusionFactStatistics, JumpFusionPreparation,
+};
+pub use eval::{
+    CoreCallEvent, CoreEvaluation, CoreEvaluationError, CoreEvaluationLimits, CoreEvaluator,
+    CoreValue,
 };
 pub use external::{
     ExternalOpDecl, ExternalSemanticBinding, TargetFragment, UnsafeCommandFragmentError,
@@ -91,6 +96,10 @@ pub enum CoreType {
     Bool,
     /// A signed 32-bit integer with operation-defined overflow semantics.
     I32,
+    /// An immutable ordered sequence of signed 32-bit integers.
+    ListI32,
+    /// An immutable Java-compatible UTF-16 string value.
+    String,
 }
 
 /// Whether a Core function is an implementation detail or a supported datapack entry.
@@ -143,6 +152,8 @@ impl fmt::Display for CoreType {
         formatter.write_str(match self {
             Self::Bool => "bool",
             Self::I32 => "i32",
+            Self::ListI32 => "list<i32>",
+            Self::String => "string",
         })
     }
 }
@@ -276,12 +287,32 @@ pub enum CoreOp {
     I32Constant(i32),
     /// Returns the low 32 bits of two's-complement addition.
     I32AddWrapping,
+    /// Returns the low 32 bits of two's-complement subtraction.
+    I32SubWrapping,
     /// Returns a wrapping sum and whether signed `i32` addition overflowed.
     I32AddOverflowing,
     /// Compares two signed `i32` values using an explicit predicate.
     I32Compare(I32Predicate),
     /// Negates a Boolean value.
     BoolNot,
+    /// Produces the empty immutable `i32` list.
+    ListI32Empty,
+    /// Returns the number of elements in an `i32` list.
+    ListI32Length,
+    /// Appends one value to an immutable `i32` list.
+    ListI32Push,
+    /// Returns the last value, or zero when the list is empty.
+    ListI32LastOrZero,
+    /// Returns the list without its last value; empty remains empty.
+    ListI32WithoutLast,
+    /// Produces one immutable runtime string constant.
+    StringConstant(Box<str>),
+    /// Returns the number of Java UTF-16 code units in a string.
+    StringLength,
+    /// Tests whether a string's final UTF-16 unit is one selected ASCII byte.
+    StringEndsWithAscii(u8),
+    /// Returns the string without its final UTF-16 code unit; empty remains empty.
+    StringWithoutLastUnit,
     /// Calls one internal Core function.
     Call(FunctionId),
     /// Invokes one closed program-owned external declaration.
@@ -296,9 +327,19 @@ impl CoreOp {
             Self::BoolConstant(_) => "core.bool.constant",
             Self::I32Constant(_) => "core.i32.constant",
             Self::I32AddWrapping => "core.i32.add.wrapping",
+            Self::I32SubWrapping => "core.i32.sub.wrapping",
             Self::I32AddOverflowing => "core.i32.add.overflowing",
             Self::I32Compare(_) => "core.i32.compare",
             Self::BoolNot => "core.bool.not",
+            Self::ListI32Empty => "core.list.i32.empty",
+            Self::ListI32Length => "core.list.i32.length",
+            Self::ListI32Push => "core.list.i32.push",
+            Self::ListI32LastOrZero => "core.list.i32.last_or_zero",
+            Self::ListI32WithoutLast => "core.list.i32.without_last",
+            Self::StringConstant(_) => "core.string.constant",
+            Self::StringLength => "core.string.length",
+            Self::StringEndsWithAscii(_) => "core.string.ends_with_ascii",
+            Self::StringWithoutLastUnit => "core.string.without_last_unit",
             Self::Call(_) => "core.call",
             Self::External(_) => "core.external",
         }
@@ -312,9 +353,19 @@ impl CoreOp {
             Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
+            | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
-            | Self::BoolNot => EffectClass::Pure,
+            | Self::BoolNot
+            | Self::ListI32Empty
+            | Self::ListI32Length
+            | Self::ListI32Push
+            | Self::ListI32LastOrZero
+            | Self::ListI32WithoutLast
+            | Self::StringConstant(_)
+            | Self::StringLength
+            | Self::StringEndsWithAscii(_)
+            | Self::StringWithoutLastUnit => EffectClass::Pure,
         }
     }
 
@@ -326,9 +377,19 @@ impl CoreOp {
             Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
+            | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
-            | Self::BoolNot => Speculation::Always,
+            | Self::BoolNot
+            | Self::ListI32Empty
+            | Self::ListI32Length
+            | Self::ListI32Push
+            | Self::ListI32LastOrZero
+            | Self::ListI32WithoutLast
+            | Self::StringConstant(_)
+            | Self::StringLength
+            | Self::StringEndsWithAscii(_)
+            | Self::StringWithoutLastUnit => Speculation::Always,
         }
     }
 
@@ -340,9 +401,19 @@ impl CoreOp {
             Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
+            | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
-            | Self::BoolNot => ResultEquivalence::Structural,
+            | Self::BoolNot
+            | Self::ListI32Empty
+            | Self::ListI32Length
+            | Self::ListI32Push
+            | Self::ListI32LastOrZero
+            | Self::ListI32WithoutLast
+            | Self::StringConstant(_)
+            | Self::StringLength
+            | Self::StringEndsWithAscii(_)
+            | Self::StringWithoutLastUnit => ResultEquivalence::Structural,
         }
     }
 
@@ -364,6 +435,7 @@ impl CoreOp {
             }
             Self::BoolConstant(_)
             | Self::I32Constant(_)
+            | Self::I32SubWrapping
             | Self::I32Compare(
                 I32Predicate::SignedLt
                 | I32Predicate::SignedLe
@@ -371,6 +443,15 @@ impl CoreOp {
                 | I32Predicate::SignedGe,
             )
             | Self::BoolNot
+            | Self::ListI32Empty
+            | Self::ListI32Length
+            | Self::ListI32Push
+            | Self::ListI32LastOrZero
+            | Self::ListI32WithoutLast
+            | Self::StringConstant(_)
+            | Self::StringLength
+            | Self::StringEndsWithAscii(_)
+            | Self::StringWithoutLastUnit
             | Self::Call(_)
             | Self::External(_) => OperandSymmetry::Ordered,
         }
@@ -383,11 +464,23 @@ impl CoreOp {
             Self::BoolConstant(_) => "the represented Boolean value",
             Self::I32Constant(_) => "the represented signed 32-bit integer",
             Self::I32AddWrapping => "low 32 bits of two's-complement addition",
+            Self::I32SubWrapping => "low 32 bits of two's-complement subtraction",
             Self::I32AddOverflowing => {
                 "wrapping sum and true exactly when signed i32 addition overflows"
             }
             Self::I32Compare(_) => "the selected explicit signed i32 comparison",
             Self::BoolNot => "Boolean logical negation",
+            Self::ListI32Empty => "the empty immutable i32 list",
+            Self::ListI32Length => "the exact number of list elements",
+            Self::ListI32Push => "an immutable list with one value appended",
+            Self::ListI32LastOrZero => "the last list value, or zero for an empty list",
+            Self::ListI32WithoutLast => "an immutable list without its last element",
+            Self::StringConstant(_) => "the represented immutable UTF-16 string",
+            Self::StringLength => "the exact number of Java UTF-16 code units",
+            Self::StringEndsWithAscii(_) => {
+                "true when the final UTF-16 code unit equals the selected ASCII byte"
+            }
+            Self::StringWithoutLastUnit => "the string without its final UTF-16 code unit",
             Self::Call(_) => "ordered invocation of the declared internal function",
             Self::External(_) => "ordered invocation of a closed external declaration",
         }
@@ -397,7 +490,7 @@ impl CoreOp {
         match self {
             Self::BoolConstant(_) => Some(OperationSignature::fixed(&[], &[CoreType::Bool])),
             Self::I32Constant(_) => Some(OperationSignature::fixed(&[], &[CoreType::I32])),
-            Self::I32AddWrapping => Some(OperationSignature::fixed(
+            Self::I32AddWrapping | Self::I32SubWrapping => Some(OperationSignature::fixed(
                 &[CoreType::I32, CoreType::I32],
                 &[CoreType::I32],
             )),
@@ -412,6 +505,32 @@ impl CoreOp {
             Self::BoolNot => Some(OperationSignature::fixed(
                 &[CoreType::Bool],
                 &[CoreType::Bool],
+            )),
+            Self::ListI32Empty => Some(OperationSignature::fixed(&[], &[CoreType::ListI32])),
+            Self::ListI32Length | Self::ListI32LastOrZero => Some(OperationSignature::fixed(
+                &[CoreType::ListI32],
+                &[CoreType::I32],
+            )),
+            Self::ListI32Push => Some(OperationSignature::fixed(
+                &[CoreType::ListI32, CoreType::I32],
+                &[CoreType::ListI32],
+            )),
+            Self::ListI32WithoutLast => Some(OperationSignature::fixed(
+                &[CoreType::ListI32],
+                &[CoreType::ListI32],
+            )),
+            Self::StringConstant(_) => Some(OperationSignature::fixed(&[], &[CoreType::String])),
+            Self::StringLength => Some(OperationSignature::fixed(
+                &[CoreType::String],
+                &[CoreType::I32],
+            )),
+            Self::StringEndsWithAscii(_) => Some(OperationSignature::fixed(
+                &[CoreType::String],
+                &[CoreType::Bool],
+            )),
+            Self::StringWithoutLastUnit => Some(OperationSignature::fixed(
+                &[CoreType::String],
+                &[CoreType::String],
             )),
             Self::Call(function) => {
                 let declaration = program.function(*function)?;
@@ -452,9 +571,19 @@ impl CoreOp {
             | Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
+            | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
-            | Self::BoolNot => None,
+            | Self::BoolNot
+            | Self::ListI32Empty
+            | Self::ListI32Length
+            | Self::ListI32Push
+            | Self::ListI32LastOrZero
+            | Self::ListI32WithoutLast
+            | Self::StringConstant(_)
+            | Self::StringLength
+            | Self::StringEndsWithAscii(_)
+            | Self::StringWithoutLastUnit => None,
         };
         let external = match self {
             Self::External(operation) => program.external_op(*operation),
@@ -462,9 +591,19 @@ impl CoreOp {
             | Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
+            | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
-            | Self::BoolNot => None,
+            | Self::BoolNot
+            | Self::ListI32Empty
+            | Self::ListI32Length
+            | Self::ListI32Push
+            | Self::ListI32LastOrZero
+            | Self::ListI32WithoutLast
+            | Self::StringConstant(_)
+            | Self::StringLength
+            | Self::StringEndsWithAscii(_)
+            | Self::StringWithoutLastUnit => None,
         };
         direct.into_iter().chain(
             external

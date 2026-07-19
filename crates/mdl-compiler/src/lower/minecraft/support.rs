@@ -107,6 +107,7 @@ mod tests {
                 "say CurrentExecutor { required_capability: CommandExecutor } Say 26.2 Java26_2Say\n",
                 "teleport CurrentExecutor { required_capability: CommandExecutor } TeleportCurrentExecutor 26.2 Java26_2TeleportCurrentExecutor\n",
                 "move_by CurrentExecutor { required_capability: CommandExecutor } MoveCurrentExecutorBy 26.2 Java26_2MoveCurrentExecutorBy\n",
+                "main_hand_written_book_literal_page_or_empty CurrentExecutor { required_capability: InventoryHolder } ReadMainHandWrittenBookLiteralPage 26.2 Java26_2ReadMainHandWrittenBookLiteralPage\n",
             )
         );
     }

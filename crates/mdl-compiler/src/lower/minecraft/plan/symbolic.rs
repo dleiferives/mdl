@@ -290,10 +290,9 @@ impl<'a> SymbolicChecker<'a> {
             return Ok(());
         };
         match plan {
-            InstructionPlan::OmittedPure
-            | InstructionPlan::External { .. }
-            | InstructionPlan::Minecraft { .. } => Ok(()),
-            InstructionPlan::Scalar { results, .. } => {
+            InstructionPlan::OmittedPure | InstructionPlan::External { .. } => Ok(()),
+            InstructionPlan::Minecraft { results, .. }
+            | InstructionPlan::Scalar { results, .. } => {
                 self.finish_scalar_outputs(function, data, results, state, false)
             }
             InstructionPlan::Call {
@@ -599,11 +598,8 @@ impl<'a> SymbolicChecker<'a> {
                 }
                 Ok(())
             }
-            InstructionPlan::Minecraft { .. } => {
-                if !matches!(data.op(), CoreOp::External(_))
-                    || !data.operands().is_empty()
-                    || !data.results().is_empty()
-                {
+            InstructionPlan::Minecraft { results, .. } => {
+                if !matches!(data.op(), CoreOp::External(_)) || !data.operands().is_empty() {
                     self.record(SymbolicIssue::shape(
                         Some(function),
                         None,
@@ -611,7 +607,10 @@ impl<'a> SymbolicChecker<'a> {
                         data.origin(),
                     ));
                 }
-                Ok(())
+                for result in results {
+                    state.kill(result.home());
+                }
+                self.finish_scalar_outputs(function, data, results, state, true)
             }
             InstructionPlan::Scalar { operands, results } => {
                 self.validate_scalar(function, instruction, data, operands, results, state)
@@ -663,12 +662,12 @@ impl<'a> SymbolicChecker<'a> {
         self.validate_scalar_placements(function, instruction, data, results)?;
 
         match data.op() {
-            CoreOp::BoolConstant(_) | CoreOp::I32Constant(_) => {
+            CoreOp::BoolConstant(_) | CoreOp::I32Constant(_) | CoreOp::StringConstant(_) => {
                 if let Some(output) = placement_home(results, 0) {
                     state.kill(output);
                 }
             }
-            CoreOp::I32AddWrapping => {
+            CoreOp::I32AddWrapping | CoreOp::I32SubWrapping => {
                 let Some((left_value, left_home)) = operand(data, operands, 0) else {
                     return self.finish_scalar_outputs(function, data, results, state, true);
                 };
@@ -682,7 +681,7 @@ impl<'a> SymbolicChecker<'a> {
                     left_home,
                     state,
                     data.origin(),
-                    "wrapping-add left operand",
+                    "wrapping arithmetic left operand",
                 );
                 if let Some(output) = placement_home(results, 0) {
                     state.copy_home(function, left_home, output)?;
@@ -692,7 +691,7 @@ impl<'a> SymbolicChecker<'a> {
                         self.record(SymbolicIssue::timing(
                             function,
                             instruction,
-                            "wrapping-add result aliases the late-read right operand",
+                            "wrapping arithmetic result aliases the late-read right operand",
                             data.origin(),
                         ));
                     }
@@ -704,7 +703,7 @@ impl<'a> SymbolicChecker<'a> {
                     right_home,
                     state,
                     data.origin(),
-                    "wrapping-add right operand",
+                    "wrapping arithmetic right operand",
                 );
             }
             CoreOp::I32AddOverflowing => {
@@ -823,6 +822,62 @@ impl<'a> SymbolicChecker<'a> {
                         state,
                         data.origin(),
                         "Boolean-not operand",
+                    );
+                }
+            }
+            CoreOp::ListI32Empty
+            | CoreOp::ListI32Length
+            | CoreOp::ListI32Push
+            | CoreOp::ListI32LastOrZero
+            | CoreOp::ListI32WithoutLast => {
+                if let Some(output) = placement_home(results, 0) {
+                    if operands.contains(&output) {
+                        self.record(SymbolicIssue::timing(
+                            function,
+                            instruction,
+                            "list result aliases an operand despite a no-reuse recipe contract",
+                            data.origin(),
+                        ));
+                    }
+                    state.kill(output);
+                }
+                for index in 0..data.operands().len() {
+                    if let Some((value, home)) = operand(data, operands, index) {
+                        self.require_value(
+                            function,
+                            Some(instruction),
+                            value,
+                            home,
+                            state,
+                            data.origin(),
+                            "list operation operand",
+                        );
+                    }
+                }
+            }
+            CoreOp::StringLength
+            | CoreOp::StringEndsWithAscii(_)
+            | CoreOp::StringWithoutLastUnit => {
+                if let Some(output) = placement_home(results, 0) {
+                    if operands.contains(&output) {
+                        self.record(SymbolicIssue::timing(
+                            function,
+                            instruction,
+                            "string result aliases an operand despite a no-reuse recipe contract",
+                            data.origin(),
+                        ));
+                    }
+                    state.kill(output);
+                }
+                if let Some((value, home)) = operand(data, operands, 0) {
+                    self.require_value(
+                        function,
+                        Some(instruction),
+                        value,
+                        home,
+                        state,
+                        data.origin(),
+                        "string operation operand",
                     );
                 }
             }

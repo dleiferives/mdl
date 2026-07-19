@@ -43,6 +43,8 @@ pub enum RuntimeValueType {
     Bool,
     /// A signed 32-bit integer value.
     Int32,
+    /// A Java-compatible immutable runtime string.
+    String,
 }
 
 impl fmt::Display for RuntimeValueType {
@@ -50,6 +52,7 @@ impl fmt::Display for RuntimeValueType {
         formatter.write_str(match self {
             Self::Bool => "Bool",
             Self::Int32 => "Int32",
+            Self::String => "String",
         })
     }
 }
@@ -86,7 +89,7 @@ impl EntityKind {
     #[must_use]
     pub const fn capabilities(self) -> EntityCapabilities {
         match self {
-            Self::ArmorStand => EntityCapabilities::COMMAND_EXECUTOR,
+            Self::ArmorStand => EntityCapabilities::ARMOR_STAND,
         }
     }
 }
@@ -102,12 +105,15 @@ impl fmt::Display for EntityKind {
 pub enum EntityCapability {
     /// The entity kind can establish Minecraft's current command executor.
     CommandExecutor,
+    /// The entity exposes a native inventory/hand item surface.
+    InventoryHolder,
 }
 
 impl fmt::Display for EntityCapability {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::CommandExecutor => "CommandExecutor",
+            Self::InventoryHolder => "InventoryHolder",
         })
     }
 }
@@ -118,13 +124,15 @@ pub struct EntityCapabilities(u8);
 
 impl EntityCapabilities {
     const COMMAND_EXECUTOR_BIT: u8 = 1 << 0;
-    const COMMAND_EXECUTOR: Self = Self(Self::COMMAND_EXECUTOR_BIT);
+    const INVENTORY_HOLDER_BIT: u8 = 1 << 1;
+    const ARMOR_STAND: Self = Self(Self::COMMAND_EXECUTOR_BIT | Self::INVENTORY_HOLDER_BIT);
 
     /// Returns whether the set contains `capability`.
     #[must_use]
     pub const fn contains(self, capability: EntityCapability) -> bool {
         let bit = match capability {
             EntityCapability::CommandExecutor => Self::COMMAND_EXECUTOR_BIT,
+            EntityCapability::InventoryHolder => Self::INVENTORY_HOLDER_BIT,
         };
         self.0 & bit != 0
     }

@@ -473,6 +473,8 @@ fn punctuation(bytes: &[u8], index: usize) -> (Option<TokenKind>, usize) {
     let next = bytes.get(index + 1).copied();
     match (byte, next) {
         (b'-', Some(b'>')) => (Some(TokenKind::Arrow), 2),
+        (b'+', Some(b'%')) => (Some(TokenKind::PlusPercent), 2),
+        (b'-', Some(b'%')) => (Some(TokenKind::MinusPercent), 2),
         (b'=', Some(b'=')) => (Some(TokenKind::EqualEqual), 2),
         (b'!', Some(b'=')) => (Some(TokenKind::BangEqual), 2),
         (b'<', Some(b'=')) => (Some(TokenKind::LessEqual), 2),
@@ -511,6 +513,7 @@ fn identifier_kind(identifier: &str) -> TokenKind {
         "pub" => TokenKind::KeywordPub,
         "export" => TokenKind::KeywordExport,
         "import" => TokenKind::KeywordImport,
+        "struct" => TokenKind::KeywordStruct,
         "unsafe" => TokenKind::KeywordUnsafe,
         "minecraft" => TokenKind::KeywordMinecraft,
         "run" => TokenKind::KeywordRun,
@@ -518,6 +521,9 @@ fn identifier_kind(identifier: &str) -> TokenKind {
         "var" => TokenKind::KeywordVar,
         "if" => TokenKind::KeywordIf,
         "else" => TokenKind::KeywordElse,
+        "while" => TokenKind::KeywordWhile,
+        "break" => TokenKind::KeywordBreak,
+        "continue" => TokenKind::KeywordContinue,
         "return" => TokenKind::KeywordReturn,
         "true" => TokenKind::KeywordTrue,
         "false" => TokenKind::KeywordFalse,

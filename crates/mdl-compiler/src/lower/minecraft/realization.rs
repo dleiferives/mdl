@@ -48,15 +48,21 @@ entity_id!(
 pub(crate) enum PhysicalStorageClass {
     ScoreBool,
     ScoreI32,
+    NbtListI32,
+    NbtString,
     ActivationNbtBool,
     ActivationNbtI32,
+    ActivationNbtListI32,
+    ActivationNbtString,
 }
 
 impl PhysicalStorageClass {
-    pub(crate) const fn score_for(ty: CoreType) -> Self {
+    pub(crate) const fn primary_for(ty: CoreType) -> Self {
         match ty {
             CoreType::Bool => Self::ScoreBool,
             CoreType::I32 => Self::ScoreI32,
+            CoreType::ListI32 => Self::NbtListI32,
+            CoreType::String => Self::NbtString,
         }
     }
 
@@ -64,6 +70,8 @@ impl PhysicalStorageClass {
         match self {
             Self::ScoreBool | Self::ActivationNbtBool => CoreType::Bool,
             Self::ScoreI32 | Self::ActivationNbtI32 => CoreType::I32,
+            Self::NbtListI32 | Self::ActivationNbtListI32 => CoreType::ListI32,
+            Self::NbtString | Self::ActivationNbtString => CoreType::String,
         }
     }
 
@@ -71,6 +79,8 @@ impl PhysicalStorageClass {
         match ty {
             CoreType::Bool => Self::ActivationNbtBool,
             CoreType::I32 => Self::ActivationNbtI32,
+            CoreType::ListI32 => Self::ActivationNbtListI32,
+            CoreType::String => Self::ActivationNbtString,
         }
     }
 }
@@ -237,6 +247,9 @@ pub(crate) enum AbiValueMode {
     DirectScore {
         storage: PhysicalStorageId,
     },
+    DirectNbtValue {
+        storage: PhysicalStorageId,
+    },
     #[allow(dead_code, reason = "introduced by the recursive-frame tranche")]
     ActivationFrameField {
         storage: PhysicalStorageId,
@@ -390,7 +403,7 @@ impl PhysicalRealizationPlan {
                 let storage = storages
                     .push(PhysicalStorageDecl {
                         function,
-                        class: PhysicalStorageClass::score_for(declaration.ty()),
+                        class: PhysicalStorageClass::primary_for(declaration.ty()),
                         binding: PhysicalStorageBinding::AssignedScore {
                             home,
                             role: declaration.role(),
@@ -615,7 +628,7 @@ impl PhysicalRealizationPlan {
                             )
                             || actual.origin != expected_origin
                             || storage.function != function
-                            || storage.class != PhysicalStorageClass::score_for(actual.ty)
+                            || storage.class != PhysicalStorageClass::primary_for(actual.ty)
                             || !matches!(
                                 storage.binding,
                                 PhysicalStorageBinding::AssignedScore { home, .. }
@@ -869,10 +882,15 @@ impl PhysicalRealizationPlan {
                     PhysicalStorageClass::ActivationNbtBool => {
                         inventory.score_bool_to_frame += 1;
                     }
-                    PhysicalStorageClass::ActivationNbtI32 => {
+                    PhysicalStorageClass::ActivationNbtI32
+                    | PhysicalStorageClass::ActivationNbtListI32
+                    | PhysicalStorageClass::ActivationNbtString => {
                         inventory.score_i32_to_frame += 1;
                     }
-                    PhysicalStorageClass::ScoreBool | PhysicalStorageClass::ScoreI32 => {
+                    PhysicalStorageClass::ScoreBool
+                    | PhysicalStorageClass::ScoreI32
+                    | PhysicalStorageClass::NbtListI32
+                    | PhysicalStorageClass::NbtString => {
                         unreachable!("verified recursive spills use activation storage")
                     }
                 }
@@ -1220,9 +1238,7 @@ fn build_abi(
         .map(|(home, ty)| {
             Ok(AbiPosition {
                 ty,
-                mode: AbiValueMode::DirectScore {
-                    storage: local_storage(storages, home, function)?,
-                },
+                mode: direct_abi_mode(ty, local_storage(storages, home, function)?),
             })
         })
         .collect::<Result<Vec<_>, PhysicalPlanError>>()?;
@@ -1235,9 +1251,7 @@ fn build_abi(
         .map(|(home, ty)| {
             Ok(AbiPosition {
                 ty,
-                mode: AbiValueMode::DirectScore {
-                    storage: local_storage(storages, home, function)?,
-                },
+                mode: direct_abi_mode(ty, local_storage(storages, home, function)?),
             })
         })
         .collect::<Result<Vec<_>, PhysicalPlanError>>()?;
@@ -1251,6 +1265,13 @@ fn build_abi(
         parameters: parameters.into_boxed_slice(),
         results: results.into_boxed_slice(),
     })
+}
+
+const fn direct_abi_mode(ty: CoreType, storage: PhysicalStorageId) -> AbiValueMode {
+    match ty {
+        CoreType::Bool | CoreType::I32 => AbiValueMode::DirectScore { storage },
+        CoreType::ListI32 | CoreType::String => AbiValueMode::DirectNbtValue { storage },
+    }
 }
 
 #[allow(
@@ -1606,7 +1627,7 @@ fn push_requirement(
             function,
             value,
             site,
-            accepted: vec![PhysicalStorageClass::score_for(ty)].into_boxed_slice(),
+            accepted: vec![PhysicalStorageClass::primary_for(ty)].into_boxed_slice(),
             timing,
             realization,
             destination,
@@ -2268,8 +2289,23 @@ fn verify_abi(
                 .zip(assigned.abi().results()),
         )
     {
-        let AbiValueMode::DirectScore { storage } = position.mode else {
-            return Err(PhysicalPlanError::InvalidAbi { function });
+        let storage = match position.mode {
+            AbiValueMode::DirectScore { storage }
+                if matches!(expected_ty, CoreType::Bool | CoreType::I32) =>
+            {
+                storage
+            }
+            AbiValueMode::DirectNbtValue { storage }
+                if matches!(expected_ty, CoreType::ListI32 | CoreType::String) =>
+            {
+                storage
+            }
+            AbiValueMode::ElidedKnown
+            | AbiValueMode::ActivationFrameField { .. }
+            | AbiValueMode::DirectScore { .. }
+            | AbiValueMode::DirectNbtValue { .. } => {
+                return Err(PhysicalPlanError::InvalidAbi { function });
+            }
         };
         let storage = plan
             .storages
@@ -2277,7 +2313,7 @@ fn verify_abi(
             .ok_or(PhysicalPlanError::InvalidAbi { function })?;
         if position.ty != *expected_ty
             || storage.function != function
-            || storage.class != PhysicalStorageClass::score_for(*expected_ty)
+            || storage.class != PhysicalStorageClass::primary_for(*expected_ty)
             || !matches!(
                 storage.binding,
                 PhysicalStorageBinding::AssignedScore {
@@ -2363,7 +2399,7 @@ fn verify_storage_declarations(
                     })?;
                 if expected_home != home
                     || expected.role() != role
-                    || storage.class != PhysicalStorageClass::score_for(expected.ty())
+                    || storage.class != PhysicalStorageClass::primary_for(expected.ty())
                     || *seen
                 {
                     return Err(PhysicalPlanError::InvalidStorage {

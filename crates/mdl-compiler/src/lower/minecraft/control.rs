@@ -9,7 +9,7 @@ use crate::source::OriginId;
 use super::construct::{FunctionLoweringCx, command, invariant_diagnostics};
 use super::placement::BranchArmRecipe;
 use super::plan::{BranchArm, BranchTransfer, EdgeTransfer, HomeId};
-use super::scalar::score_operation;
+use super::scalar::copy_home;
 
 /// Lowers one verified unconditional Core edge as physical copies and a tail transfer.
 pub(crate) fn lower_jump(
@@ -29,13 +29,7 @@ pub(crate) fn lower_jump(
         }
     };
     for step in steps.iter().copied() {
-        score_operation(
-            context,
-            step.destination(),
-            crate::ir::minecraft::ScoreOperation::Assign,
-            step.source(),
-            origin,
-        )?;
+        copy_home(context, step.destination(), step.source(), origin)?;
     }
     context.push(tail_call_to_block(context, function, destination, origin)?)
 }
@@ -59,13 +53,7 @@ pub(crate) fn lower_return(
     }
     for (result, value) in results.iter().copied().zip(values.iter().copied()) {
         context.require_same_type(result, value)?;
-        score_operation(
-            context,
-            result,
-            crate::ir::minecraft::ScoreOperation::Assign,
-            value,
-            origin,
-        )?;
+        copy_home(context, result, value, origin)?;
     }
     context.push(command(
         CommandKind::Return(ReturnCommand::Value(1)),
@@ -150,13 +138,7 @@ pub(crate) fn lower_branch_helper(
         ));
     }
     for step in edge.steps().iter().copied() {
-        score_operation(
-            context,
-            step.destination(),
-            crate::ir::minecraft::ScoreOperation::Assign,
-            step.source(),
-            origin,
-        )?;
+        copy_home(context, step.destination(), step.source(), origin)?;
     }
     context.push(tail_call_to_block(context, function, destination, origin)?)
 }

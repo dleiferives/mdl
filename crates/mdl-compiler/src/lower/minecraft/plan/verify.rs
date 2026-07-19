@@ -789,7 +789,11 @@ impl<'a> PlanVerifier<'a> {
                     );
                 }
             }
-            InstructionPlan::Minecraft { external, recipe } => {
+            InstructionPlan::Minecraft {
+                external,
+                recipe,
+                results,
+            } => {
                 let CoreOp::External(actual) = data.op() else {
                     self.report(
                         "lower.plan.instruction-kind",
@@ -800,7 +804,7 @@ impl<'a> PlanVerifier<'a> {
                     );
                     return;
                 };
-                if actual != external || !data.operands().is_empty() || !data.results().is_empty() {
+                if actual != external || !data.operands().is_empty() {
                     self.report(
                         "lower.plan.minecraft-shape",
                         format!(
@@ -819,6 +823,19 @@ impl<'a> PlanVerifier<'a> {
                         data.origin(),
                     ),
                 }
+                let expected_types = self
+                    .core
+                    .external_op(*external)
+                    .map(|declaration| declaration.results().to_vec())
+                    .unwrap_or_default();
+                self.verify_results_against_types(
+                    function,
+                    instruction,
+                    data,
+                    layout,
+                    results,
+                    &expected_types,
+                );
             }
             InstructionPlan::Scalar { operands, results } => {
                 if matches!(data.op(), CoreOp::Call(_)) {
@@ -893,6 +910,25 @@ impl<'a> PlanVerifier<'a> {
             );
             return;
         };
+        self.verify_results_against_types(
+            function,
+            instruction,
+            data,
+            layout,
+            results,
+            expected_types,
+        );
+    }
+
+    fn verify_results_against_types(
+        &mut self,
+        function: FunctionId,
+        instruction: InstId,
+        data: &crate::ir::core::InstData,
+        layout: &FunctionLayout,
+        results: &[ScalarResultPlacement],
+        expected_types: &[CoreType],
+    ) {
         if results.len() != data.results().len() || results.len() != expected_types.len() {
             self.report(
                 "lower.plan.scalar-result-arity",
@@ -2226,10 +2262,22 @@ fn verifier_scalar_result_types(operation: &CoreOp) -> Option<&'static [CoreType
     const BOOL: &[CoreType] = &[CoreType::Bool];
     const I32: &[CoreType] = &[CoreType::I32];
     const OVERFLOW: &[CoreType] = &[CoreType::I32, CoreType::Bool];
+    const LIST: &[CoreType] = &[CoreType::ListI32];
+    const STRING: &[CoreType] = &[CoreType::String];
     match operation {
-        CoreOp::BoolConstant(_) | CoreOp::I32Compare(_) | CoreOp::BoolNot => Some(BOOL),
-        CoreOp::I32Constant(_) | CoreOp::I32AddWrapping => Some(I32),
+        CoreOp::BoolConstant(_)
+        | CoreOp::I32Compare(_)
+        | CoreOp::BoolNot
+        | CoreOp::StringEndsWithAscii(_) => Some(BOOL),
+        CoreOp::I32Constant(_)
+        | CoreOp::I32AddWrapping
+        | CoreOp::I32SubWrapping
+        | CoreOp::ListI32Length
+        | CoreOp::ListI32LastOrZero
+        | CoreOp::StringLength => Some(I32),
         CoreOp::I32AddOverflowing => Some(OVERFLOW),
+        CoreOp::ListI32Empty | CoreOp::ListI32Push | CoreOp::ListI32WithoutLast => Some(LIST),
+        CoreOp::StringConstant(_) | CoreOp::StringWithoutLastUnit => Some(STRING),
         CoreOp::Call(_) | CoreOp::External(_) => None,
     }
 }

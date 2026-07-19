@@ -9,6 +9,7 @@ use super::{
 };
 use crate::entity::EntityLimitError;
 use crate::ir::command_line::{CommandLineShapeError, validate_command_line_shape};
+use crate::ir::semantic::{RuntimeValueType, SemanticType, minecraft_descriptor};
 use crate::source::OriginId;
 
 /// Why an unsafe Minecraft command fragment was rejected before target selection.
@@ -153,15 +154,28 @@ impl ExternalSemanticBinding {
                     && parameters.is_empty()
                     && results.is_empty()
             }
-            Self::MinecraftOperation(operation) => {
-                program
-                    .minecraft_operation(operation)
-                    .is_some_and(super::MinecraftOperationDecl::is_well_formed)
-                    && parameters.is_empty()
-                    && results.is_empty()
-            }
+            Self::MinecraftOperation(operation) => program
+                .minecraft_operation(operation)
+                .is_some_and(|operation| {
+                    let signature = minecraft_descriptor(operation.key()).signature();
+                    operation.is_well_formed()
+                        && semantic_runtime_types_match_core(signature.operands(), parameters)
+                        && semantic_runtime_types_match_core(signature.results(), results)
+                }),
         }
     }
+}
+
+fn semantic_runtime_types_match_core(semantic: &[SemanticType], core: &[CoreType]) -> bool {
+    semantic.len() == core.len()
+        && semantic.iter().zip(core).all(|(semantic, core)| {
+            matches!(
+                (semantic.runtime(), core),
+                (Some(RuntimeValueType::Bool), CoreType::Bool)
+                    | (Some(RuntimeValueType::Int32), CoreType::I32)
+                    | (Some(RuntimeValueType::String), CoreType::String)
+            )
+        })
 }
 
 /// One closed linked declaration referenced by [`super::CoreOp::External`].

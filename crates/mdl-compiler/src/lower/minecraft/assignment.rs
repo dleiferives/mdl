@@ -104,7 +104,9 @@ pub(crate) enum AssignedInstructionPlan {
         result_destinations: Box<[Option<AssignedCallResultDestination>]>,
     },
     /// One retained declaration-backed operation outside the scalar vocabulary.
-    External,
+    External {
+        results: Box<[AssignedScalarResult]>,
+    },
 }
 
 /// One result position required by a fixed scalar recipe.
@@ -132,12 +134,19 @@ pub(crate) struct AssignedCallResultDestination {
 }
 
 /// Fixed target-physical ordering for per-type pools and grouped work.
-pub(super) const PHYSICAL_TYPE_ORDER: [CoreType; 2] = [CoreType::Bool, CoreType::I32];
+pub(super) const PHYSICAL_TYPE_ORDER: [CoreType; 4] = [
+    CoreType::Bool,
+    CoreType::I32,
+    CoreType::ListI32,
+    CoreType::String,
+];
 
 #[derive(Clone, Debug)]
 enum DraftInstructionPlan {
     OmittedPure,
-    External,
+    External {
+        results: Box<[AssignedScalarResult]>,
+    },
     Scalar {
         operands: Box<[AssignedHomeId]>,
         results: Box<[DraftScalarResult]>,
@@ -156,7 +165,7 @@ impl DraftInstructionPlan {
     ) -> Result<AssignedInstructionPlan, AssignmentError> {
         match self {
             Self::OmittedPure => Ok(AssignedInstructionPlan::OmittedPure),
-            Self::External => Ok(AssignedInstructionPlan::External),
+            Self::External { results } => Ok(AssignedInstructionPlan::External { results }),
             Self::Call {
                 arguments,
                 result_destinations,
@@ -253,6 +262,8 @@ const fn recipe_type_index(ty: CoreType) -> usize {
     match ty {
         CoreType::Bool => 0,
         CoreType::I32 => 1,
+        CoreType::ListI32 => 2,
+        CoreType::String => 3,
     }
 }
 
@@ -672,21 +683,21 @@ impl AssignedInstructionPlan {
     pub(crate) fn scalar_operands(&self) -> Option<&[AssignedHomeId]> {
         match self {
             Self::Scalar { operands, .. } => Some(operands),
-            Self::OmittedPure | Self::Call { .. } | Self::External => None,
+            Self::OmittedPure | Self::Call { .. } | Self::External { .. } => None,
         }
     }
 
     pub(crate) fn scalar_results(&self) -> Option<&[AssignedScalarResult]> {
         match self {
             Self::Scalar { results, .. } => Some(results),
-            Self::OmittedPure | Self::Call { .. } | Self::External => None,
+            Self::OmittedPure | Self::Call { .. } | Self::External { .. } => None,
         }
     }
 
     pub(crate) fn call_arguments(&self) -> Option<&[AssignedHomeId]> {
         match self {
             Self::Call { arguments, .. } => Some(arguments),
-            Self::OmittedPure | Self::Scalar { .. } | Self::External => None,
+            Self::OmittedPure | Self::Scalar { .. } | Self::External { .. } => None,
         }
     }
 
@@ -698,7 +709,7 @@ impl AssignedInstructionPlan {
                 result_destinations,
                 ..
             } => Some(result_destinations),
-            Self::OmittedPure | Self::Scalar { .. } | Self::External => None,
+            Self::OmittedPure | Self::Scalar { .. } | Self::External { .. } => None,
         }
     }
 }
@@ -839,9 +850,19 @@ fn plan_none_instructions(
             CoreOp::BoolConstant(_)
             | CoreOp::I32Constant(_)
             | CoreOp::I32AddWrapping
+            | CoreOp::I32SubWrapping
             | CoreOp::I32AddOverflowing
             | CoreOp::I32Compare(_)
-            | CoreOp::BoolNot => {
+            | CoreOp::BoolNot
+            | CoreOp::ListI32Empty
+            | CoreOp::ListI32Length
+            | CoreOp::ListI32Push
+            | CoreOp::ListI32LastOrZero
+            | CoreOp::ListI32WithoutLast
+            | CoreOp::StringConstant(_)
+            | CoreOp::StringLength
+            | CoreOp::StringEndsWithAscii(_)
+            | CoreOp::StringWithoutLastUnit => {
                 let results = data
                     .results()
                     .iter()
@@ -858,7 +879,22 @@ fn plan_none_instructions(
                     .into_boxed_slice();
                 AssignedInstructionPlan::Scalar { operands, results }
             }
-            CoreOp::External(_) => AssignedInstructionPlan::External,
+            CoreOp::External(_) => AssignedInstructionPlan::External {
+                results: data
+                    .results()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(result_index, value)| {
+                        Ok(AssignedScalarResult::Semantic {
+                            result_index,
+                            value,
+                            home: value_home(value_assignments, function, value)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, AssignmentError>>()?
+                    .into_boxed_slice(),
+            },
         };
         set_indexed_slot(&mut plans, instruction, plan, function)?;
     }
@@ -949,7 +985,23 @@ fn draft_retained_instruction(
     recipe_requirements: &mut RecipeRequirements,
 ) -> Result<DraftInstructionPlan, AssignmentError> {
     if matches!(data.op(), CoreOp::External(_)) {
-        return Ok(DraftInstructionPlan::External);
+        let results = data
+            .results()
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(result_index, value)| {
+                indexed_slot(assignments, value)
+                    .flatten()
+                    .map(|assignment| AssignedScalarResult::Semantic {
+                        result_index,
+                        value,
+                        home: assignment.home(),
+                    })
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        return Ok(DraftInstructionPlan::External { results });
     }
     let operands = assigned_operands(function, data, assignments)?;
     if matches!(data.op(), CoreOp::Call(_)) {

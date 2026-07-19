@@ -13,6 +13,7 @@ use crate::source::Span;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstModule {
     pub(super) imports: Vec<AstImport>,
+    pub(super) structs: Vec<AstStruct>,
     pub(super) functions: Vec<AstFunction>,
     pub(super) span: Span,
 }
@@ -23,6 +24,22 @@ pub(super) struct AstImport {
     pub(super) binding: AstName,
     /// Complete quoted and lexically validated dependency-name literal.
     pub(super) dependency: Span,
+    pub(super) span: Span,
+}
+
+/// One nominal fixed-layout type declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstStruct {
+    pub(super) name: AstName,
+    pub(super) fields: Vec<AstStructField>,
+    pub(super) span: Span,
+}
+
+/// One source-ordered field in a nominal struct.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstStructField {
+    pub(super) name: AstName,
+    pub(super) ty: AstValueType,
     pub(super) span: Span,
 }
 
@@ -37,6 +54,9 @@ pub(super) struct AstName {
 pub(super) enum AstValueTypeKind {
     Bool,
     Int32,
+    ListI32,
+    String,
+    Named(AstName),
 }
 
 /// One explicitly written source value type.
@@ -138,6 +158,14 @@ pub(super) struct AstIfStatement {
     pub(super) span: Span,
 }
 
+/// One structured pre-test loop.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstWhileStatement {
+    pub(super) condition: AstExpression,
+    pub(super) body: AstBlock,
+    pub(super) span: Span,
+}
+
 /// One parsed explicit return.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstReturnStatement {
@@ -177,6 +205,9 @@ pub(super) enum AstStatement {
     Assignment(AstAssignment),
     Call(AstCallStatement),
     If(AstIfStatement),
+    While(AstWhileStatement),
+    Break(Span),
+    Continue(Span),
     Return(AstReturnStatement),
     Run(AstRunStatement),
     UnsafeMinecraft(AstUnsafeMinecraftStatement),
@@ -189,6 +220,20 @@ pub(super) enum AstStatement {
 pub(super) struct AstCall {
     pub(super) callee: Box<AstExpression>,
     pub(super) arguments: Vec<AstExpression>,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstStructLiteral {
+    pub(super) ty: AstName,
+    pub(super) fields: Vec<AstStructFieldInitializer>,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstStructFieldInitializer {
+    pub(super) name: AstName,
+    pub(super) value: AstExpression,
     pub(super) span: Span,
 }
 
@@ -208,6 +253,12 @@ pub(super) enum AstComparisonOp {
     LessEqual,
     Greater,
     GreaterEqual,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AstWrappingArithmeticOp {
+    Add,
+    Subtract,
 }
 
 /// One parsed expression with its complete source range.
@@ -238,7 +289,13 @@ pub(super) enum AstExpressionKind {
         member: AstName,
     },
     Call(AstCall),
+    StructLiteral(AstStructLiteral),
     Not(Box<AstExpression>),
+    WrappingArithmetic {
+        op: AstWrappingArithmeticOp,
+        left: Box<AstExpression>,
+        right: Box<AstExpression>,
+    },
     Compare {
         op: AstComparisonOp,
         left: Box<AstExpression>,
@@ -273,6 +330,9 @@ pub(super) fn dump(module: &AstModule, sources: &SourceContext) -> String {
             ),
         );
     }
+    for struct_ in &module.structs {
+        printer.struct_(struct_);
+    }
     for function in &module.functions {
         printer.function(function);
     }
@@ -287,6 +347,28 @@ struct AstPrinter<'a> {
 
 #[cfg(test)]
 impl AstPrinter<'_> {
+    fn struct_(&mut self, struct_: &AstStruct) {
+        self.line(
+            1,
+            format_args!(
+                "struct {} {}",
+                self.spelling(struct_.name.span),
+                location(struct_.span)
+            ),
+        );
+        for field in &struct_.fields {
+            self.line(
+                2,
+                format_args!(
+                    "field {}: {} {}",
+                    self.spelling(field.name.span),
+                    self.value_type(field.ty.kind),
+                    location(field.span)
+                ),
+            );
+        }
+    }
+
     fn function(&mut self, function: &AstFunction) {
         let visibility = match function.visibility {
             AstFunctionVisibility::Private => "private",
@@ -307,7 +389,7 @@ impl AstPrinter<'_> {
                 format_args!(
                     "parameter {}: {} {}",
                     self.spelling(parameter.name.span),
-                    value_type(parameter.ty.kind),
+                    self.value_type(parameter.ty.kind),
                     location(parameter.span)
                 ),
             );
@@ -317,7 +399,7 @@ impl AstPrinter<'_> {
                 2,
                 format_args!(
                     "result {} {}",
-                    result_type(result.kind),
+                    self.result_type(result.kind),
                     location(result.span)
                 ),
             ),
@@ -333,6 +415,10 @@ impl AstPrinter<'_> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the test-only AST dump keeps its closed statement vocabulary exhaustive"
+    )]
     fn statement(&mut self, statement: &AstStatement, indent: usize) {
         match statement {
             AstStatement::Declaration(declaration) => {
@@ -345,7 +431,7 @@ impl AstPrinter<'_> {
                     format_args!(
                         "{kind} {}: {} {}",
                         self.spelling(declaration.name.span),
-                        value_type(declaration.ty.kind),
+                        self.value_type(declaration.ty.kind),
                         location(declaration.span)
                     ),
                 );
@@ -382,6 +468,18 @@ impl AstPrinter<'_> {
                     self.line(indent + 1, format_args!("else"));
                     self.block(body, indent + 2);
                 }
+            }
+            AstStatement::While(statement) => {
+                self.line(indent, format_args!("while {}", location(statement.span)));
+                self.line(indent + 1, format_args!("condition"));
+                self.expression(&statement.condition, indent + 2);
+                self.block(&statement.body, indent + 1);
+            }
+            AstStatement::Break(span) => {
+                self.line(indent, format_args!("break {}", location(*span)));
+            }
+            AstStatement::Continue(span) => {
+                self.line(indent, format_args!("continue {}", location(*span)));
             }
             AstStatement::Return(return_statement) => {
                 self.line(
@@ -433,6 +531,10 @@ impl AstPrinter<'_> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the test-only AST dump keeps its closed expression vocabulary exhaustive"
+    )]
     fn expression(&mut self, expression: &AstExpression, indent: usize) {
         match &expression.kind {
             AstExpressionKind::Bool(value) => self.line(
@@ -497,9 +599,45 @@ impl AstPrinter<'_> {
                 self.line(indent, format_args!("call {}", location(expression.span)));
                 self.call(call, indent + 1);
             }
+            AstExpressionKind::StructLiteral(literal) => {
+                self.line(
+                    indent,
+                    format_args!(
+                        "struct-literal {} {}",
+                        self.spelling(literal.ty.span),
+                        location(expression.span)
+                    ),
+                );
+                for field in &literal.fields {
+                    self.line(
+                        indent + 1,
+                        format_args!(
+                            "field {} {}",
+                            self.spelling(field.name.span),
+                            location(field.span)
+                        ),
+                    );
+                    self.expression(&field.value, indent + 2);
+                }
+            }
             AstExpressionKind::Not(operand) => {
                 self.line(indent, format_args!("not {}", location(expression.span)));
                 self.expression(operand, indent + 1);
+            }
+            AstExpressionKind::WrappingArithmetic { op, left, right } => {
+                let operator = match op {
+                    AstWrappingArithmeticOp::Add => "+%",
+                    AstWrappingArithmeticOp::Subtract => "-%",
+                };
+                self.line(
+                    indent,
+                    format_args!(
+                        "wrapping-arithmetic {operator} {}",
+                        location(expression.span)
+                    ),
+                );
+                self.expression(left, indent + 1);
+                self.expression(right, indent + 1);
             }
             AstExpressionKind::Compare { op, left, right } => {
                 self.line(
@@ -534,6 +672,23 @@ impl AstPrinter<'_> {
             .to_owned()
     }
 
+    fn value_type(&self, ty: AstValueTypeKind) -> String {
+        match ty {
+            AstValueTypeKind::Bool => "Bool".to_owned(),
+            AstValueTypeKind::Int32 => "Int32".to_owned(),
+            AstValueTypeKind::ListI32 => "List<Int32>".to_owned(),
+            AstValueTypeKind::String => "String".to_owned(),
+            AstValueTypeKind::Named(name) => self.spelling(name.span),
+        }
+    }
+
+    fn result_type(&self, ty: AstResultTypeKind) -> String {
+        match ty {
+            AstResultTypeKind::Value(value) => self.value_type(value),
+            AstResultTypeKind::Void => "Void".to_owned(),
+        }
+    }
+
     fn line(&mut self, indent: usize, arguments: fmt::Arguments<'_>) {
         for _ in 0..indent {
             self.output.push_str("  ");
@@ -542,22 +697,6 @@ impl AstPrinter<'_> {
             .write_fmt(arguments)
             .expect("formatting into String cannot fail");
         self.output.push('\n');
-    }
-}
-
-#[cfg(test)]
-const fn value_type(ty: AstValueTypeKind) -> &'static str {
-    match ty {
-        AstValueTypeKind::Bool => "Bool",
-        AstValueTypeKind::Int32 => "Int32",
-    }
-}
-
-#[cfg(test)]
-const fn result_type(ty: AstResultTypeKind) -> &'static str {
-    match ty {
-        AstResultTypeKind::Value(value) => value_type(value),
-        AstResultTypeKind::Void => "Void",
     }
 }
 

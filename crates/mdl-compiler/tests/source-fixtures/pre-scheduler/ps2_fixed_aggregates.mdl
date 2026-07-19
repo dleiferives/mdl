@@ -1,0 +1,32 @@
+// MDL: success
+// HIR: struct@1{
+// HIR: .field1:Struct@0
+// CORE: func @fn0(%v0: i32, %v1: i32, %v2: bool) -> (i32, i32, bool)
+
+const Inner = struct {
+    count: Int32,
+    ready: Bool,
+};
+
+const State = struct {
+    pc: Int32,
+    inner: Inner,
+};
+
+fn identity(value: State) -> State {
+    return value;
+}
+
+export fn aggregate_flow(value: Int32) -> Int32 {
+    var state: State = State{
+        .pc = value,
+        .inner = Inner{ .count = 3, .ready = true },
+    };
+    if (state.inner.ready) {
+        state = identity(State{
+            .pc = state.pc +% state.inner.count,
+            .inner = state.inner,
+        });
+    }
+    return state.pc;
+}

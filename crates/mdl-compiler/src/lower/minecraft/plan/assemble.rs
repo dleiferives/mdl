@@ -772,7 +772,7 @@ fn flatten_instruction_plan(
 ) -> Result<InstructionPlan, PlanBuildError> {
     match plan {
         AssignedInstructionPlan::OmittedPure => Ok(InstructionPlan::OmittedPure),
-        AssignedInstructionPlan::External => {
+        AssignedInstructionPlan::External { results } => {
             let data = body
                 .instruction(instruction)
                 .ok_or_else(|| invalid_assignment(function))?;
@@ -786,6 +786,28 @@ fn flatten_instruction_plan(
                 Ok(InstructionPlan::Minecraft {
                     external: *external,
                     recipe: recipe.recipe_id(),
+                    results: results
+                        .iter()
+                        .copied()
+                        .map(|result| match result {
+                            AssignedScalarResult::Semantic {
+                                result_index,
+                                value,
+                                home,
+                            } => Ok(ScalarResultPlacement::Semantic {
+                                result_index,
+                                value,
+                                home: homes.assigned(function, home)?,
+                            }),
+                            AssignedScalarResult::RecipeTemporary { result_index, home } => {
+                                Ok(ScalarResultPlacement::RecipeTemporary {
+                                    result_index,
+                                    home: homes.assigned(function, home)?,
+                                })
+                            }
+                        })
+                        .collect::<Result<Vec<_>, PlanBuildError>>()?
+                        .into_boxed_slice(),
                 })
             } else {
                 Ok(InstructionPlan::External {

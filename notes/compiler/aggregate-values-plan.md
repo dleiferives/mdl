@@ -1,11 +1,14 @@
 # Aggregate Values — Post-Stage-8 Client Plan
 
-Status: **planned; not part of Stage 8**
+Status: **planned; first fixed-layout client assigned to Stage 8.5 PS-2**
 
-This is the next value-representation client of Stage 8. It is not automatically
-Stage 9: the roadmap currently gives Stage 9 to loops and static multi-tick
-scheduling. Aggregate implementation may follow or be explicitly reprioritized, but
-it must preserve the Stage 8 physical boundary.
+This is the next value-representation client of Stage 8. The Stage 8.5 roadmap now
+assigns its first immutable fixed-layout slice to PS-2 because the Brainfuck
+interpreter/parser needs structured state before persistent scheduling. The focused
+ownership and exit plan is
+[`pre-scheduler/ps-2/aggregate-values.md`](pre-scheduler/ps-2/aggregate-values.md).
+Later aggregate/reference/layout capabilities remain follow-on work and must preserve
+the Stage 8 physical boundary.
 
 ## First semantic slice
 

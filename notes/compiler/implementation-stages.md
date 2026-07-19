@@ -24,7 +24,8 @@ end-to-end path does not count.
 | 7 | Whole-package modules, then typed Minecraft context/entities/command APIs |
 | 7.5 | Ordered execution frames and static spatial semantics |
 | 8 | Calling convention and multiple runtime representations |
-| 9 | Loops, bounded work analysis, and static multi-tick scheduling |
+| 8.5 | Pre-scheduler test oracles, synchronous capabilities, and Brainfuck validation |
+| 9 | Persistent continuations and static multi-tick scheduling |
 | 10 | Typed compile-time macros and disciplined Minecraft macro lowering |
 | 11 | Cost-directed global optimization and optional equality saturation |
 | 12 | Stabilization, compatibility, packaging, and ecosystem work |
@@ -501,17 +502,68 @@ Exit criteria:
 - acyclic functions retain the static-score fast path; and
 - unused frames, wrappers, transfers, and storage paths are eliminated.
 
-## Stage 9: Loops and static multi-tick scheduling
+## Stage 8.5: Pre-scheduler capability validation
 
-Add structured loops and lower them according to bounds and target budgets:
+Status: **PS-1 and PS-2 complete; PS-3 is ready to begin.** See the
+[`Stage 8.5 documentation index`](pre-scheduler/README.md) and
+[`roadmap`](pre-scheduler/roadmap.md).
 
-- constant folding and complete unrolling for tiny known loops;
-- partial unrolling;
-- normalization and optimization of already-correct same-tick recursion;
-- selector/native bulk transformations;
-- bounded dynamic iteration;
+Prove that MDL can express and validate a substantial synchronous program before
+adding suspension as a new activation lifetime. The first capstone is a
+fuel-bounded Brainfuck interpreter whose program is ultimately obtained from a
+written book.
+
+Stage 8.5 has three required substages:
+
+1. PS-1 adds a bounded target-independent Core evaluator and a state-based scenario
+   runner around the pinned vanilla server. It keeps compiler structure, pure
+   semantics, and Minecraft runtime behavior as separate test authorities.
+2. PS-2 adds the general synchronous capabilities required by the capstone:
+   arithmetic/mutation, same-tick loops, aggregates, owned lists/stacks/zippers,
+   runtime strings/parsing, typed books/items, bounded execution, and any narrowly
+   justified typed Minecraft macro recipe.
+3. PS-3 writes the interpreter as an ordinary MDL package and validates independent
+   interpreter, parser, book, player-held, output, limit, cost, and cleanup layers.
+
+PS-2 explicitly separates core language semantics, public MDL standard-library
+algorithms, sealed typed platform intrinsics, and compiler-private runtime support.
+Known optimized mcfunction helpers are permitted only behind an exact intrinsic
+contract with pinned-server conformance; opaque handwritten target code does not
+become the source semantic authority.
+
+This stage reprioritizes the synchronous portion of the previous loop/aggregate/
+macro roadmap. It does not add persistent continuation frames, yields, a runtime job
+queue, or transparent context survival across ticks. Dynamic programs use explicit
+finite fuel and program-size bounds when a synchronous guarantee is required.
+
+Exit criteria:
+
+- structural fixture failures and vanilla state failures are concise and use the
+  correct independent oracle;
+- every capstone capability has frozen semantics, verified IR, physical contracts,
+  four-policy differential evidence, and applicable pinned-server evidence;
+- an ordinary MDL package parses and executes the frozen Brainfuck corpus;
+- at least one supported written-book-to-output path runs on vanilla;
+- fuel exhaustion, invalid input, deployment rejection, and abnormal Minecraft
+  interruption remain distinct; and
+- Stage 9 receives concrete live-state/context requirements without Stage 8.5
+  pretending that work already survives a tick.
+
+PS-4 and later validation programs are individually accepted using the Stage 8.5
+template. They do not silently extend this stage's required exit after PS-3.
+
+## Stage 9: Persistent continuations and static multi-tick scheduling
+
+Add suspension and lower already-correct synchronous work according to bounds and
+target budgets:
+
 - static continuation phases across ticks;
 - explicit live-state preservation at yield points.
+
+Stage 8.5 owns ordinary same-tick loop semantics, baseline synchronous lowering,
+fuel-bounded dynamic execution, and the first aggregate/list/string clients. Stage 9
+may add scheduling-aware loop transformations, but it does not redefine those
+semantics.
 
 Scheduling consumes the Stage 7 context/fork/work contract. It cannot yield inside,
 duplicate, replay, or prove a hard bound through an unsafe raw operation whose
@@ -538,6 +590,12 @@ Exit criteria:
 ## Stage 10: Macros and compile-time metaprogramming
 
 Add typed language-level metaprogramming separately from Minecraft function macros.
+
+Stage 8.5 may already contain a closed set of typed Minecraft macro recipes required
+by its string/book clients. Stage 10 generalizes the serialization/interpolation
+surface and adds language-level metaprogramming; it must preserve those earlier
+semantic and target contracts rather than introducing a second incompatible macro
+boundary.
 
 Language macros should operate on typed or type-checkable structures, preserve
 source locations, participate in hygiene/name resolution, and produce normal IR
@@ -614,11 +672,16 @@ installation.
 
 ## Immediate implementation tranche
 
-Stages 1 through 8 are complete for their frozen scopes. Stage 8's fixed-score
+Stages 1 through 8 are complete for their frozen scopes. Stage 8.5 is the immediate
+implementation tranche. Its PS-1 test oracles precede PS-2 synchronous capability
+expansion and the PS-3 Brainfuck capstone; see
+[`pre-scheduler/README.md`](pre-scheduler/README.md). Stage 8's fixed-score
 compatibility path, zero-or-more scalar realizations, exact sparse lifetimes, serial
 many-context reuse, recursive-SCC-only typed spill frames, recovery contract,
 physical recipe accounting, corruption/determinism gates, and clientless Java 26.2
-proofs are complete. See [`stage-8-handoff.md`](stage-8-handoff.md). Stage 9 must
+proofs are complete. See [`stage-8-handoff.md`](stage-8-handoff.md). Stage 8.5 must
+preserve those synchronous contracts while adding their first aggregate/list/string
+clients. Stage 9 must
 preserve Stage 7.5's context boundaries and must not suspend Stage 8's synchronous
 tail frames across ticks.
 Module ordering remains in-memory and logical; filesystem discovery, package

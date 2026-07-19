@@ -1,0 +1,5 @@
+// MDL: failure semantic frontend.check.loop-control-outside-loop
+
+export fn invalid_break() {
+    break;
+}

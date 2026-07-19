@@ -817,7 +817,9 @@ fn dump_instruction(output: &mut String, report: &InstructionReport) {
             )
             .unwrap();
         }
-        InstructionPlan::Minecraft { external, recipe } => {
+        InstructionPlan::Minecraft {
+            external, recipe, ..
+        } => {
             dump_minecraft_instruction(output, report, *external, *recipe);
         }
         InstructionPlan::Scalar { operands, results } => {

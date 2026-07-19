@@ -159,6 +159,8 @@ impl<'a> GeneratedNames<'a> {
         let discriminator = match ty {
             CoreType::Bool => 'b',
             CoreType::I32 => 'i',
+            CoreType::ListI32 => 'l',
+            CoreType::String => 's',
         };
         Self::fake_holder(format!(
             "#f{}{family}{discriminator}{ordinal}",

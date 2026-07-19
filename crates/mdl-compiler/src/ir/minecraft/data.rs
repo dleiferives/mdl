@@ -1,4 +1,4 @@
-use super::{FiniteF64, NbtValue, StoragePath};
+use super::{FiniteF64, NbtPath, NbtValue, Selector, StoragePath};
 
 /// A native `/data modify` operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -20,6 +20,14 @@ pub enum DataSource {
     Value(NbtValue),
     /// One static path in command storage.
     From(StoragePath),
+    /// One statically bounded Java-string slice from command storage.
+    StringSlice {
+        source: StoragePath,
+        start: i32,
+        end: Option<i32>,
+    },
+    /// One static NBT path read from an entity selected by a typed recipe.
+    Entity { selector: Selector, path: NbtPath },
 }
 
 /// The closed initial storage-data command vocabulary.

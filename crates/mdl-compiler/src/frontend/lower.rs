@@ -10,9 +10,9 @@ use std::cell::Cell;
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBlock, HirCall, HirComparisonOp,
     HirEntityQuery, HirEntityQueryStep, HirExpression, HirExpressionKind, HirExternalOp,
-    HirExternalSemantic, HirFunction, HirIf, HirMinecraftOperationAttributes, HirRun,
-    HirRunModifier, HirStatement, HirStatementKind, LocalId, SourceExternalOpId, SourceFunctionId,
-    SourceRunId, ValueType,
+    HirExternalSemantic, HirFunction, HirIf, HirListI32Op, HirMinecraftOperationAttributes, HirRun,
+    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirWhile, HirWrappingArithmeticOp,
+    LocalId, SourceExternalOpId, SourceFunctionId, SourceRunId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
 use crate::ir::core::{
@@ -333,6 +333,21 @@ pub enum CoreGenerationInvariant {
         /// Owning source function.
         source_function: SourceFunctionId,
     },
+    /// Loop control reached lowering without an enclosing structured loop.
+    LoopControlOutsideLoop {
+        /// Owning source function.
+        source_function: SourceFunctionId,
+    },
+    /// A nominal aggregate could not be expanded into a finite scalar leaf sequence.
+    InvalidAggregateType {
+        /// Invalid aggregate identity.
+        struct_: crate::frontend::hir::SourceStructId,
+    },
+    /// Checked HIR projected a field from a non-aggregate value.
+    InvalidAggregateProjection {
+        /// Owning source function.
+        source_function: SourceFunctionId,
+    },
     /// Checked HIR applied an ordered comparison to Boolean operands.
     InvalidBooleanComparison {
         /// Owning source function.
@@ -358,6 +373,15 @@ pub enum CoreGenerationInvariant {
         /// Type recorded on the generated Core value.
         actual: CoreType,
     },
+    /// A flattened HIR value exposed an unexpected number of Core leaves.
+    ExpressionArity {
+        /// Owning source function.
+        source_function: SourceFunctionId,
+        /// Required leaf count.
+        expected: usize,
+        /// Actual leaf count.
+        actual: usize,
+    },
     /// A value-returning function unexpectedly retained a fallthrough path.
     ValueFunctionFallthrough {
         /// Source function with the invalid path.
@@ -382,6 +406,10 @@ pub enum CoreGenerationInvariant {
 }
 
 impl fmt::Display for CoreGenerationInvariant {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every generation invariant has one centralized user-facing rendering"
+    )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingFunctionMapping { source_function } => {
@@ -439,6 +467,18 @@ impl fmt::Display for CoreGenerationInvariant {
             Self::EmptyContinuationMerge { source_function } => {
                 write!(formatter, "empty continuation merge in {source_function:?}")
             }
+            Self::LoopControlOutsideLoop { source_function } => write!(
+                formatter,
+                "loop control appears outside a loop in {source_function:?}"
+            ),
+            Self::InvalidAggregateType { struct_ } => write!(
+                formatter,
+                "aggregate type {struct_:?} is missing or recursively unbounded"
+            ),
+            Self::InvalidAggregateProjection { source_function } => write!(
+                formatter,
+                "non-aggregate field projection reached Core lowering in {source_function:?}"
+            ),
             Self::InvalidBooleanComparison { source_function } => write!(
                 formatter,
                 "ordered Boolean comparison reached Core lowering in {source_function:?}"
@@ -459,6 +499,14 @@ impl fmt::Display for CoreGenerationInvariant {
             } => write!(
                 formatter,
                 "expression in {source_function:?} generated {actual}, expected {expected}"
+            ),
+            Self::ExpressionArity {
+                source_function,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "expression in {source_function:?} has {actual} flattened values, expected {expected}"
             ),
             Self::ValueFunctionFallthrough { source_function } => write!(
                 formatter,
@@ -976,11 +1024,16 @@ fn collect_run_scopes_in_block<'a>(
                     collect_run_scopes_in_block(owner, body, scopes);
                 }
             }
+            HirStatementKind::While(statement) => {
+                collect_run_scopes_in_block(owner, &statement.body, scopes);
+            }
             HirStatementKind::Declaration { .. }
             | HirStatementKind::Assignment { .. }
             | HirStatementKind::Call(_)
             | HirStatementKind::External(_)
-            | HirStatementKind::Return(_) => {}
+            | HirStatementKind::Return(_)
+            | HirStatementKind::Break
+            | HirStatementKind::Continue => {}
         }
     }
 }
@@ -996,15 +1049,13 @@ fn declare_functions(
     let mut correlations = Vec::with_capacity(checked.function_count());
     for function in checked.functions() {
         let name = function_name(sources, function)?;
-        let parameters = function
-            .bindings
-            .iter()
-            .take(function.parameter_count)
-            .map(|binding| core_type(binding.ty))
-            .collect();
+        let mut parameters = vec![];
+        for binding in function.bindings.iter().take(function.parameter_count) {
+            parameters.extend(flattened_core_types(checked, binding.ty)?);
+        }
         let results = match function.result {
             FunctionResult::Void => vec![],
-            FunctionResult::Value(ty) => vec![core_type(ty)],
+            FunctionResult::Value(ty) => flattened_core_types(checked, ty)?,
         };
         let linkage = match function.visibility {
             FunctionVisibility::Private | FunctionVisibility::Public => {
@@ -1083,6 +1134,13 @@ fn declare_external_operations(
                         offset: offset.clone(),
                         component_origins: *component_origins,
                     },
+                    HirMinecraftOperationAttributes::BookPage {
+                        page_index,
+                        page_origin,
+                    } => MinecraftOperationAttributes::BookPage {
+                        page_index: *page_index,
+                        page_origin: *page_origin,
+                    },
                 };
                 let operation = program
                     .declare_minecraft_operation(
@@ -1102,8 +1160,16 @@ fn declare_external_operations(
                 ExternalSemanticBinding::MinecraftOperation(operation)
             }
         };
+        let results = match &external.semantic {
+            HirExternalSemantic::MinecraftOperation {
+                key: crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
+                ..
+            } => vec![CoreType::String],
+            HirExternalSemantic::UnsafeMinecraftCommand { .. }
+            | HirExternalSemantic::MinecraftOperation { .. } => vec![],
+        };
         let operation = program
-            .declare_external_op(binding, vec![], vec![], external.origin)
+            .declare_external_op(binding, vec![], results, external.origin)
             .map_err(|error| CoreGenerationFailure::ExternalDeclaration {
                 source_external: external.id,
                 error,
@@ -1171,6 +1237,10 @@ fn collect_attached_external_occurrences(
     attached
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one audit keeps all source/external/Core occurrence invariants together"
+)]
 fn verify_source_semantic_correlation(
     external: &HirExternalOp,
     program: &CoreProgram,
@@ -1250,6 +1320,16 @@ fn verify_source_semantic_correlation(
                         component_origins: core_origins,
                     },
                 ) => offset == core_offset && component_origins == core_origins,
+                (
+                    HirMinecraftOperationAttributes::BookPage {
+                        page_index,
+                        page_origin,
+                    },
+                    MinecraftOperationAttributes::BookPage {
+                        page_index: core_index,
+                        page_origin: core_origin,
+                    },
+                ) => page_index == core_index && page_origin == core_origin,
                 _ => false,
             };
             if operation.key() != *key
@@ -1297,20 +1377,90 @@ fn function_name(
         ))
 }
 
-const fn core_type(ty: ValueType) -> CoreType {
+fn core_type(ty: ValueType) -> CoreType {
     match ty {
         ValueType::Bool => CoreType::Bool,
         ValueType::Int32 => CoreType::I32,
+        ValueType::ListI32 => CoreType::ListI32,
+        ValueType::String => CoreType::String,
+        ValueType::Struct(_) => unreachable!("aggregate types are expanded before Core"),
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+fn flattened_core_types(
+    checked: &CheckedFrontendOutput,
+    ty: ValueType,
+) -> Result<Vec<CoreType>, CoreGenerationFailure> {
+    fn visit(
+        checked: &CheckedFrontendOutput,
+        ty: ValueType,
+        active: &mut Vec<crate::frontend::hir::SourceStructId>,
+        output: &mut Vec<CoreType>,
+    ) -> Result<(), CoreGenerationFailure> {
+        match ty {
+            ValueType::Bool | ValueType::Int32 | ValueType::ListI32 | ValueType::String => {
+                output.push(core_type(ty));
+            }
+            ValueType::Struct(struct_) => {
+                if active.contains(&struct_) {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType { struct_ },
+                    ));
+                }
+                let declaration =
+                    checked
+                        .struct_(struct_)
+                        .ok_or(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType { struct_ },
+                        ))?;
+                active.push(struct_);
+                for field in &declaration.fields {
+                    visit(checked, field.ty, active, output)?;
+                }
+                active.pop();
+            }
+        }
+        Ok(())
+    }
+
+    let mut output = vec![];
+    visit(checked, ty, &mut vec![], &mut output)?;
+    Ok(output)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ValueBundle(Box<[ValueId]>);
+
+impl ValueBundle {
+    fn scalar(value: ValueId) -> Self {
+        Self(Box::new([value]))
+    }
+
+    fn into_values(self) -> Vec<ValueId> {
+        self.0.into_vec()
+    }
+
+    fn scalar_value(&self, owner: SourceFunctionId) -> Result<ValueId, CoreGenerationFailure> {
+        let [value] = self.0.as_ref() else {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::ExpressionArity {
+                    source_function: owner,
+                    expected: 1,
+                    actual: self.0.len(),
+                },
+            ));
+        };
+        Ok(*value)
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct BindingState {
-    value: Option<ValueId>,
+    value: Option<ValueBundle>,
     active: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct JournalEntry {
     index: usize,
     previous: BindingState,
@@ -1319,7 +1469,7 @@ struct JournalEntry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EnvironmentCheckpoint(usize);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct EnvironmentOverride {
     index: usize,
     state: BindingState,
@@ -1346,7 +1496,7 @@ impl Environment {
         &mut self,
         owner: SourceFunctionId,
         local: LocalId,
-        value: Option<ValueId>,
+        value: Option<ValueBundle>,
     ) -> Result<(), CoreGenerationFailure> {
         let index = Self::index(local).filter(|index| *index < self.states.len());
         let Some(index) = index else {
@@ -1366,7 +1516,7 @@ impl Environment {
         &mut self,
         owner: SourceFunctionId,
         local: LocalId,
-        value: ValueId,
+        value: ValueBundle,
     ) -> Result<(), CoreGenerationFailure> {
         let index = Self::index(local)
             .filter(|index| self.states.get(*index).is_some_and(|state| state.active));
@@ -1387,11 +1537,11 @@ impl Environment {
         &self,
         owner: SourceFunctionId,
         local: LocalId,
-    ) -> Result<ValueId, CoreGenerationFailure> {
+    ) -> Result<ValueBundle, CoreGenerationFailure> {
         let Some(index) = Self::index(local) else {
             return Err(missing_binding(owner, local));
         };
-        let Some(state) = self.states.get(index).copied() else {
+        let Some(state) = self.states.get(index).cloned() else {
             return Err(missing_binding(owner, local));
         };
         if !state.active {
@@ -1439,14 +1589,14 @@ impl Environment {
         let mut touched = entries
             .iter()
             .enumerate()
-            .map(|(order, entry)| (entry.index, order, entry.previous))
+            .map(|(order, entry)| (entry.index, order, entry.previous.clone()))
             .collect::<Vec<_>>();
         touched.sort_unstable_by_key(|(index, order, _)| (*index, *order));
 
         let mut overrides = Vec::with_capacity(touched.len());
         let mut offset = 0;
-        while let Some((index, _, incoming)) = touched.get(offset).copied() {
-            let state = self.states[index];
+        while let Some((index, _, incoming)) = touched.get(offset).cloned() {
+            let state = self.states[index].clone();
             if state != incoming {
                 overrides.push(EnvironmentOverride { index, state });
             }
@@ -1459,11 +1609,19 @@ impl Environment {
     }
 
     fn state(&self, index: usize) -> Option<BindingState> {
-        self.states.get(index).copied()
+        self.states.get(index).cloned()
+    }
+
+    fn active_assigned_indices(&self) -> Vec<usize> {
+        self.states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, state)| (state.active && state.value.is_some()).then_some(index))
+            .collect()
     }
 
     fn write(&mut self, index: usize, state: BindingState) {
-        let previous = self.states[index];
+        let previous = self.states[index].clone();
         if previous == state {
             return;
         }
@@ -1535,7 +1693,7 @@ impl BranchContinuation {
     fn state(&self, index: usize, incoming: BindingState) -> BindingState {
         self.overrides
             .binary_search_by_key(&index, |entry| entry.index)
-            .map_or(incoming, |offset| self.overrides[offset].state)
+            .map_or(incoming, |offset| self.overrides[offset].state.clone())
     }
 }
 
@@ -1545,36 +1703,36 @@ struct MergeCandidate {
     needs_parameter: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MergeAggregate {
     override_count: usize,
-    first_value: Option<ValueId>,
+    first_value: Option<ValueBundle>,
     all_active: bool,
     all_assigned: bool,
     all_values_equal: bool,
 }
 
 impl MergeAggregate {
-    fn new(state: BindingState) -> Self {
+    fn new(state: &BindingState) -> Self {
         Self {
             override_count: 1,
-            first_value: state.value,
+            first_value: state.value.clone(),
             all_active: state.active,
             all_assigned: state.value.is_some(),
             all_values_equal: true,
         }
     }
 
-    fn include_override(&mut self, state: BindingState) {
+    fn include_override(&mut self, state: &BindingState) {
         self.override_count += 1;
         self.include_state(state);
     }
 
-    fn include_missing_incoming(&mut self, state: BindingState) {
+    fn include_missing_incoming(&mut self, state: &BindingState) {
         self.include_state(state);
     }
 
-    fn include_state(&mut self, state: BindingState) {
+    fn include_state(&mut self, state: &BindingState) {
         self.all_active &= state.active;
         self.all_assigned &= state.value.is_some();
         self.all_values_equal &= state.value == self.first_value;
@@ -1604,6 +1762,14 @@ struct BodyLowerer<'program, 'budget> {
     core_function: FunctionId,
     budget: &'budget mut CoreGenerationBudget,
     semantic_operations: &'budget mut [Option<SourceSemanticCoreOccurrence>],
+    loops: Vec<LoopLoweringContext>,
+}
+
+#[derive(Clone)]
+struct LoopLoweringContext {
+    header: BlockId,
+    exit: BlockId,
+    carried: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -1658,6 +1824,7 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             core_function,
             budget,
             semantic_operations,
+            loops: vec![],
         })
     }
 
@@ -1676,18 +1843,32 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             })
             .unwrap_or_default();
         let mut environment = Environment::new(self.function.bindings.len());
+        let mut parameter_offset = 0usize;
         for index in 0..self.function.parameter_count {
             let local = self.function.bindings[index].id;
-            let value = parameters
-                .get(index)
-                .copied()
-                .ok_or(CoreGenerationFailure::Invariant(
-                    CoreGenerationInvariant::MissingEntryParameter {
-                        source_function: self.function.id,
-                        parameter: index,
-                    },
-                ))?;
-            environment.activate(self.function.id, local, Some(value))?;
+            let leaf_count =
+                flattened_core_types(self.checked, self.function.bindings[index].ty)?.len();
+            let end = parameter_offset.checked_add(leaf_count).ok_or(
+                CoreGenerationFailure::Invariant(CoreGenerationInvariant::MissingEntryParameter {
+                    source_function: self.function.id,
+                    parameter: index,
+                }),
+            )?;
+            let values =
+                parameters
+                    .get(parameter_offset..end)
+                    .ok_or(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::MissingEntryParameter {
+                            source_function: self.function.id,
+                            parameter: index,
+                        },
+                    ))?;
+            environment.activate(
+                self.function.id,
+                local,
+                Some(ValueBundle(values.to_vec().into_boxed_slice())),
+            )?;
+            parameter_offset = end;
         }
 
         let continuation = self.lower_block(entry, &mut environment, &self.function.body)?;
@@ -1787,10 +1968,17 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 Ok(Some(block))
             }
             HirStatementKind::External(external) => {
-                self.lower_external(*external, statement.origin)?;
+                let _ = self.lower_external(*external, statement.origin)?;
                 Ok(Some(block))
             }
             HirStatementKind::If(conditional) => self.lower_if(block, environment, conditional),
+            HirStatementKind::While(statement) => self.lower_while(block, environment, statement),
+            HirStatementKind::Break => {
+                self.lower_loop_control(block, environment, true, statement.origin)
+            }
+            HirStatementKind::Continue => {
+                self.lower_loop_control(block, environment, false, statement.origin)
+            }
             HirStatementKind::Run(run) => {
                 self.lower_run(run, statement.origin)?;
                 Ok(Some(block))
@@ -1798,12 +1986,9 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             HirStatementKind::Return(value) => {
                 let values = value
                     .as_ref()
-                    .map(|value| {
-                        self.lower_expression(&mut block, environment, value)
-                            .map(|value| vec![value])
-                    })
+                    .map(|value| self.lower_expression(&mut block, environment, value))
                     .transpose()?
-                    .unwrap_or_default();
+                    .map_or_else(Vec::new, ValueBundle::into_values);
                 self.switch_to(block)?;
                 self.terminate(TerminatorKind::Return(values), statement.origin)?;
                 Ok(None)
@@ -1811,11 +1996,186 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "loop CFG construction is kept atomic so parameter inventories are frozen before edges"
+    )]
+    fn lower_while(
+        &mut self,
+        incoming_block: BlockId,
+        environment: &mut Environment,
+        statement: &HirWhile,
+    ) -> Result<Option<BlockId>, CoreGenerationFailure> {
+        let carried = environment.active_assigned_indices();
+        let header = self.create_block(statement.origin)?;
+        let exit = self.create_block(statement.origin)?;
+        let mut incoming_arguments = vec![];
+        let mut header_parameters = Vec::with_capacity(carried.len());
+        let mut exit_parameters = Vec::with_capacity(carried.len());
+
+        for &index in &carried {
+            let binding =
+                self.function
+                    .bindings
+                    .get(index)
+                    .ok_or(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::MissingBinding {
+                            source_function: self.function.id,
+                            local: u32::try_from(index).unwrap_or(u32::MAX),
+                        },
+                    ))?;
+            let state = environment
+                .state(index)
+                .ok_or(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::MissingBinding {
+                        source_function: self.function.id,
+                        local: binding.id.index(),
+                    },
+                ))?;
+            incoming_arguments.extend(
+                state
+                    .value
+                    .ok_or(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::UnassignedBinding {
+                            source_function: self.function.id,
+                            local: binding.id.index(),
+                        },
+                    ))?
+                    .into_values(),
+            );
+            let leaf_types = flattened_core_types(self.checked, binding.ty)?;
+            let mut header_values = Vec::with_capacity(leaf_types.len());
+            let mut exit_values = Vec::with_capacity(leaf_types.len());
+            for ty in leaf_types {
+                header_values.push(self.append_block_parameter(header, ty, statement.origin)?);
+                exit_values.push(self.append_block_parameter(exit, ty, statement.origin)?);
+            }
+            header_parameters.push(ValueBundle(header_values.into_boxed_slice()));
+            exit_parameters.push(ValueBundle(exit_values.into_boxed_slice()));
+        }
+
+        self.switch_to(incoming_block)?;
+        self.terminate(
+            TerminatorKind::Jump(BlockTarget::new(header, incoming_arguments)),
+            statement.origin,
+        )?;
+        for ((&index, parameter), _) in carried.iter().zip(&header_parameters).zip(&exit_parameters)
+        {
+            environment.write(
+                index,
+                BindingState {
+                    value: Some(parameter.clone()),
+                    active: true,
+                },
+            );
+        }
+        let header_environment = environment.checkpoint();
+
+        let mut condition_block = header;
+        let condition = self
+            .lower_expression(&mut condition_block, environment, &statement.condition)?
+            .scalar_value(self.function.id)?;
+        let body = self.create_block(statement.origin)?;
+        let false_arguments = self.loop_arguments(environment, &carried)?;
+        self.switch_to(condition_block)?;
+        self.terminate(
+            TerminatorKind::Branch {
+                condition,
+                then_target: BlockTarget::new(body, vec![]),
+                else_target: BlockTarget::new(exit, false_arguments),
+            },
+            statement.origin,
+        )?;
+
+        self.loops.push(LoopLoweringContext {
+            header,
+            exit,
+            carried: carried.clone(),
+        });
+        let body_continuation = self.lower_block(body, environment, &statement.body);
+        let loop_context = self.loops.pop().expect("loop context was pushed");
+        let body_continuation = body_continuation?;
+        if let Some(block) = body_continuation {
+            let arguments = self.loop_arguments(environment, &loop_context.carried)?;
+            self.switch_to(block)?;
+            self.terminate(
+                TerminatorKind::Jump(BlockTarget::new(loop_context.header, arguments)),
+                statement.origin,
+            )?;
+        }
+
+        environment.rollback(header_environment);
+        for ((&index, parameter), _) in carried.iter().zip(&exit_parameters).zip(&header_parameters)
+        {
+            environment.write(
+                index,
+                BindingState {
+                    value: Some(parameter.clone()),
+                    active: true,
+                },
+            );
+        }
+        self.switch_to(exit)?;
+        Ok(Some(exit))
+    }
+
+    fn lower_loop_control(
+        &mut self,
+        block: BlockId,
+        environment: &Environment,
+        is_break: bool,
+        origin: OriginId,
+    ) -> Result<Option<BlockId>, CoreGenerationFailure> {
+        let context = self
+            .loops
+            .last()
+            .cloned()
+            .ok_or(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::LoopControlOutsideLoop {
+                    source_function: self.function.id,
+                },
+            ))?;
+        let arguments = self.loop_arguments(environment, &context.carried)?;
+        let target = if is_break {
+            context.exit
+        } else {
+            context.header
+        };
+        self.switch_to(block)?;
+        self.terminate(
+            TerminatorKind::Jump(BlockTarget::new(target, arguments)),
+            origin,
+        )?;
+        Ok(None)
+    }
+
+    fn loop_arguments(
+        &self,
+        environment: &Environment,
+        carried: &[usize],
+    ) -> Result<Vec<ValueId>, CoreGenerationFailure> {
+        let mut arguments = vec![];
+        for &index in carried {
+            let local = u32::try_from(index).unwrap_or(u32::MAX);
+            let value = environment
+                .state(index)
+                .and_then(|state| state.value)
+                .ok_or(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::UnassignedBinding {
+                        source_function: self.function.id,
+                        local,
+                    },
+                ))?;
+            arguments.extend(value.into_values());
+        }
+        Ok(arguments)
+    }
+
     fn lower_external(
         &mut self,
         external: SourceExternalOpId,
         origin: OriginId,
-    ) -> Result<(), CoreGenerationFailure> {
+    ) -> Result<Vec<ValueId>, CoreGenerationFailure> {
         let operation =
             self.links
                 .externals
@@ -1837,14 +2197,7 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         ) {
             self.record_semantic_operation(external, operation, instruction)?;
         }
-        if !results.is_empty() {
-            return Err(CoreGenerationFailure::Invariant(
-                CoreGenerationInvariant::InvalidUnsafeCommand {
-                    source_external: external,
-                },
-            ));
-        }
-        Ok(())
+        Ok(results)
     }
 
     fn record_semantic_operation(
@@ -1921,8 +2274,9 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         let mut continuing = vec![];
         for arm in &conditional.arms {
             self.switch_to(condition_block)?;
-            let condition =
-                self.lower_expression(&mut condition_block, environment, &arm.condition)?;
+            let condition = self
+                .lower_expression(&mut condition_block, environment, &arm.condition)?
+                .scalar_value(self.function.id)?;
             let body_block = self.create_block(conditional.origin)?;
             let next_condition = self.create_block(conditional.origin)?;
             self.switch_to(condition_block)?;
@@ -1967,6 +2321,10 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             .map(Some)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "sparse SSA merge planning freezes aggregate leaf parameters before installing edges"
+    )]
     fn merge_paths(
         &mut self,
         paths: Vec<BranchContinuation>,
@@ -1988,8 +2346,8 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 note_candidate_state_visits(1);
                 aggregates
                     .entry(entry.index)
-                    .and_modify(|aggregate| aggregate.include_override(entry.state))
-                    .or_insert_with(|| MergeAggregate::new(entry.state));
+                    .and_modify(|aggregate| aggregate.include_override(&entry.state))
+                    .or_insert_with(|| MergeAggregate::new(&entry.state));
             }
         }
         note_merge_candidate_visits(aggregates.len());
@@ -2008,7 +2366,7 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             debug_assert!(aggregate.override_count <= predecessor_count);
             if aggregate.override_count < predecessor_count {
                 note_candidate_state_visits(1);
-                aggregate.include_missing_incoming(incoming);
+                aggregate.include_missing_incoming(&incoming);
             }
             candidates.push(aggregate.candidate(index));
         }
@@ -2019,7 +2377,17 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         let phi_count = candidates
             .iter()
             .filter(|candidate| candidate.needs_parameter)
-            .count();
+            .try_fold(0usize, |count, candidate| {
+                let binding = self.function.bindings.get(candidate.index).ok_or(
+                    CoreGenerationFailure::Invariant(CoreGenerationInvariant::MissingBinding {
+                        source_function: self.function.id,
+                        local: u32::try_from(candidate.index).unwrap_or(u32::MAX),
+                    }),
+                )?;
+                Ok::<_, CoreGenerationFailure>(
+                    count.saturating_add(flattened_core_types(self.checked, binding.ty)?.len()),
+                )
+            })?;
         self.budget
             .charge_join_edge_operands(self.function.id, phi_count, predecessor_count)?;
         let mut carried = Vec::with_capacity(phi_count);
@@ -2037,8 +2405,12 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                         },
                     ));
                 };
-                let parameter = self.append_block_parameter(join, core_type(binding.ty), origin)?;
-                candidate.merged.value = Some(parameter);
+                let types = flattened_core_types(self.checked, binding.ty)?;
+                let mut parameters = Vec::with_capacity(types.len());
+                for ty in types {
+                    parameters.push(self.append_block_parameter(join, ty, origin)?);
+                }
+                candidate.merged.value = Some(ValueBundle(parameters.into_boxed_slice()));
                 carried.push(candidate.index);
             }
         }
@@ -2061,7 +2433,7 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                                 local: u32::try_from(*index).unwrap_or(u32::MAX),
                             },
                         ))?;
-                arguments.push(value);
+                arguments.extend(value.into_values());
             }
             self.switch_to(path.block)?;
             self.terminate(
@@ -2076,47 +2448,200 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         Ok(join)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "1:N expression conversion validates the complete closed HIR expression vocabulary"
+    )]
     fn lower_expression(
         &mut self,
         block: &mut BlockId,
         environment: &mut Environment,
         expression: &HirExpression,
-    ) -> Result<ValueId, CoreGenerationFailure> {
+    ) -> Result<ValueBundle, CoreGenerationFailure> {
         self.switch_to(*block)?;
         let value = match &expression.kind {
-            HirExpressionKind::Bool(value) => self
-                .builder
-                .bool_constant(*value, expression.origin)
-                .map_err(|error| self.construction(error))?,
-            HirExpressionKind::Int32(value) => self
-                .builder
-                .i32_constant(*value, expression.origin)
-                .map_err(|error| self.construction(error))?,
+            HirExpressionKind::Bool(value) => ValueBundle::scalar(
+                self.builder
+                    .bool_constant(*value, expression.origin)
+                    .map_err(|error| self.construction(error))?,
+            ),
+            HirExpressionKind::Int32(value) => ValueBundle::scalar(
+                self.builder
+                    .i32_constant(*value, expression.origin)
+                    .map_err(|error| self.construction(error))?,
+            ),
             HirExpressionKind::Local(local) => environment.read(self.function.id, *local)?,
-            HirExpressionKind::Call(call) => {
-                let values = self.lower_call(block, environment, call)?;
-                values
-                    .into_iter()
-                    .next()
-                    .ok_or(CoreGenerationFailure::Invariant(
-                        CoreGenerationInvariant::CallResultCount {
+            HirExpressionKind::Call(call) => ValueBundle(
+                self.lower_call(block, environment, call)?
+                    .into_boxed_slice(),
+            ),
+            HirExpressionKind::External(external) => ValueBundle(
+                self.lower_external(*external, expression.origin)?
+                    .into_boxed_slice(),
+            ),
+            HirExpressionKind::StructConstruct { struct_, fields } => {
+                let declaration =
+                    self.checked
+                        .struct_(*struct_)
+                        .ok_or(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType { struct_: *struct_ },
+                        ))?;
+                let mut lowered = vec![None; declaration.fields.len()];
+                for field in fields {
+                    let index = usize::try_from(field.field).unwrap_or(usize::MAX);
+                    let Some(slot) = lowered.get_mut(index) else {
+                        return Err(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType { struct_: *struct_ },
+                        ));
+                    };
+                    *slot = Some(self.lower_expression(block, environment, &field.value)?);
+                }
+                let mut values = vec![];
+                for field in lowered {
+                    values.extend(
+                        field
+                            .ok_or(CoreGenerationFailure::Invariant(
+                                CoreGenerationInvariant::InvalidAggregateType { struct_: *struct_ },
+                            ))?
+                            .into_values(),
+                    );
+                }
+                ValueBundle(values.into_boxed_slice())
+            }
+            HirExpressionKind::StructProject { aggregate, field } => {
+                let ValueType::Struct(struct_) = aggregate.ty else {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateProjection {
                             source_function: self.function.id,
-                            callee: call.callee,
-                            expected: 1,
-                            actual: 0,
                         },
-                    ))?
+                    ));
+                };
+                let declaration =
+                    self.checked
+                        .struct_(struct_)
+                        .ok_or(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType { struct_ },
+                        ))?;
+                let field_index = usize::try_from(*field).unwrap_or(usize::MAX);
+                let Some(field_declaration) = declaration.fields.get(field_index) else {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType { struct_ },
+                    ));
+                };
+                let start =
+                    declaration.fields[..field_index].iter().try_fold(
+                        0usize,
+                        |offset, field| {
+                            Ok::<_, CoreGenerationFailure>(offset.saturating_add(
+                                flattened_core_types(self.checked, field.ty)?.len(),
+                            ))
+                        },
+                    )?;
+                let end = start.saturating_add(
+                    flattened_core_types(self.checked, field_declaration.ty)?.len(),
+                );
+                let aggregate = self.lower_expression(block, environment, aggregate)?;
+                let values =
+                    aggregate
+                        .0
+                        .get(start..end)
+                        .ok_or(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType { struct_ },
+                        ))?;
+                ValueBundle(values.to_vec().into_boxed_slice())
+            }
+            HirExpressionKind::ListI32 { op, operands } => {
+                let mut lowered = Vec::with_capacity(operands.len());
+                for operand in operands {
+                    lowered.push(
+                        self.lower_expression(block, environment, operand)?
+                            .scalar_value(self.function.id)?,
+                    );
+                }
+                let result = match (op, lowered.as_slice()) {
+                    (HirListI32Op::Empty, []) => self.builder.list_i32_empty(expression.origin),
+                    (HirListI32Op::Length, [list]) => {
+                        self.builder.list_i32_length(*list, expression.origin)
+                    }
+                    (HirListI32Op::Push, [list, element]) => {
+                        self.builder
+                            .list_i32_push(*list, *element, expression.origin)
+                    }
+                    (HirListI32Op::LastOrZero, [list]) => {
+                        self.builder.list_i32_last_or_zero(*list, expression.origin)
+                    }
+                    (HirListI32Op::WithoutLast, [list]) => {
+                        self.builder.list_i32_without_last(*list, expression.origin)
+                    }
+                    _ => Err(BuildError::InvalidOperationContract),
+                }
+                .map_err(|error| self.construction(error))?;
+                ValueBundle::scalar(result)
+            }
+            HirExpressionKind::String { op, operands } => {
+                let mut lowered = Vec::with_capacity(operands.len());
+                for operand in operands {
+                    lowered.push(
+                        self.lower_expression(block, environment, operand)?
+                            .scalar_value(self.function.id)?,
+                    );
+                }
+                let result = match (op, lowered.as_slice()) {
+                    (HirStringOp::Constant(value), []) => self
+                        .builder
+                        .string_constant(value.clone(), expression.origin),
+                    (HirStringOp::Length, [value]) => {
+                        self.builder.string_length(*value, expression.origin)
+                    }
+                    (HirStringOp::EndsWithAscii(ascii), [value]) => self
+                        .builder
+                        .string_ends_with_ascii(*value, *ascii, expression.origin),
+                    (HirStringOp::WithoutLastUnit, [value]) => self
+                        .builder
+                        .string_without_last_unit(*value, expression.origin),
+                    _ => Err(BuildError::InvalidOperationContract),
+                }
+                .map_err(|error| self.construction(error))?;
+                ValueBundle::scalar(result)
             }
             HirExpressionKind::Not(operand) => {
-                let operand = self.lower_expression(block, environment, operand)?;
-                self.builder
-                    .bool_not(operand, expression.origin)
-                    .map_err(|error| self.construction(error))?
+                let operand = self
+                    .lower_expression(block, environment, operand)?
+                    .scalar_value(self.function.id)?;
+                ValueBundle::scalar(
+                    self.builder
+                        .bool_not(operand, expression.origin)
+                        .map_err(|error| self.construction(error))?,
+                )
+            }
+            HirExpressionKind::WrappingArithmetic { op, left, right } => {
+                let left = self
+                    .lower_expression(block, environment, left)?
+                    .scalar_value(self.function.id)?;
+                let right = self
+                    .lower_expression(block, environment, right)?
+                    .scalar_value(self.function.id)?;
+                let result = match op {
+                    HirWrappingArithmeticOp::Add => {
+                        self.builder
+                            .i32_add_wrapping(left, right, expression.origin)
+                    }
+                    HirWrappingArithmeticOp::Subtract => {
+                        self.builder
+                            .i32_sub_wrapping(left, right, expression.origin)
+                    }
+                }
+                .map_err(|error| self.construction(error))?;
+                ValueBundle::scalar(result)
             }
             HirExpressionKind::Compare { op, left, right } => {
-                let left_value = self.lower_expression(block, environment, left)?;
-                let right_value = self.lower_expression(block, environment, right)?;
-                if left.ty == ValueType::Bool {
+                let left_value = self
+                    .lower_expression(block, environment, left)?
+                    .scalar_value(self.function.id)?;
+                let right_value = self
+                    .lower_expression(block, environment, right)?
+                    .scalar_value(self.function.id)?;
+                let result = if left.ty == ValueType::Bool {
                     self.lower_bool_comparison(
                         block,
                         *op,
@@ -2133,25 +2658,37 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                             expression.origin,
                         )
                         .map_err(|error| self.construction(error))?
-                }
+                };
+                ValueBundle::scalar(result)
             }
         };
         *block = self.builder.insertion_block();
-        let actual = self
-            .builder
-            .body()
-            .value(value)
-            .map(crate::ir::core::ValueData::ty)
-            .ok_or_else(|| self.construction(BuildError::InvalidValue { value }))?;
-        let expected = core_type(expression.ty);
-        if actual != expected {
+        let expected = flattened_core_types(self.checked, expression.ty)?;
+        if value.0.len() != expected.len() {
             return Err(CoreGenerationFailure::Invariant(
-                CoreGenerationInvariant::ExpressionType {
+                CoreGenerationInvariant::ExpressionArity {
                     source_function: self.function.id,
-                    expected,
-                    actual,
+                    expected: expected.len(),
+                    actual: value.0.len(),
                 },
             ));
+        }
+        for (&value, expected) in value.0.iter().zip(expected) {
+            let actual = self
+                .builder
+                .body()
+                .value(value)
+                .map(crate::ir::core::ValueData::ty)
+                .ok_or_else(|| self.construction(BuildError::InvalidValue { value }))?;
+            if actual != expected {
+                return Err(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::ExpressionType {
+                        source_function: self.function.id,
+                        expected,
+                        actual,
+                    },
+                ));
+            }
         }
         Ok(value)
     }
@@ -2162,9 +2699,12 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         environment: &mut Environment,
         call: &HirCall,
     ) -> Result<Vec<ValueId>, CoreGenerationFailure> {
-        let mut arguments = Vec::with_capacity(call.arguments.len());
+        let mut arguments = vec![];
         for argument in &call.arguments {
-            arguments.push(self.lower_expression(block, environment, argument)?);
+            arguments.extend(
+                self.lower_expression(block, environment, argument)?
+                    .into_values(),
+            );
         }
         self.switch_to(*block)?;
         let core_callee =
@@ -2185,9 +2725,14 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             .checked
             .functions()
             .get(call.callee.as_usize().unwrap_or(usize::MAX))
-            .map_or(0, |callee| {
-                usize::from(!matches!(callee.result, FunctionResult::Void))
-            });
+            .map(|callee| match callee.result {
+                FunctionResult::Void => Ok(0),
+                FunctionResult::Value(ty) => {
+                    flattened_core_types(self.checked, ty).map(|types| types.len())
+                }
+            })
+            .transpose()?
+            .unwrap_or(0);
         if values.len() != expected {
             return Err(CoreGenerationFailure::Invariant(
                 CoreGenerationInvariant::CallResultCount {

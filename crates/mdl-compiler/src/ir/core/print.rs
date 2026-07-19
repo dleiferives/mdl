@@ -455,13 +455,29 @@ fn render_operation(output: &mut String, op: &CoreOp) {
         CoreOp::I32Compare(predicate) => {
             let _ = write!(output, " {}", predicate.mnemonic());
         }
+        CoreOp::StringConstant(value) => {
+            let _ = write!(output, " {value:?}");
+        }
+        CoreOp::StringEndsWithAscii(value) => {
+            let _ = write!(output, " {value}");
+        }
         CoreOp::Call(function) => {
             let _ = write!(output, " @fn{}", function.index());
         }
         CoreOp::External(operation) => {
             let _ = write!(output, " @ext{}", operation.index());
         }
-        CoreOp::I32AddWrapping | CoreOp::I32AddOverflowing | CoreOp::BoolNot => {}
+        CoreOp::I32AddWrapping
+        | CoreOp::I32SubWrapping
+        | CoreOp::I32AddOverflowing
+        | CoreOp::BoolNot
+        | CoreOp::ListI32Empty
+        | CoreOp::ListI32Length
+        | CoreOp::ListI32Push
+        | CoreOp::ListI32LastOrZero
+        | CoreOp::ListI32WithoutLast
+        | CoreOp::StringLength
+        | CoreOp::StringWithoutLastUnit => {}
     }
 }
 
@@ -545,6 +561,9 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             }
             MinecraftOperationAttributes::MoveBy { offset, .. } => {
                 let _ = writeln!(output, "offset={offset:?}");
+            }
+            MinecraftOperationAttributes::BookPage { page_index, .. } => {
+                let _ = writeln!(output, "page_index={page_index}");
             }
         }
     }

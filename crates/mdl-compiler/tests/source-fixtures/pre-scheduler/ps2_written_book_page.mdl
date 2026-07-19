@@ -1,0 +1,16 @@
+// MDL: success
+// HIR: ReadMainHandWrittenBookLiteralPage
+// HIR: page_index=0
+// CORE: ReadMainHandWrittenBookLiteralPage
+// TARGET: equipment
+// TARGET: mainhand
+// TARGET: written_book_content
+
+export fn read_book() {
+    run.as(mc.entities(ArmorStand).with_tag("mdl_ps2_book").limit(1)) |reader| {
+        const page: String = reader.main_hand_written_book_literal_page_or_empty(0);
+        if (page.ends_with_ascii("+")) {
+            reader.say("MDL_PS2_BOOK_OK");
+        }
+    }
+}

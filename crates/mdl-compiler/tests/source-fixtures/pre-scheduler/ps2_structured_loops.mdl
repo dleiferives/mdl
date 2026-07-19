@@ -1,0 +1,48 @@
+// MDL: success
+// HIR: while (%1:Int32 > 0:Int32):Bool
+// HIR: continue
+// HIR: break
+// CORE: branch
+// CORE: jump
+// CORE: core.i32.sub.wrapping
+
+export fn loop_control(value: Int32) -> Int32 {
+    var current: Int32 = value;
+    var result: Int32 = 0;
+    while (current > 0) {
+        current = current -% 1;
+        if (current == 2) {
+            continue;
+        }
+        if (current == 1) {
+            break;
+        }
+        result = result +% current;
+    }
+    return result;
+}
+
+fn nested_loops(outer_limit: Int32) -> Int32 {
+    var outer: Int32 = 0;
+    var visits: Int32 = 0;
+    while (outer < outer_limit) {
+        var inner: Int32 = 0;
+        while (inner < 2) {
+            visits = visits +% 1;
+            inner = inner +% 1;
+        }
+        outer = outer +% 1;
+    }
+    return visits;
+}
+
+fn early_return(value: Int32) -> Int32 {
+    var current: Int32 = value;
+    while (current > 0) {
+        if (current == 3) {
+            return current;
+        }
+        current = current -% 1;
+    }
+    return 0;
+}

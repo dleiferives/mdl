@@ -361,6 +361,7 @@ fn verify_condition_references(
         Condition::ScoreMatches(_, _)
         | Condition::ScoreCompare(_, _, _)
         | Condition::DataExists(_)
+        | Condition::DataMatches(_, _)
         | Condition::EntityExists(_) => {}
     }
 }

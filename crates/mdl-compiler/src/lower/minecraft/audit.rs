@@ -251,9 +251,19 @@ fn audit_reachable_vocabulary(
                 CoreOp::BoolConstant(_)
                 | CoreOp::I32Constant(_)
                 | CoreOp::I32AddWrapping
+                | CoreOp::I32SubWrapping
                 | CoreOp::I32AddOverflowing
                 | CoreOp::I32Compare(_)
                 | CoreOp::BoolNot
+                | CoreOp::ListI32Empty
+                | CoreOp::ListI32Length
+                | CoreOp::ListI32Push
+                | CoreOp::ListI32LastOrZero
+                | CoreOp::ListI32WithoutLast
+                | CoreOp::StringConstant(_)
+                | CoreOp::StringLength
+                | CoreOp::StringEndsWithAscii(_)
+                | CoreOp::StringWithoutLastUnit
                 | CoreOp::Call(_) => {}
                 CoreOp::External(operation) => {
                     if audited_external_ops.insert(*operation) {

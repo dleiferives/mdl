@@ -364,7 +364,9 @@ impl TemporaryUsage {
         match kind {
             EdgeTemporaryKind::LegacyUntyped => self.legacy = true,
             EdgeTemporaryKind::Typed(CoreType::Bool) => self.boolean = true,
-            EdgeTemporaryKind::Typed(CoreType::I32) => self.integer = true,
+            EdgeTemporaryKind::Typed(CoreType::I32 | CoreType::ListI32 | CoreType::String) => {
+                self.integer = true;
+            }
         }
     }
 

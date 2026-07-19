@@ -412,6 +412,10 @@ enum InstructionPlan {
     RewriteOperands(Vec<ValueId>),
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "canonical operation identities are analyzed in one exhaustive dispatch"
+)]
 fn analyze_instruction(
     body: &FunctionBody,
     instruction: InstId,
@@ -447,6 +451,16 @@ fn analyze_instruction(
             if known_constant(body, effective_left) == Some(TypedCoreConstant::I32(0)) {
                 Some(vec![(only_result(data.results())?, effective_right)])
             } else if known_constant(body, effective_right) == Some(TypedCoreConstant::I32(0)) {
+                Some(vec![(only_result(data.results())?, effective_left)])
+            } else {
+                None
+            }
+        }
+        CoreOp::I32SubWrapping => {
+            let [left, right] = two_operands(data.operands())?;
+            let effective_left = replacements.resolve(left)?;
+            let effective_right = replacements.resolve(right)?;
+            if known_constant(body, effective_right) == Some(TypedCoreConstant::I32(0)) {
                 Some(vec![(only_result(data.results())?, effective_left)])
             } else {
                 None
@@ -491,6 +505,15 @@ fn analyze_instruction(
         }
         CoreOp::BoolConstant(_)
         | CoreOp::I32Constant(_)
+        | CoreOp::ListI32Empty
+        | CoreOp::ListI32Length
+        | CoreOp::ListI32Push
+        | CoreOp::ListI32LastOrZero
+        | CoreOp::ListI32WithoutLast
+        | CoreOp::StringConstant(_)
+        | CoreOp::StringLength
+        | CoreOp::StringEndsWithAscii(_)
+        | CoreOp::StringWithoutLastUnit
         | CoreOp::Call(_)
         | CoreOp::External(_) => None,
     };
@@ -610,9 +633,19 @@ fn constant_definition(body: &FunctionBody, value: ValueId) -> Option<TypedCoreC
         CoreOp::BoolConstant(value) => Some(TypedCoreConstant::Bool(*value)),
         CoreOp::I32Constant(value) => Some(TypedCoreConstant::I32(*value)),
         CoreOp::I32AddWrapping
+        | CoreOp::I32SubWrapping
         | CoreOp::I32AddOverflowing
         | CoreOp::I32Compare(_)
         | CoreOp::BoolNot
+        | CoreOp::ListI32Empty
+        | CoreOp::ListI32Length
+        | CoreOp::ListI32Push
+        | CoreOp::ListI32LastOrZero
+        | CoreOp::ListI32WithoutLast
+        | CoreOp::StringConstant(_)
+        | CoreOp::StringLength
+        | CoreOp::StringEndsWithAscii(_)
+        | CoreOp::StringWithoutLastUnit
         | CoreOp::Call(_)
         | CoreOp::External(_) => None,
     }

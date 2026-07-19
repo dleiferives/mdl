@@ -5,6 +5,7 @@
 //! pack-load and command-execution integration tests.
 
 mod measurement;
+pub mod scenario;
 
 pub use measurement::{
     JvmMeasurementMetadata, MEASUREMENT_SCHEMA_VERSION, MeasurementConfigurationSchedule,
@@ -12,7 +13,7 @@ pub use measurement::{
     MeasurementSample, MeasurementSampleStatus, sha256_file,
 };
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::error::Error as StdError;
 use std::fmt;
@@ -33,6 +34,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_MAX_HEAP_MIB: u32 = 1_024;
 const SMOKE_MARKER: &str = "MDL_SMOKE_RESULT_42";
 const MAX_ERROR_LOG_LINES: usize = 80;
+const MAX_ATTRIBUTED_LOG_LINES: usize = 16_384;
 
 static NEXT_SANDBOX_ID: AtomicU64 = AtomicU64::new(0);
 static NEXT_LOG_HISTORY_ID: AtomicU64 = AtomicU64::new(0);
@@ -196,6 +198,44 @@ impl ServerSandbox {
             .collect()
     }
 
+    /// Materializes non-datapack diagnostic files beside the disposable world.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe/duplicate paths, an unsafe bundle name, or a
+    /// filesystem failure.
+    pub fn install_artifacts<I, P, B>(&self, bundle_name: &str, files: I) -> Result<Vec<PathBuf>>
+    where
+        I: IntoIterator<Item = (P, B)>,
+        P: AsRef<Path>,
+        B: AsRef<[u8]>,
+    {
+        validate_component(bundle_name, "artifact bundle name")?;
+        let files = files.into_iter().collect::<Vec<_>>();
+        let mut seen = HashSet::with_capacity(files.len());
+        for (relative_path, _) in &files {
+            validate_relative_path(relative_path.as_ref())?;
+            if !seen.insert(relative_path.as_ref().to_path_buf()) {
+                return Err(HarnessError::InvalidConfig(format!(
+                    "duplicate artifact path: {}",
+                    relative_path.as_ref().display()
+                )));
+            }
+        }
+        files
+            .into_iter()
+            .map(|(relative_path, contents)| {
+                let path = self
+                    .root
+                    .join("artifacts")
+                    .join(bundle_name)
+                    .join(relative_path.as_ref());
+                write_file(&path, contents.as_ref())?;
+                Ok(path)
+            })
+            .collect()
+    }
+
     /// Starts the server and waits for its normal ready message.
     ///
     /// # Errors
@@ -247,7 +287,8 @@ impl ServerSandbox {
             child: Some(child),
             stdin: Some(stdin),
             line_rx,
-            log_lines: Vec::new(),
+            log_lines: VecDeque::new(),
+            log_start_index: 0,
             reader_threads: vec![stdout_thread, stderr_thread],
             sandbox: self,
             shutdown_timeout: config.shutdown_timeout,
@@ -321,7 +362,8 @@ pub struct TestServer {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     line_rx: Receiver<LogLine>,
-    log_lines: Vec<LogLine>,
+    log_lines: VecDeque<LogLine>,
+    log_start_index: usize,
     reader_threads: Vec<JoinHandle<()>>,
     sandbox: ServerSandbox,
     shutdown_timeout: Duration,
@@ -388,7 +430,7 @@ impl TestServer {
                 Ok(line) => {
                     let matched = line.text.contains(expected);
                     let text = line.text.clone();
-                    self.log_lines.push(line);
+                    self.record_log_line(line);
                     if matched {
                         return Ok(text);
                     }
@@ -424,7 +466,7 @@ impl TestServer {
         self.drain_available_log();
         LogCheckpoint {
             history_id: self.log_history_id,
-            line_index: self.log_lines.len(),
+            line_index: self.log_start_index + self.log_lines.len(),
         }
     }
 
@@ -436,15 +478,11 @@ impl TestServer {
     /// Returns the attributable lines together with recent server output.
     pub fn check_datapack_logs_since(&mut self, checkpoint: LogCheckpoint) -> Result<()> {
         self.drain_available_log();
-        if checkpoint.history_id != self.log_history_id
-            || checkpoint.line_index > self.log_lines.len()
-        {
-            return Err(HarnessError::InvalidConfig(
-                "log checkpoint does not belong to this server history".to_owned(),
-            ));
-        }
-        let lines = self.log_lines[checkpoint.line_index..]
+        let skip = self.checkpoint_offset(checkpoint)?;
+        let lines = self
+            .log_lines
             .iter()
+            .skip(skip)
             .filter(|line| is_datapack_problem(&line.text))
             .map(|line| format!("[{}] {}", line.stream, line.text))
             .collect::<Vec<_>>();
@@ -474,15 +512,11 @@ impl TestServer {
         expected: &str,
     ) -> Result<Vec<String>> {
         self.drain_available_log();
-        if checkpoint.history_id != self.log_history_id
-            || checkpoint.line_index > self.log_lines.len()
-        {
-            return Err(HarnessError::InvalidConfig(
-                "log checkpoint does not belong to this server history".to_owned(),
-            ));
-        }
-        Ok(self.log_lines[checkpoint.line_index..]
+        let skip = self.checkpoint_offset(checkpoint)?;
+        Ok(self
+            .log_lines
             .iter()
+            .skip(skip)
             .filter(|line| line.text.contains(expected))
             .map(|line| line.text.clone())
             .collect())
@@ -522,8 +556,33 @@ impl TestServer {
 
     fn drain_available_log(&mut self) {
         while let Ok(line) = self.line_rx.try_recv() {
-            self.log_lines.push(line);
+            self.record_log_line(line);
         }
+    }
+
+    fn record_log_line(&mut self, line: LogLine) {
+        if self.log_lines.len() == MAX_ATTRIBUTED_LOG_LINES {
+            self.log_lines.pop_front();
+            self.log_start_index += 1;
+        }
+        self.log_lines.push_back(line);
+    }
+
+    fn checkpoint_offset(&self, checkpoint: LogCheckpoint) -> Result<usize> {
+        let end = self.log_start_index + self.log_lines.len();
+        if checkpoint.history_id != self.log_history_id || checkpoint.line_index > end {
+            return Err(HarnessError::InvalidConfig(
+                "log checkpoint does not belong to this server history".to_owned(),
+            ));
+        }
+        checkpoint
+            .line_index
+            .checked_sub(self.log_start_index)
+            .ok_or_else(|| {
+                HarnessError::InvalidConfig(format!(
+                    "log checkpoint expired after retaining {MAX_ATTRIBUTED_LOG_LINES} attributed lines"
+                ))
+            })
     }
 
     fn preserve_failure(&mut self, error: HarnessError) -> HarnessError {

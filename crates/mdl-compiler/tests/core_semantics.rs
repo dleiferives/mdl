@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-
 use mdl_compiler::ir::core::{
-    BlockId, BlockTarget, CoreOp, CoreProgram, CoreType, FunctionBuilder, FunctionId, I32Predicate,
+    BlockId, BlockTarget, CoreCallEvent, CoreEvaluation, CoreEvaluationError, CoreEvaluationLimits,
+    CoreEvaluator, CoreProgram, CoreType, CoreValue, FunctionBuilder, FunctionId, I32Predicate,
     InstId, Terminator, TerminatorKind, ValueId, verify_program,
 };
 use mdl_compiler::opt::core::{
@@ -9,45 +8,10 @@ use mdl_compiler::opt::core::{
 };
 use mdl_compiler::source::{OriginId, SourceContext};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TestValue {
-    Bool(bool),
-    I32(i32),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CallEffect {
-    caller: FunctionId,
-    instruction: InstId,
-    callee: FunctionId,
-    arguments: Vec<TestValue>,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct Evaluation {
-    results: Vec<TestValue>,
-    call_effects: Vec<CallEffect>,
-    steps: usize,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum EvaluationError {
-    StepLimit { completed: usize },
-    Malformed,
-    ReachedUnreachable,
-}
-
-struct PendingCall {
-    results: Vec<ValueId>,
-}
-
-struct Frame {
-    function: FunctionId,
-    block: BlockId,
-    next_instruction: usize,
-    values: HashMap<ValueId, TestValue>,
-    pending_call: Option<PendingCall>,
-}
+type TestValue = CoreValue;
+type CallEffect = CoreCallEvent;
+type Evaluation = CoreEvaluation;
+type EvaluationError = CoreEvaluationError;
 
 fn evaluate(
     program: &CoreProgram,
@@ -55,212 +19,8 @@ fn evaluate(
     arguments: &[TestValue],
     step_limit: usize,
 ) -> Result<Evaluation, EvaluationError> {
-    let mut frames = vec![new_frame(program, function, arguments)?];
-    let mut call_effects = vec![];
-    let mut steps = 0_usize;
-
-    loop {
-        let frame = frames.last_mut().ok_or(EvaluationError::Malformed)?;
-        let body = program
-            .function(frame.function)
-            .and_then(|declaration| declaration.body())
-            .ok_or(EvaluationError::Malformed)?;
-        let block = body.block(frame.block).ok_or(EvaluationError::Malformed)?;
-
-        if let Some(instruction) = block.instructions().get(frame.next_instruction).copied() {
-            charge_step(&mut steps, step_limit)?;
-            let data = body
-                .instruction(instruction)
-                .ok_or(EvaluationError::Malformed)?;
-            let op = data.op().clone();
-            let operands = data
-                .operands()
-                .iter()
-                .map(|value| read_value(frame, *value))
-                .collect::<Result<Vec<_>, _>>()?;
-            let results = data.results().to_vec();
-            frame.next_instruction += 1;
-
-            if let CoreOp::Call(callee) = op {
-                if frame.pending_call.is_some() {
-                    return Err(EvaluationError::Malformed);
-                }
-                frame.pending_call = Some(PendingCall { results });
-                call_effects.push(CallEffect {
-                    caller: frame.function,
-                    instruction,
-                    callee,
-                    arguments: operands.clone(),
-                });
-                frames.push(new_frame(program, callee, &operands)?);
-                continue;
-            }
-
-            let produced = evaluate_scalar(&op, &operands)?;
-            if produced.len() != results.len() {
-                return Err(EvaluationError::Malformed);
-            }
-            for (result, value) in results.into_iter().zip(produced) {
-                frame.values.insert(result, value);
-            }
-            continue;
-        }
-
-        charge_step(&mut steps, step_limit)?;
-        let terminator = block
-            .terminator()
-            .ok_or(EvaluationError::Malformed)?
-            .kind()
-            .clone();
-        match terminator {
-            TerminatorKind::Jump(target) => enter_target(program, frame, &target)?,
-            TerminatorKind::Branch {
-                condition,
-                then_target,
-                else_target,
-            } => {
-                let TestValue::Bool(condition) = read_value(frame, condition)? else {
-                    return Err(EvaluationError::Malformed);
-                };
-                let target = if condition {
-                    &then_target
-                } else {
-                    &else_target
-                };
-                enter_target(program, frame, target)?;
-            }
-            TerminatorKind::Return(values) => {
-                let results = values
-                    .iter()
-                    .map(|value| read_value(frame, *value))
-                    .collect::<Result<Vec<_>, _>>()?;
-                frames.pop();
-                let Some(caller) = frames.last_mut() else {
-                    return Ok(Evaluation {
-                        results,
-                        call_effects,
-                        steps,
-                    });
-                };
-                let pending = caller
-                    .pending_call
-                    .take()
-                    .ok_or(EvaluationError::Malformed)?;
-                if pending.results.len() != results.len() {
-                    return Err(EvaluationError::Malformed);
-                }
-                for (result, value) in pending.results.into_iter().zip(results) {
-                    caller.values.insert(result, value);
-                }
-            }
-            TerminatorKind::Unreachable => return Err(EvaluationError::ReachedUnreachable),
-        }
-    }
-}
-
-fn new_frame(
-    program: &CoreProgram,
-    function: FunctionId,
-    arguments: &[TestValue],
-) -> Result<Frame, EvaluationError> {
-    let declaration = program
-        .function(function)
-        .ok_or(EvaluationError::Malformed)?;
-    let body = declaration.body().ok_or(EvaluationError::Malformed)?;
-    let entry = body.entry();
-    let parameters = body
-        .block(entry)
-        .ok_or(EvaluationError::Malformed)?
-        .parameters();
-    if parameters.len() != arguments.len() {
-        return Err(EvaluationError::Malformed);
-    }
-    let values = parameters
-        .iter()
-        .zip(arguments)
-        .map(|(parameter, argument)| (parameter.value(), *argument))
-        .collect();
-    Ok(Frame {
-        function,
-        block: entry,
-        next_instruction: 0,
-        values,
-        pending_call: None,
-    })
-}
-
-fn enter_target(
-    program: &CoreProgram,
-    frame: &mut Frame,
-    target: &BlockTarget,
-) -> Result<(), EvaluationError> {
-    let body = program
-        .function(frame.function)
-        .and_then(|declaration| declaration.body())
-        .ok_or(EvaluationError::Malformed)?;
-    let parameters = body
-        .block(target.block())
-        .ok_or(EvaluationError::Malformed)?
-        .parameters();
-    if parameters.len() != target.arguments().len() {
-        return Err(EvaluationError::Malformed);
-    }
-    let arguments = target
-        .arguments()
-        .iter()
-        .map(|value| read_value(frame, *value))
-        .collect::<Result<Vec<_>, _>>()?;
-    for (parameter, argument) in parameters.iter().zip(arguments) {
-        frame.values.insert(parameter.value(), argument);
-    }
-    frame.block = target.block();
-    frame.next_instruction = 0;
-    Ok(())
-}
-
-fn read_value(frame: &Frame, value: ValueId) -> Result<TestValue, EvaluationError> {
-    frame
-        .values
-        .get(&value)
-        .copied()
-        .ok_or(EvaluationError::Malformed)
-}
-
-fn charge_step(completed: &mut usize, limit: usize) -> Result<(), EvaluationError> {
-    if *completed == limit {
-        return Err(EvaluationError::StepLimit {
-            completed: *completed,
-        });
-    }
-    *completed += 1;
-    Ok(())
-}
-
-fn evaluate_scalar(op: &CoreOp, operands: &[TestValue]) -> Result<Vec<TestValue>, EvaluationError> {
-    let malformed = || EvaluationError::Malformed;
-    match (op, operands) {
-        (CoreOp::BoolConstant(value), []) => Ok(vec![TestValue::Bool(*value)]),
-        (CoreOp::I32Constant(value), []) => Ok(vec![TestValue::I32(*value)]),
-        (CoreOp::I32AddWrapping, [TestValue::I32(left), TestValue::I32(right)]) => {
-            Ok(vec![TestValue::I32(left.wrapping_add(*right))])
-        }
-        (CoreOp::I32AddOverflowing, [TestValue::I32(left), TestValue::I32(right)]) => {
-            let (sum, overflowed) = left.overflowing_add(*right);
-            Ok(vec![TestValue::I32(sum), TestValue::Bool(overflowed)])
-        }
-        (CoreOp::I32Compare(predicate), [TestValue::I32(left), TestValue::I32(right)]) => {
-            Ok(vec![TestValue::Bool(match predicate {
-                I32Predicate::Eq => left == right,
-                I32Predicate::Ne => left != right,
-                I32Predicate::SignedLt => left < right,
-                I32Predicate::SignedLe => left <= right,
-                I32Predicate::SignedGt => left > right,
-                I32Predicate::SignedGe => left >= right,
-            })])
-        }
-        (CoreOp::BoolNot, [TestValue::Bool(value)]) => Ok(vec![TestValue::Bool(!value)]),
-        _ => Err(malformed()),
-    }
+    CoreEvaluator::for_verified_program(program, CoreEvaluationLimits::new(step_limit, 1_024))
+        .evaluate(function, arguments)
 }
 
 fn parameter(builder: &FunctionBuilder<'_>, block: BlockId, index: usize) -> ValueId {
@@ -378,15 +138,15 @@ fn evaluator_observes_results_and_ordered_call_effects() {
         100,
     )
     .unwrap();
-    assert_eq!(taken_evaluation.results, vec![TestValue::I32(42)]);
+    assert_eq!(taken_evaluation.results(), [TestValue::I32(42)]);
     assert_eq!(
-        taken_evaluation.call_effects,
-        vec![CallEffect {
-            caller: choose_function,
-            instruction: call_instruction,
-            callee: increment_function,
-            arguments: vec![TestValue::I32(41)],
-        }]
+        taken_evaluation.call_events(),
+        [CallEffect::new(
+            choose_function,
+            call_instruction,
+            increment_function,
+            vec![TestValue::I32(41)],
+        )]
     );
 
     let bypassed = evaluate(
@@ -396,8 +156,8 @@ fn evaluator_observes_results_and_ordered_call_effects() {
         100,
     )
     .unwrap();
-    assert_eq!(bypassed.results, vec![TestValue::I32(41)]);
-    assert!(bypassed.call_effects.is_empty());
+    assert_eq!(bypassed.results(), [TestValue::I32(41)]);
+    assert!(bypassed.call_events().is_empty());
 }
 
 #[test]
@@ -453,12 +213,15 @@ fn evaluator_handles_overflow_and_stops_loops_at_the_exact_step_limit() {
     verify_program(&program, &sources).unwrap();
 
     assert_eq!(
-        evaluate(&program, arithmetic, &[], 10).unwrap().results,
-        vec![TestValue::I32(i32::MIN), TestValue::Bool(true)]
+        evaluate(&program, arithmetic, &[], 10).unwrap().results(),
+        [TestValue::I32(i32::MIN), TestValue::Bool(true)]
     );
     assert_eq!(
         evaluate(&program, looping, &[], 7),
-        Err(EvaluationError::StepLimit { completed: 7 })
+        Err(EvaluationError::StepLimitExceeded {
+            completed: 7,
+            limit: 7,
+        })
     );
 }
 
@@ -486,11 +249,13 @@ fn assert_same_observation(
     let baseline = evaluate(baseline, function, arguments, step_limit)
         .unwrap_or_else(|error| panic!("baseline evaluator failed: {context}: {error:?}"));
     assert_eq!(
-        baseline.results, reference.results,
+        baseline.results(),
+        reference.results(),
         "result mismatch: {context}"
     );
     assert_eq!(
-        baseline.call_effects, reference.call_effects,
+        baseline.call_events(),
+        reference.call_events(),
         "ordered call-effect mismatch: {context}"
     );
 }
@@ -707,15 +472,15 @@ fn baseline_preserves_conditional_and_ordered_nested_call_effects() {
         1_000,
     )
     .unwrap();
-    assert_eq!(bypassed.results, vec![TestValue::I32(41)]);
+    assert_eq!(bypassed.results(), [TestValue::I32(41)]);
     assert_eq!(
-        bypassed.call_effects,
-        vec![CallEffect {
-            caller: root_function,
-            instruction: sites.root_bypass_leaf,
-            callee: sites.leaf_function,
-            arguments: vec![TestValue::I32(40)],
-        }]
+        bypassed.call_events(),
+        [CallEffect::new(
+            root_function,
+            sites.root_bypass_leaf,
+            sites.leaf_function,
+            vec![TestValue::I32(40)],
+        )]
     );
 
     let nested = evaluate(
@@ -725,34 +490,34 @@ fn baseline_preserves_conditional_and_ordered_nested_call_effects() {
         1_000,
     )
     .unwrap();
-    assert_eq!(nested.results, vec![TestValue::I32(43)]);
+    assert_eq!(nested.results(), [TestValue::I32(43)]);
     assert_eq!(
-        nested.call_effects,
+        nested.call_events(),
         vec![
-            CallEffect {
-                caller: root_function,
-                instruction: sites.root_to_middle,
-                callee: sites.middle_function,
-                arguments: vec![TestValue::I32(40)],
-            },
-            CallEffect {
-                caller: sites.middle_function,
-                instruction: sites.middle_first_leaf,
-                callee: sites.leaf_function,
-                arguments: vec![TestValue::I32(40)],
-            },
-            CallEffect {
-                caller: sites.middle_function,
-                instruction: sites.middle_second_leaf,
-                callee: sites.leaf_function,
-                arguments: vec![TestValue::I32(41)],
-            },
-            CallEffect {
-                caller: root_function,
-                instruction: sites.root_after_leaf,
-                callee: sites.leaf_function,
-                arguments: vec![TestValue::I32(42)],
-            },
+            CallEffect::new(
+                root_function,
+                sites.root_to_middle,
+                sites.middle_function,
+                vec![TestValue::I32(40)],
+            ),
+            CallEffect::new(
+                sites.middle_function,
+                sites.middle_first_leaf,
+                sites.leaf_function,
+                vec![TestValue::I32(40)],
+            ),
+            CallEffect::new(
+                sites.middle_function,
+                sites.middle_second_leaf,
+                sites.leaf_function,
+                vec![TestValue::I32(41)],
+            ),
+            CallEffect::new(
+                root_function,
+                sites.root_after_leaf,
+                sites.leaf_function,
+                vec![TestValue::I32(42)],
+            ),
         ]
     );
 
@@ -1532,15 +1297,15 @@ fn assert_generated_differential(case: GeneratedDifferentialCase, sources: &Sour
             let reference_evaluation = evaluate(&reference, function, input, 10_000)
                 .unwrap_or_else(|error| panic!("{context}: reference evaluator failed: {error:?}"));
             assert_eq!(
-                reference_evaluation.call_effects.len(),
+                reference_evaluation.call_events().len(),
                 expected_call_effects,
                 "fixture did not exercise its intended call surface: {context}"
             );
             observed_call_sites.extend(
                 reference_evaluation
-                    .call_effects
+                    .call_events()
                     .iter()
-                    .map(|effect| effect.instruction),
+                    .map(CallEffect::instruction),
             );
             assert_same_observation(&reference, &baseline, function, input, 10_000, &context);
         }

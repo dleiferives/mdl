@@ -1,0 +1,106 @@
+# Stage 8.5 Roadmap
+
+Status: **PS-2 handoff accepted for planning; PS-3 is next**
+
+## Why the roadmap changes here
+
+The previous roadmap placed loops together with static multi-tick scheduling in
+Stage 9, general Minecraft macro work in Stage 10, and aggregate values in an
+unassigned post-Stage-8 client. The Brainfuck capstone needs portions of all three
+areas before it needs persistent scheduling.
+
+Stage 8.5 therefore reprioritizes only the synchronous clients:
+
+- same-tick control flow is separated from yielding control flow;
+- aggregates and lists become immediate clients of Stage 8's realization model;
+- strings and books receive typed semantics before backend representation choices;
+- a narrow typed Minecraft macro facility may be pulled forward when a runtime
+  value must enter command syntax; and
+- scheduling retains ownership of persistence across ticks.
+
+This is a dependency correction, not permission to implement later stages wholesale.
+
+## Dependency spine
+
+```text
+PS-1 test oracles
+  |
+  +-> Core evaluator for the existing scalar subset
+  +-> state-based vanilla scenario runner
+  +-> four-policy semantic differential
+  |
+PS-2 capability expansion
+  |
+  +-> freeze Brainfuck and bounded-execution contracts
+  +-> scalar arithmetic, mutation, and same-tick loops
+  +-> fixed aggregates and source-visible state
+  +-> owned lists, stacks, and two-list zippers
+  +-> runtime strings and opcode parsing
+  +-> typed books/items and holder access
+  +-> finite-fuel synchronous execution
+  |
+PS-3 Brainfuck capstone
+  |
+  +-> pre-parsed opcode execution
+  +-> runtime string parsing
+  +-> written-book input
+  +-> real player-held-book boundary when a test client is available
+  +-> output, failure, cost, and cleanup evidence
+  |
+Stage 9 persistent continuations and scheduling
+```
+
+PS-2 is developed as vertical capability slices. It must not implement every
+frontend feature first, then every Core feature, and only later discover that none
+of them lower correctly. A slice reaches its applicable server or evaluator gate
+before the next dependent slice treats it as established.
+
+## Frozen PS-2 decisions
+
+PS-2 froze:
+
+- Brainfuck cell width and wrapping behavior;
+- tape direction and growth behavior;
+- byte input/output model;
+- treatment of non-opcode book text;
+- bracket-error behavior;
+- book page concatenation semantics;
+- program-length and execution-fuel limits;
+- source value/copy/ownership semantics for aggregates and lists; and
+- which compile modes reject a workload without a proven synchronous bound.
+
+These are language/runtime semantics. They may influence syntax, but they cannot be
+left for the emitter to decide.
+
+## Stage 8.5 exit
+
+Stage 8.5 is complete after PS-3 when:
+
+- the testing infrastructure gives concise structural and state-based failures;
+- every required general capability has an owned semantic and physical contract;
+- an ordinary MDL package implements the frozen Brainfuck contract without unsafe
+  raw commands or compiler-only access to private storage;
+- representative programs run equivalently through all four optimization policies;
+- the pinned vanilla server executes the supported book-to-output path;
+- synchronous completion is honestly bounded by declared program/fuel/target limits;
+- limit exhaustion and invalid input have deterministic observable behavior; and
+- the handoff identifies which live values and contexts Stage 9 must eventually
+  persist across ticks.
+
+Additional validation programs can be completed before or after the scheduling
+design begins, but they do not retroactively make Stage 8.5 unfinishable.
+
+## Stage 9 after the split
+
+Stage 9 should be restated around one new semantic event: suspension. It owns:
+
+- legal yield points and atomic regions;
+- persistent continuation representation;
+- live-value materialization at suspension;
+- explicit loss/reconstruction of Minecraft execution context;
+- static work partitioning under soft per-tick budgets;
+- completion, cancellation, and recovery across ticks; and
+- eventual dynamic scheduling only if separately justified.
+
+It may reuse Stage 8.5 loops and collections, but it must not reuse Stage 8's
+synchronous recursive tail frames across a tick boundary.

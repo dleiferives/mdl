@@ -1,0 +1,20 @@
+// MDL: success
+// HIR: List<Int32>
+// HIR: list.i32.push
+// CORE: core.list.i32.empty
+// CORE: core.list.i32.push
+// CORE: core.list.i32.last_or_zero
+// TARGET: data.modify
+
+fn append(value: List<Int32>, element: Int32) -> List<Int32> {
+    return value.push(element);
+}
+
+export fn list_round_trip(value: Int32) -> Int32 {
+    var original: List<Int32> = List.empty();
+    original = original.push(7);
+    const copy: List<Int32> = original;
+    var changed: List<Int32> = append(original, value);
+    changed = changed.without_last();
+    return copy.last_or_zero() +% changed.length();
+}

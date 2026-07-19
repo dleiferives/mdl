@@ -5,8 +5,9 @@ use crate::ir::core::{
     TargetFragment, TerminatorKind, ValueId,
 };
 use crate::ir::minecraft::{
-    CommandId, CommandKind, ExecuteCommand, ExecuteModifier, ExecuteModifiers, FunctionCall,
-    InternalCallableRef, McFunctionId, MinecraftProgram, UnsafeRawCommand,
+    CommandId, CommandKind, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
+    ExecuteModifier, ExecuteModifiers, FunctionCall, InternalCallableRef, McFunctionId,
+    MinecraftProgram, NbtValue, Selector, UnsafeRawCommand,
 };
 use crate::source::OriginId;
 
@@ -314,7 +315,11 @@ fn lower_instruction(
             )?)?;
             Ok(None)
         }
-        InstructionPlan::Minecraft { external, recipe } => {
+        InstructionPlan::Minecraft {
+            external,
+            recipe,
+            results,
+        } => {
             let CoreOp::External(actual) = data.op() else {
                 return Err(invariant_diagnostics(
                     "non-external instruction has a Minecraft command plan",
@@ -339,9 +344,48 @@ fn lower_instruction(
                     data.origin(),
                 ));
             }
-            context
-                .push_correlated(command(selected.command_kind(), data.origin())?)
-                .map(Some)
+            if let Some(page_index) = selected.book_page_index() {
+                let [result] = results.as_ref() else {
+                    return Err(invariant_diagnostics(
+                        "written-book page recipe requires exactly one result home",
+                        data.origin(),
+                    ));
+                };
+                let target = context
+                    .plan()
+                    .string_storage(result.home())
+                    .ok_or_else(|| {
+                        invariant_diagnostics(
+                            "written-book page result has no string storage",
+                            data.origin(),
+                        )
+                    })?;
+                context.push(command(
+                    CommandKind::Data(DataCommand::Modify {
+                        target: target.clone(),
+                        mode: DataModifyMode::Set,
+                        source: DataSource::Value(NbtValue::string("")),
+                    }),
+                    data.origin(),
+                )?)?;
+                let read = CommandKind::Data(DataCommand::Modify {
+                    target,
+                    mode: DataModifyMode::Set,
+                    source: DataSource::Entity {
+                        selector: Selector::from(
+                            crate::ir::minecraft::AtMostOneSelector::SelfExecutor,
+                        ),
+                        path: super::preflight::written_book_literal_page_path(page_index),
+                    },
+                });
+                context
+                    .push_correlated(command(read, data.origin())?)
+                    .map(Some)
+            } else {
+                context
+                    .push_correlated(command(selected.command_kind(), data.origin())?)
+                    .map(Some)
+            }
         }
         InstructionPlan::Scalar { operands, results } => {
             if matches!(data.op(), CoreOp::Call(_)) {

@@ -165,6 +165,22 @@ fn write_data(data: &DataCommand, output: &mut impl fmt::Write) -> fmt::Result {
             output,
             "data.modify target={target:?} mode={mode:?} from={source:?}"
         ),
+        DataCommand::Modify {
+            target,
+            mode,
+            source: DataSource::StringSlice { source, start, end },
+        } => write!(
+            output,
+            "data.modify target={target:?} mode={mode:?} string={source:?} start={start} end={end:?}"
+        ),
+        DataCommand::Modify {
+            target,
+            mode,
+            source: DataSource::Entity { selector, path },
+        } => write!(
+            output,
+            "data.modify target={target:?} mode={mode:?} entity={selector:?} path={path:?}"
+        ),
     }
 }
 
@@ -196,6 +212,7 @@ fn write_condition(condition: &Condition, output: &mut impl fmt::Write) -> fmt::
         Condition::ScoreMatches(_, _)
         | Condition::ScoreCompare(_, _, _)
         | Condition::DataExists(_)
+        | Condition::DataMatches(_, _)
         | Condition::EntityExists(_)
         | Condition::Function(_) => write!(output, "{condition:?}"),
     }

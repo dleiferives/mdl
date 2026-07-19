@@ -189,6 +189,8 @@ pub(crate) enum InstructionPlan {
         external: ExternalOpId,
         /// Exact target construction recipe selected before resource allocation.
         recipe: MinecraftRecipeId,
+        /// Demanded runtime results written by the selected recipe.
+        results: Box<[ScalarResultPlacement]>,
     },
     Scalar {
         operands: Box<[HomeId]>,
@@ -479,11 +481,72 @@ impl LoweringPlan {
     }
 
     pub(crate) fn score(&self, home: HomeId) -> Option<ScoreRef> {
+        if matches!(
+            self.home_type(home),
+            Some(CoreType::ListI32 | CoreType::String)
+        ) {
+            return None;
+        }
         let holder = self.homes.get(home)?.holder.clone();
         Some(ScoreRef::new(
             holder.into(),
             self.pack_abi.register_objective.clone(),
         ))
+    }
+
+    pub(crate) fn list_storage(&self, home: HomeId) -> Option<StoragePath> {
+        self.nbt_home_storage(home, CoreType::ListI32, 'l')
+    }
+
+    pub(crate) fn string_storage(&self, home: HomeId) -> Option<StoragePath> {
+        self.nbt_home_storage(home, CoreType::String, 's')
+    }
+
+    fn nbt_home_storage(
+        &self,
+        home: HomeId,
+        expected: CoreType,
+        prefix: char,
+    ) -> Option<StoragePath> {
+        if self.home_type(home).is_some_and(|ty| ty != expected) {
+            return None;
+        }
+        self.homes.get(home)?;
+        let key =
+            crate::ir::minecraft::NbtPathKey::new(&format!("{prefix}{}", home.index())).ok()?;
+        Some(StoragePath::new(
+            self.activation_frames().storage().clone(),
+            crate::ir::minecraft::NbtPath::new(
+                crate::ir::minecraft::NbtPathSegment::Key(key),
+                vec![],
+            ),
+        ))
+    }
+
+    pub(crate) fn list_i32_scratch(&self) -> StoragePath {
+        StoragePath::new(
+            self.activation_frames().storage().clone(),
+            crate::ir::minecraft::NbtPath::new(
+                crate::ir::minecraft::NbtPathSegment::Key(
+                    crate::ir::minecraft::NbtPathKey::new("list_i32_scratch")
+                        .expect("generated scratch key is valid"),
+                ),
+                vec![],
+            ),
+        )
+    }
+
+    pub(crate) fn string_unit_scratch(&self) -> StoragePath {
+        StoragePath::new(
+            self.activation_frames().storage().clone(),
+            crate::ir::minecraft::NbtPath::new(
+                crate::ir::minecraft::NbtPathSegment::Key(
+                    crate::ir::minecraft::NbtPathKey::new("string_unit_scratch")
+                        .expect("generated scratch key is valid"),
+                ),
+                vec![],
+            ),
+        )
     }
 
     pub(crate) fn recursive_spill_homes(

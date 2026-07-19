@@ -8,13 +8,34 @@ use std::num::NonZeroU32;
 use super::context::{apply_run_modifiers, function_entry_context};
 use super::input::ModuleKey;
 use crate::ir::command_line::validate_command_line_shape;
-pub use crate::ir::semantic::RuntimeValueType as ValueType;
 use crate::ir::semantic::{
     Axes, DimensionKey, EntityAnchor, EntityCapability, EntityKind, EntityTag, ExecutionContext,
     ExecutorType, FunctionBehavior, MessageLiteral, MinecraftSemanticKey, PositionSpec,
     RelativeWorldOffset, RotationSpec, StaticEntityQuery, minecraft_descriptor,
 };
 use crate::source::{OriginId, SourceContext};
+
+/// One runtime value type retained by typed source HIR.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ValueType {
+    Bool,
+    Int32,
+    ListI32,
+    String,
+    Struct(SourceStructId),
+}
+
+impl fmt::Display for ValueType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bool => formatter.write_str("Bool"),
+            Self::Int32 => formatter.write_str("Int32"),
+            Self::ListI32 => formatter.write_str("List<Int32>"),
+            Self::String => formatter.write_str("String"),
+            Self::Struct(id) => write!(formatter, "Struct@{}", id.index()),
+        }
+    }
+}
 
 /// A source function's result contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -40,6 +61,25 @@ pub struct SourceFunctionId(u32);
 
 impl SourceFunctionId {
     /// Returns this identity's zero-based declaration index.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        u32::try_from(index).ok().map(Self)
+    }
+
+    pub(super) fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+/// Dense identity of one nominal struct in canonical package order.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceStructId(u32);
+
+impl SourceStructId {
     #[must_use]
     pub const fn index(self) -> u32 {
         self.0
@@ -168,6 +208,16 @@ impl CheckedFrontendOutput {
     #[must_use]
     pub fn function_count(&self) -> usize {
         self.module.functions.len()
+    }
+
+    #[must_use]
+    pub fn struct_count(&self) -> usize {
+        self.module.structs.len()
+    }
+
+    #[must_use]
+    pub fn struct_ids(&self) -> impl ExactSizeIterator<Item = SourceStructId> + '_ {
+        self.module.structs.iter().map(|struct_| struct_.id)
     }
 
     /// Returns whether the checked module contains no functions.
@@ -299,6 +349,14 @@ impl CheckedFrontendOutput {
         &self.module.functions
     }
 
+    pub(super) fn structs(&self) -> &[HirStruct] {
+        &self.module.structs
+    }
+
+    pub(super) fn struct_(&self, id: SourceStructId) -> Option<&HirStruct> {
+        self.module.structs.get(id.as_usize()?)
+    }
+
     pub(super) fn external_ops(&self) -> &[HirExternalOp] {
         &self.module.external_ops
     }
@@ -316,10 +374,28 @@ impl CheckedFrontendOutput {
 pub(super) struct HirModule {
     pub(super) root: SourceModuleId,
     pub(super) modules: Box<[HirModuleInfo]>,
+    pub(super) structs: Box<[HirStruct]>,
     pub(super) external_ops: Box<[HirExternalOp]>,
     pub(super) run_scope_count: usize,
     pub(super) functions: Box<[HirFunction]>,
     pub(super) behaviors: Box<[FunctionBehavior]>,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirStruct {
+    pub(super) id: SourceStructId,
+    pub(super) module: SourceModuleId,
+    pub(super) name_origin: OriginId,
+    pub(super) fields: Box<[HirStructField]>,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirStructField {
+    pub(super) name_origin: OriginId,
+    pub(super) ty: ValueType,
+    pub(super) type_origin: OriginId,
     pub(super) origin: OriginId,
 }
 
@@ -364,6 +440,10 @@ pub(super) enum HirMinecraftOperationAttributes {
         offset: RelativeWorldOffset,
         component_origins: [OriginId; 3],
     },
+    BookPage {
+        page_index: u8,
+        page_origin: OriginId,
+    },
 }
 
 impl HirMinecraftOperationAttributes {
@@ -372,6 +452,7 @@ impl HirMinecraftOperationAttributes {
             Self::Say { .. } => MinecraftSemanticKey::Say,
             Self::Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
             Self::MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
+            Self::BookPage { .. } => MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
         }
     }
 }
@@ -455,8 +536,18 @@ pub(super) enum HirStatementKind {
     Call(HirCall),
     External(SourceExternalOpId),
     If(HirIf),
+    While(HirWhile),
+    Break,
+    Continue,
     Run(HirRun),
     Return(Option<HirExpression>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirWhile {
+    pub(super) condition: HirExpression,
+    pub(super) body: HirBlock,
+    pub(super) origin: OriginId,
 }
 
 /// One ordered compiler-known execution-context modifier.
@@ -591,12 +682,96 @@ pub(super) enum HirExpressionKind {
     Int32(i32),
     Local(LocalId),
     Call(HirCall),
+    External(SourceExternalOpId),
+    StructConstruct {
+        struct_: SourceStructId,
+        fields: Box<[HirStructFieldValue]>,
+    },
+    StructProject {
+        aggregate: Box<HirExpression>,
+        field: u32,
+    },
+    ListI32 {
+        op: HirListI32Op,
+        operands: Box<[HirExpression]>,
+    },
+    String {
+        op: HirStringOp,
+        operands: Box<[HirExpression]>,
+    },
     Not(Box<HirExpression>),
+    WrappingArithmetic {
+        op: HirWrappingArithmeticOp,
+        left: Box<HirExpression>,
+        right: Box<HirExpression>,
+    },
     Compare {
         op: HirComparisonOp,
         left: Box<HirExpression>,
         right: Box<HirExpression>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HirListI32Op {
+    Empty,
+    Length,
+    Push,
+    LastOrZero,
+    WithoutLast,
+}
+
+impl HirListI32Op {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Length => "length",
+            Self::Push => "push",
+            Self::LastOrZero => "last_or_zero",
+            Self::WithoutLast => "without_last",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirStringOp {
+    Constant(Box<str>),
+    Length,
+    EndsWithAscii(u8),
+    WithoutLastUnit,
+}
+
+impl HirStringOp {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Constant(_) => "constant",
+            Self::Length => "length",
+            Self::EndsWithAscii(_) => "ends_with_ascii",
+            Self::WithoutLastUnit => "without_last_unit",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirStructFieldValue {
+    pub(super) field: u32,
+    pub(super) value: HirExpression,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HirWrappingArithmeticOp {
+    Add,
+    Subtract,
+}
+
+impl HirWrappingArithmeticOp {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "+%",
+            Self::Subtract => "-%",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -644,6 +819,10 @@ impl<'a> Dumper<'a> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the deterministic HIR dump lists each complete package inventory in source order"
+    )]
     fn dump(mut self) -> String {
         self.line(
             0,
@@ -663,6 +842,30 @@ impl<'a> Dumper<'a> {
                     self.location(module.origin)
                 ),
             );
+        }
+        for struct_ in self.output.structs() {
+            self.line(
+                1,
+                &format!(
+                    "struct @{} {} module=@{} {}",
+                    struct_.id.index(),
+                    self.spelling(struct_.name_origin),
+                    struct_.module.index(),
+                    self.location(struct_.origin)
+                ),
+            );
+            for (index, field) in struct_.fields.iter().enumerate() {
+                self.line(
+                    2,
+                    &format!(
+                        "field {index} {}: {} type={} {}",
+                        self.spelling(field.name_origin),
+                        field.ty,
+                        self.location(field.type_origin),
+                        self.location(field.origin)
+                    ),
+                );
+            }
         }
         for external in self.output.external_ops() {
             match &external.semantic {
@@ -702,6 +905,9 @@ impl<'a> Dumper<'a> {
                         }
                         HirMinecraftOperationAttributes::MoveBy { offset, .. } => {
                             format!("offset={offset:?}")
+                        }
+                        HirMinecraftOperationAttributes::BookPage { page_index, .. } => {
+                            format!("page_index={page_index}")
                         }
                     };
                     self.line(
@@ -837,6 +1043,25 @@ impl<'a> Dumper<'a> {
                     self.dump_block(else_body, indent + 2);
                 }
             }
+            HirStatementKind::While(statement) => {
+                self.line(
+                    indent,
+                    &format!(
+                        "while {} {}",
+                        self.expression(&statement.condition),
+                        self.location(statement.origin)
+                    ),
+                );
+                self.dump_block(&statement.body, indent + 1);
+            }
+            HirStatementKind::Break => self.line(
+                indent,
+                &format!("break {}", self.location(statement.origin)),
+            ),
+            HirStatementKind::Continue => self.line(
+                indent,
+                &format!("continue {}", self.location(statement.origin)),
+            ),
             HirStatementKind::Run(run) => self.dump_run(run, indent),
             HirStatementKind::Return(value) => {
                 let value = value.as_ref().map_or_else(
@@ -949,7 +1174,47 @@ impl<'a> Dumper<'a> {
             HirExpressionKind::Int32(value) => value.to_string(),
             HirExpressionKind::Local(local) => format!("%{}", local.index()),
             HirExpressionKind::Call(call) => self.call(call),
+            HirExpressionKind::External(operation) => format!("external@{}", operation.index()),
+            HirExpressionKind::StructConstruct { struct_, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| format!("{}={}", field.field, self.expression(&field.value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("struct@{}{{{fields}}}", struct_.index())
+            }
+            HirExpressionKind::StructProject { aggregate, field } => {
+                format!("({}).field{field}", self.expression(aggregate))
+            }
+            HirExpressionKind::ListI32 { op, operands } => {
+                let operands = operands
+                    .iter()
+                    .map(|operand| self.expression(operand))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("list.i32.{}({operands})", op.as_str())
+            }
+            HirExpressionKind::String { op, operands } => {
+                let operands = operands
+                    .iter()
+                    .map(|operand| self.expression(operand))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                match op {
+                    HirStringOp::Constant(value) => format!("string.constant({value:?})"),
+                    HirStringOp::EndsWithAscii(ascii) => {
+                        format!("string.ends_with_ascii({operands}, {ascii})")
+                    }
+                    _ => format!("string.{}({operands})", op.as_str()),
+                }
+            }
             HirExpressionKind::Not(operand) => format!("!({})", self.expression(operand)),
+            HirExpressionKind::WrappingArithmetic { op, left, right } => format!(
+                "({} {} {})",
+                self.expression(left),
+                op.as_str(),
+                self.expression(right)
+            ),
             HirExpressionKind::Compare { op, left, right } => format!(
                 "({} {} {})",
                 self.expression(left),
@@ -1068,6 +1333,40 @@ impl Verifier<'_> {
                 "package root does not match its module inventory entry",
             ));
         }
+        for (index, struct_) in self.output.structs().iter().enumerate() {
+            let expected = SourceStructId::from_index(index)
+                .ok_or_else(|| HirVerificationError::new("struct identity space exhausted"))?;
+            if struct_.id != expected {
+                return Err(HirVerificationError::new(format!(
+                    "struct at index {index} has non-dense identity {:?}",
+                    struct_.id
+                )));
+            }
+            if struct_
+                .module
+                .as_usize()
+                .is_none_or(|module| module >= self.output.module.modules.len())
+            {
+                return Err(HirVerificationError::new(format!(
+                    "struct {:?} has invalid owner module {:?}",
+                    struct_.id, struct_.module
+                )));
+            }
+            self.origin(struct_.origin, "struct")?;
+            self.origin(struct_.name_origin, "struct name")?;
+            if struct_.fields.len() > 64 {
+                return Err(HirVerificationError::new(format!(
+                    "struct {:?} exceeds the Phase-1 field limit",
+                    struct_.id
+                )));
+            }
+            for field in &struct_.fields {
+                self.origin(field.origin, "struct field")?;
+                self.origin(field.name_origin, "struct field name")?;
+                self.origin(field.type_origin, "struct field type")?;
+                self.verify_value_type(field.ty, &mut vec![struct_.id], 1)?;
+            }
+        }
         for (index, external) in self.output.external_ops().iter().enumerate() {
             let expected = SourceExternalOpId::from_index(index).ok_or_else(|| {
                 HirVerificationError::new("external-operation identity space exhausted")
@@ -1141,6 +1440,17 @@ impl Verifier<'_> {
                                 self.origin(*origin, "Minecraft spatial component")?;
                             }
                         }
+                        HirMinecraftOperationAttributes::BookPage {
+                            page_index,
+                            page_origin,
+                        } => {
+                            self.origin(*page_origin, "Minecraft written-book page index")?;
+                            if *page_index >= 100 {
+                                return Err(HirVerificationError::new(
+                                    "written-book page index exceeds the pinned maximum",
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -1198,6 +1508,40 @@ impl Verifier<'_> {
         Ok(())
     }
 
+    fn verify_value_type(
+        &self,
+        ty: ValueType,
+        active: &mut Vec<SourceStructId>,
+        depth: usize,
+    ) -> Result<(), HirVerificationError> {
+        let ValueType::Struct(struct_id) = ty else {
+            return Ok(());
+        };
+        if depth > 16 {
+            return Err(HirVerificationError::new(format!(
+                "aggregate type exceeds the Phase-1 nesting-depth limit at {struct_id:?}"
+            )));
+        }
+        if active.contains(&struct_id) {
+            return Err(HirVerificationError::new(format!(
+                "aggregate type contains a recursive cycle through {struct_id:?}"
+            )));
+        }
+        let declaration = self.output.struct_(struct_id).ok_or_else(|| {
+            HirVerificationError::new(format!("aggregate type names missing {struct_id:?}"))
+        })?;
+        active.push(struct_id);
+        for field in &declaration.fields {
+            self.verify_value_type(field.ty, active, depth + 1)?;
+        }
+        active.pop();
+        Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "function inventory and body verification remain one ordered invariant boundary"
+    )]
     fn verify_function(&self, function: &HirFunction) -> Result<(), HirVerificationError> {
         self.origin(function.origin, "function")?;
         self.origin(function.name_origin, "function name")?;
@@ -1286,6 +1630,7 @@ impl Verifier<'_> {
             &mut state,
             &mut next_declaration,
             &context,
+            0,
         )?;
         if matches!(function.result, FunctionResult::Value(_)) && continues {
             return Err(HirVerificationError::new(format!(
@@ -1310,6 +1655,7 @@ impl Verifier<'_> {
         state: &mut VerifyState,
         next_declaration: &mut usize,
         context: &HirExecutionContext,
+        loop_depth: usize,
     ) -> Result<bool, HirVerificationError> {
         self.origin(block.origin, "block")?;
         self.origin(block.closing_brace_origin, "block closing brace")?;
@@ -1323,6 +1669,7 @@ impl Verifier<'_> {
                 next_declaration,
                 &mut scope_locals,
                 context,
+                loop_depth,
             )?;
             if continues && !statement_continues {
                 continues = false;
@@ -1336,6 +1683,11 @@ impl Verifier<'_> {
         Ok(continues)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the exhaustive statement verifier explicitly threads lexical, flow, context, and loop state"
+    )]
     fn verify_statement(
         &self,
         function: &HirFunction,
@@ -1344,6 +1696,7 @@ impl Verifier<'_> {
         next_declaration: &mut usize,
         scope_locals: &mut Vec<LocalId>,
         context: &HirExecutionContext,
+        loop_depth: usize,
     ) -> Result<bool, HirVerificationError> {
         self.origin(statement.origin, "statement")?;
         match &statement.kind {
@@ -1409,8 +1762,44 @@ impl Verifier<'_> {
                 }
                 Ok(true)
             }
-            HirStatementKind::If(conditional) => {
-                self.verify_if(function, conditional, state, next_declaration, context)
+            HirStatementKind::If(conditional) => self.verify_if(
+                function,
+                conditional,
+                state,
+                next_declaration,
+                context,
+                loop_depth,
+            ),
+            HirStatementKind::While(loop_) => {
+                if loop_.origin != statement.origin {
+                    return Err(HirVerificationError::new(
+                        "while statement and region provenance differ",
+                    ));
+                }
+                self.origin(loop_.origin, "while loop")?;
+                self.expression(function, &loop_.condition, state)?;
+                if loop_.condition.ty != ValueType::Bool {
+                    return Err(HirVerificationError::new("while condition is not Bool"));
+                }
+                let checkpoint = state.checkpoint();
+                let _ = self.verify_block(
+                    function,
+                    &loop_.body,
+                    state,
+                    next_declaration,
+                    context,
+                    loop_depth.saturating_add(1),
+                )?;
+                state.rollback(checkpoint);
+                Ok(true)
+            }
+            HirStatementKind::Break | HirStatementKind::Continue => {
+                if loop_depth == 0 {
+                    return Err(HirVerificationError::new(
+                        "loop control appears outside a loop",
+                    ));
+                }
+                Ok(false)
             }
             HirStatementKind::Run(run) => {
                 self.verify_run(function, run, statement.origin, next_declaration, context)?;
@@ -1565,6 +1954,7 @@ impl Verifier<'_> {
             &mut isolated_state,
             next_declaration,
             &replayed_context,
+            0,
         )?;
         Ok(())
     }
@@ -1658,6 +2048,7 @@ impl Verifier<'_> {
         state: &mut VerifyState,
         next_declaration: &mut usize,
         context: &HirExecutionContext,
+        loop_depth: usize,
     ) -> Result<bool, HirVerificationError> {
         self.origin(conditional.origin, "conditional")?;
         if conditional.arms.is_empty() {
@@ -1673,14 +2064,28 @@ impl Verifier<'_> {
                     "conditional arm condition is not Bool",
                 ));
             }
-            if self.verify_block(function, &arm.body, state, next_declaration, context)? {
+            if self.verify_block(
+                function,
+                &arm.body,
+                state,
+                next_declaration,
+                context,
+                loop_depth,
+            )? {
                 let delta = state.newly_assigned_since(checkpoint);
                 VerifyState::merge_delta_intersection(&mut continuing_delta, &delta);
             }
             state.rollback(checkpoint);
         }
         if let Some(else_body) = &conditional.else_body {
-            if self.verify_block(function, else_body, state, next_declaration, context)? {
+            if self.verify_block(
+                function,
+                else_body,
+                state,
+                next_declaration,
+                context,
+                loop_depth,
+            )? {
                 let delta = state.newly_assigned_since(checkpoint);
                 VerifyState::merge_delta_intersection(&mut continuing_delta, &delta);
             }
@@ -1698,6 +2103,10 @@ impl Verifier<'_> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "HIR verification keeps the closed expression vocabulary in one exhaustive boundary"
+    )]
     fn expression(
         &self,
         function: &HirFunction,
@@ -1726,12 +2135,140 @@ impl Verifier<'_> {
                 };
                 ty
             }
+            HirExpressionKind::External(operation) => {
+                let external = self.output.external_op(*operation).ok_or_else(|| {
+                    HirVerificationError::new(format!("invalid external identity {operation:?}"))
+                })?;
+                match &external.semantic {
+                    HirExternalSemantic::MinecraftOperation { key, .. }
+                        if *key == MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage =>
+                    {
+                        ValueType::String
+                    }
+                    _ => {
+                        return Err(HirVerificationError::new(
+                            "non-value external operation appears in an expression",
+                        ));
+                    }
+                }
+            }
+            HirExpressionKind::StructConstruct { struct_, fields } => {
+                let declaration = self.output.struct_(*struct_).ok_or_else(|| {
+                    HirVerificationError::new(format!("invalid struct identity {struct_:?}"))
+                })?;
+                if fields.len() != declaration.fields.len() {
+                    return Err(HirVerificationError::new(
+                        "struct construction field count differs from its declaration",
+                    ));
+                }
+                let mut seen = vec![false; declaration.fields.len()];
+                for field in fields {
+                    self.origin(field.origin, "struct field initializer")?;
+                    let index = usize::try_from(field.field).map_err(|_| {
+                        HirVerificationError::new("struct field index does not fit usize")
+                    })?;
+                    let expected = declaration.fields.get(index).ok_or_else(|| {
+                        HirVerificationError::new("struct construction has invalid field index")
+                    })?;
+                    if std::mem::replace(&mut seen[index], true) {
+                        return Err(HirVerificationError::new(
+                            "struct construction repeats a field",
+                        ));
+                    }
+                    self.expression(function, &field.value, state)?;
+                    if field.value.ty != expected.ty {
+                        return Err(HirVerificationError::new(
+                            "struct field initializer type differs from its declaration",
+                        ));
+                    }
+                }
+                if seen.iter().any(|seen| !seen) {
+                    return Err(HirVerificationError::new(
+                        "struct construction omits a field",
+                    ));
+                }
+                ValueType::Struct(*struct_)
+            }
+            HirExpressionKind::StructProject { aggregate, field } => {
+                self.expression(function, aggregate, state)?;
+                let ValueType::Struct(struct_) = aggregate.ty else {
+                    return Err(HirVerificationError::new(
+                        "struct projection receiver is not a struct",
+                    ));
+                };
+                let declaration = self.output.struct_(struct_).ok_or_else(|| {
+                    HirVerificationError::new(format!("invalid struct identity {struct_:?}"))
+                })?;
+                declaration
+                    .fields
+                    .get(usize::try_from(*field).unwrap_or(usize::MAX))
+                    .map(|field| field.ty)
+                    .ok_or_else(|| HirVerificationError::new("invalid struct projection field"))?
+            }
+            HirExpressionKind::ListI32 { op, operands } => {
+                for operand in operands {
+                    self.expression(function, operand, state)?;
+                }
+                let (expected, result): (&[ValueType], ValueType) = match op {
+                    HirListI32Op::Empty => (&[], ValueType::ListI32),
+                    HirListI32Op::Length | HirListI32Op::LastOrZero => {
+                        (&[ValueType::ListI32], ValueType::Int32)
+                    }
+                    HirListI32Op::Push => {
+                        (&[ValueType::ListI32, ValueType::Int32], ValueType::ListI32)
+                    }
+                    HirListI32Op::WithoutLast => (&[ValueType::ListI32], ValueType::ListI32),
+                };
+                if operands.len() != expected.len()
+                    || operands
+                        .iter()
+                        .zip(expected)
+                        .any(|(operand, expected)| operand.ty != *expected)
+                {
+                    return Err(HirVerificationError::new(
+                        "list operation operand contract is invalid",
+                    ));
+                }
+                result
+            }
+            HirExpressionKind::String { op, operands } => {
+                for operand in operands {
+                    self.expression(function, operand, state)?;
+                }
+                let (expected, result): (&[ValueType], ValueType) = match op {
+                    HirStringOp::Constant(_) => (&[], ValueType::String),
+                    HirStringOp::Length => (&[ValueType::String], ValueType::Int32),
+                    HirStringOp::EndsWithAscii(_) => (&[ValueType::String], ValueType::Bool),
+                    HirStringOp::WithoutLastUnit => (&[ValueType::String], ValueType::String),
+                };
+                if operands.len() != expected.len()
+                    || operands
+                        .iter()
+                        .zip(expected)
+                        .any(|(operand, expected)| operand.ty != *expected)
+                {
+                    return Err(HirVerificationError::new(
+                        "string operation operand contract is invalid",
+                    ));
+                }
+                result
+            }
             HirExpressionKind::Not(operand) => {
                 self.expression(function, operand, state)?;
                 if operand.ty != ValueType::Bool {
                     return Err(HirVerificationError::new("`!` operand is not Bool"));
                 }
                 ValueType::Bool
+            }
+            HirExpressionKind::WrappingArithmetic { left, right, .. } => {
+                self.expression(function, left, state)?;
+                self.expression(function, right, state)?;
+                if left.ty != ValueType::Int32 || right.ty != ValueType::Int32 {
+                    return Err(HirVerificationError::new(
+                        "wrapping arithmetic operands are not Int32",
+                    ));
+                }
+                ValueType::Int32
             }
             HirExpressionKind::Compare { op, left, right } => {
                 self.expression(function, left, state)?;
@@ -1851,10 +2388,13 @@ fn block_contains_return(block: &HirBlock) -> bool {
                         .is_some_and(block_contains_return)
             }
             HirStatementKind::Run(run) => block_contains_return(&run.body),
+            HirStatementKind::While(statement) => block_contains_return(&statement.body),
             HirStatementKind::Declaration { .. }
             | HirStatementKind::Assignment { .. }
             | HirStatementKind::Call(_)
-            | HirStatementKind::External(_) => false,
+            | HirStatementKind::External(_)
+            | HirStatementKind::Break
+            | HirStatementKind::Continue => false,
         })
 }
 
@@ -1882,11 +2422,16 @@ fn verify_run_scope_ids(block: &HirBlock, next: &mut usize) -> Result<(), HirVer
                     verify_run_scope_ids(body, next)?;
                 }
             }
+            HirStatementKind::While(statement) => {
+                verify_run_scope_ids(&statement.body, next)?;
+            }
             HirStatementKind::Declaration { .. }
             | HirStatementKind::Assignment { .. }
             | HirStatementKind::Call(_)
             | HirStatementKind::External(_)
-            | HirStatementKind::Return(_) => {}
+            | HirStatementKind::Return(_)
+            | HirStatementKind::Break
+            | HirStatementKind::Continue => {}
         }
     }
     Ok(())
@@ -1903,7 +2448,7 @@ fn verify_external_operation_occurrences(
     for (index, was_seen) in seen.into_iter().enumerate() {
         if !was_seen {
             return Err(HirVerificationError::new(format!(
-                "external operation {:?} has no HIR statement occurrence",
+                "external operation {:?} has no HIR occurrence",
                 external_ops[index].id
             )));
         }
@@ -1917,24 +2462,10 @@ fn record_external_operation_occurrences(
 ) -> Result<(), HirVerificationError> {
     for statement in &block.statements {
         match &statement.kind {
-            HirStatementKind::External(external) => {
-                let occurrence = external
-                    .as_usize()
-                    .and_then(|index| seen.get_mut(index))
-                    .ok_or_else(|| {
-                        HirVerificationError::new(format!(
-                            "statement references invalid external operation {external:?}"
-                        ))
-                    })?;
-                if *occurrence {
-                    return Err(HirVerificationError::new(format!(
-                        "external operation {external:?} has multiple HIR statement occurrences"
-                    )));
-                }
-                *occurrence = true;
-            }
+            HirStatementKind::External(external) => record_external(*external, seen)?,
             HirStatementKind::If(conditional) => {
                 for arm in &conditional.arms {
+                    record_expression_externals(&arm.condition, seen)?;
                     record_external_operation_occurrences(&arm.body, seen)?;
                 }
                 if let Some(body) = &conditional.else_body {
@@ -1944,13 +2475,89 @@ fn record_external_operation_occurrences(
             HirStatementKind::Run(run) => {
                 record_external_operation_occurrences(&run.body, seen)?;
             }
-            HirStatementKind::Declaration { .. }
-            | HirStatementKind::Assignment { .. }
-            | HirStatementKind::Call(_)
-            | HirStatementKind::Return(_) => {}
+            HirStatementKind::While(statement) => {
+                record_expression_externals(&statement.condition, seen)?;
+                record_external_operation_occurrences(&statement.body, seen)?;
+            }
+            HirStatementKind::Declaration { initializer, .. } => {
+                if let Some(value) = initializer {
+                    record_expression_externals(value, seen)?;
+                }
+            }
+            HirStatementKind::Assignment { value, .. } => record_expression_externals(value, seen)?,
+            HirStatementKind::Call(call) => {
+                for argument in &call.arguments {
+                    record_expression_externals(argument, seen)?;
+                }
+            }
+            HirStatementKind::Return(value) => {
+                if let Some(value) = value {
+                    record_expression_externals(value, seen)?;
+                }
+            }
+            HirStatementKind::Break | HirStatementKind::Continue => {}
         }
     }
     Ok(())
+}
+
+fn record_external(
+    external: SourceExternalOpId,
+    seen: &mut [bool],
+) -> Result<(), HirVerificationError> {
+    let occurrence = external
+        .as_usize()
+        .and_then(|index| seen.get_mut(index))
+        .ok_or_else(|| {
+            HirVerificationError::new(format!(
+                "expression references invalid external operation {external:?}"
+            ))
+        })?;
+    if std::mem::replace(occurrence, true) {
+        return Err(HirVerificationError::new(format!(
+            "external operation {external:?} has multiple HIR occurrences"
+        )));
+    }
+    Ok(())
+}
+
+fn record_expression_externals(
+    expression: &HirExpression,
+    seen: &mut [bool],
+) -> Result<(), HirVerificationError> {
+    match &expression.kind {
+        HirExpressionKind::External(external) => record_external(*external, seen),
+        HirExpressionKind::Call(call) => {
+            for argument in &call.arguments {
+                record_expression_externals(argument, seen)?;
+            }
+            Ok(())
+        }
+        HirExpressionKind::StructConstruct { fields, .. } => {
+            for field in fields {
+                record_expression_externals(&field.value, seen)?;
+            }
+            Ok(())
+        }
+        HirExpressionKind::StructProject { aggregate, .. } | HirExpressionKind::Not(aggregate) => {
+            record_expression_externals(aggregate, seen)
+        }
+        HirExpressionKind::ListI32 { operands, .. }
+        | HirExpressionKind::String { operands, .. } => {
+            for operand in operands {
+                record_expression_externals(operand, seen)?;
+            }
+            Ok(())
+        }
+        HirExpressionKind::WrappingArithmetic { left, right, .. }
+        | HirExpressionKind::Compare { left, right, .. } => {
+            record_expression_externals(left, seen)?;
+            record_expression_externals(right, seen)
+        }
+        HirExpressionKind::Bool(_) | HirExpressionKind::Int32(_) | HirExpressionKind::Local(_) => {
+            Ok(())
+        }
+    }
 }
 
 struct VerifyState {
@@ -2226,11 +2833,7 @@ mod tests {
             vec![statement.clone(), statement].into_boxed_slice();
 
         let error = verify(&checked, &sources).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("multiple HIR statement occurrences")
-        );
+        assert!(error.to_string().contains("multiple HIR occurrences"));
     }
 
     #[test]
@@ -2241,7 +2844,7 @@ mod tests {
         checked.module.functions[0].body.statements = Box::new([]);
 
         let error = verify(&checked, &sources).unwrap_err();
-        assert!(error.to_string().contains("no HIR statement occurrence"));
+        assert!(error.to_string().contains("no HIR occurrence"));
     }
 
     #[test]

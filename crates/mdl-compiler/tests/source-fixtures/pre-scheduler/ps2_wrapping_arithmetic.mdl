@@ -1,0 +1,9 @@
+// MDL: success
+// HIR: return ((%0:Int32 +% 1:Int32):Int32 -% 2:Int32):Int32
+// CORE: core.i32.add.wrapping
+// CORE: core.i32.sub.wrapping
+// PACK: -=
+
+export fn wrapping_arithmetic(value: Int32) -> Int32 {
+    return value +% 1 -% 2;
+}

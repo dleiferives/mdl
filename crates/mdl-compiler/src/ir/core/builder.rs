@@ -305,6 +305,20 @@ impl<'a> FunctionBuilder<'a> {
         self.one_result(CoreOp::I32AddWrapping, vec![left, right], origin)
     }
 
+    /// Inserts wrapping signed subtraction.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn i32_sub_wrapping(
+        &mut self,
+        left: ValueId,
+        right: ValueId,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::I32SubWrapping, vec![left, right], origin)
+    }
+
     /// Inserts signed overflowing addition, returning the wrapping sum and overflow
     /// flag as distinct SSA values.
     ///
@@ -346,6 +360,121 @@ impl<'a> FunctionBuilder<'a> {
     /// Returns any structural insertion error.
     pub fn bool_not(&mut self, value: ValueId, origin: OriginId) -> Result<ValueId, BuildError> {
         self.one_result(CoreOp::BoolNot, vec![value], origin)
+    }
+
+    /// Inserts the empty immutable `i32` list.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn list_i32_empty(&mut self, origin: OriginId) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::ListI32Empty, vec![], origin)
+    }
+
+    /// Inserts an immutable `i32` list length operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn list_i32_length(
+        &mut self,
+        list: ValueId,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::ListI32Length, vec![list], origin)
+    }
+
+    /// Inserts an immutable `i32` list append operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn list_i32_push(
+        &mut self,
+        list: ValueId,
+        value: ValueId,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::ListI32Push, vec![list, value], origin)
+    }
+
+    /// Returns the last list element, using zero for an empty list.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn list_i32_last_or_zero(
+        &mut self,
+        list: ValueId,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::ListI32LastOrZero, vec![list], origin)
+    }
+
+    /// Returns an immutable list without its last element.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn list_i32_without_last(
+        &mut self,
+        list: ValueId,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::ListI32WithoutLast, vec![list], origin)
+    }
+
+    /// Appends one immutable runtime string constant.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn string_constant(
+        &mut self,
+        value: impl Into<Box<str>>,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::StringConstant(value.into()), vec![], origin)
+    }
+
+    /// Appends a UTF-16 code-unit length operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn string_length(
+        &mut self,
+        value: ValueId,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::StringLength, vec![value], origin)
+    }
+
+    /// Appends a static-ASCII suffix test.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn string_ends_with_ascii(
+        &mut self,
+        value: ValueId,
+        ascii: u8,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::StringEndsWithAscii(ascii), vec![value], origin)
+    }
+
+    /// Appends an immutable final-code-unit removal operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn string_without_last_unit(
+        &mut self,
+        value: ValueId,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::StringWithoutLastUnit, vec![value], origin)
     }
 
     /// Inserts an internal call and returns its declared results.

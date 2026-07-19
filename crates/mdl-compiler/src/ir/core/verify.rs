@@ -212,6 +212,7 @@ fn verify_linked_inventories(
             }
             MinecraftOperationAttributes::Teleport { .. }
             | MinecraftOperationAttributes::MoveBy { .. } => true,
+            MinecraftOperationAttributes::BookPage { page_index, .. } => *page_index < 100,
         };
         if !declaration.is_well_formed() || !attributes_are_valid {
             findings.push(Diagnostic::new(

@@ -1,0 +1,214 @@
+// MDL: success
+// HIR: struct
+// HIR: List<Int32>
+// HIR: String
+// HIR: while
+// CORE: core.list.i32.push
+// CORE: core.string.without_last_unit
+// CORE: core.i32.sub.wrapping
+// PACK: append from storage
+// PACK: set string storage
+
+const ParseState = struct {
+    remaining: String,
+    opcodes: List<Int32>,
+    bracket_depth: Int32,
+    status: Int32,
+};
+
+const Tape = struct {
+    left: List<Int32>,
+    right: List<Int32>,
+};
+
+const RunResult = struct {
+    tape: Tape,
+    output: List<Int32>,
+    remaining_program: List<Int32>,
+    remaining_fuel: Int32,
+    dispatches: Int32,
+    status: Int32,
+};
+
+fn append_opcode(state: ParseState, opcode: Int32) -> ParseState {
+    return ParseState{
+        .remaining = state.remaining,
+        .opcodes = state.opcodes.push(opcode),
+        .bracket_depth = state.bracket_depth,
+        .status = state.status,
+    };
+}
+
+fn parse(source: String) -> ParseState {
+    var state: ParseState = ParseState{
+        .remaining = source,
+        .opcodes = List.empty(),
+        .bracket_depth = 0,
+        .status = 0,
+    };
+    while (state.remaining.length() > 0) {
+        if (state.remaining.ends_with_ascii(">")) {
+            state = append_opcode(state, 62);
+        } else if (state.remaining.ends_with_ascii("<")) {
+            state = append_opcode(state, 60);
+        } else if (state.remaining.ends_with_ascii("+")) {
+            state = append_opcode(state, 43);
+        } else if (state.remaining.ends_with_ascii("-")) {
+            state = append_opcode(state, 45);
+        } else if (state.remaining.ends_with_ascii(".")) {
+            state = append_opcode(state, 46);
+        } else if (state.remaining.ends_with_ascii(",")) {
+            state = append_opcode(state, 44);
+        } else if (state.remaining.ends_with_ascii("]")) {
+            state = ParseState{
+                .remaining = state.remaining,
+                .opcodes = state.opcodes.push(93),
+                .bracket_depth = state.bracket_depth +% 1,
+                .status = state.status,
+            };
+        } else if (state.remaining.ends_with_ascii("[")) {
+            if (state.bracket_depth == 0) {
+                state = ParseState{
+                    .remaining = state.remaining,
+                    .opcodes = state.opcodes.push(91),
+                    .bracket_depth = 0,
+                    .status = 1,
+                };
+            } else {
+                state = ParseState{
+                    .remaining = state.remaining,
+                    .opcodes = state.opcodes.push(91),
+                    .bracket_depth = state.bracket_depth -% 1,
+                    .status = state.status,
+                };
+            }
+        }
+        state = ParseState{
+            .remaining = state.remaining.without_last_unit(),
+            .opcodes = state.opcodes,
+            .bracket_depth = state.bracket_depth,
+            .status = state.status,
+        };
+    }
+    if (state.status == 0) {
+        if (state.bracket_depth > 0) {
+            state = ParseState{
+                .remaining = state.remaining,
+                .opcodes = state.opcodes,
+                .bracket_depth = state.bracket_depth,
+                .status = 2,
+            };
+        }
+    }
+    return state;
+}
+
+fn tape_empty() -> Tape {
+    return Tape{
+        .left = List.empty(),
+        .right = List.empty().push(0),
+    };
+}
+
+fn tape_set(tape: Tape, value: Int32) -> Tape {
+    return Tape{
+        .left = tape.left,
+        .right = tape.right.without_last().push(value),
+    };
+}
+
+fn tape_right(tape: Tape) -> Tape {
+    var remaining: List<Int32> = tape.right.without_last();
+    if (remaining.length() == 0) {
+        remaining = remaining.push(0);
+    }
+    return Tape{
+        .left = tape.left.push(tape.right.last_or_zero()),
+        .right = remaining,
+    };
+}
+
+fn tape_left(tape: Tape) -> Tape {
+    return Tape{
+        .left = tape.left.without_last(),
+        .right = tape.right.push(tape.left.last_or_zero()),
+    };
+}
+
+fn increment_byte(value: Int32) -> Int32 {
+    if (value == 255) {
+        return 0;
+    }
+    return value +% 1;
+}
+
+fn decrement_byte(value: Int32) -> Int32 {
+    if (value == 0) {
+        return 255;
+    }
+    return value -% 1;
+}
+
+fn run(program: List<Int32>, fuel: Int32) -> RunResult {
+    var tape: Tape = tape_empty();
+    var remaining: List<Int32> = program;
+    var output: List<Int32> = List.empty();
+    var left_fuel: Int32 = fuel;
+    var dispatches: Int32 = 0;
+    while (left_fuel > 0) {
+        if (remaining.length() == 0) {
+            break;
+        }
+        const opcode: Int32 = remaining.last_or_zero();
+        remaining = remaining.without_last();
+        left_fuel = left_fuel -% 1;
+        dispatches = dispatches +% 1;
+        if (opcode == 62) {
+            tape = tape_right(tape);
+        } else if (opcode == 60) {
+            tape = tape_left(tape);
+        } else if (opcode == 43) {
+            tape = tape_set(tape, increment_byte(tape.right.last_or_zero()));
+        } else if (opcode == 45) {
+            tape = tape_set(tape, decrement_byte(tape.right.last_or_zero()));
+        } else if (opcode == 46) {
+            output = output.push(tape.right.last_or_zero());
+        }
+    }
+    var status: Int32 = 0;
+    if (remaining.length() > 0) {
+        status = 3;
+    }
+    return RunResult{
+        .tape = tape,
+        .output = output,
+        .remaining_program = remaining,
+        .remaining_fuel = left_fuel,
+        .dispatches = dispatches,
+        .status = status,
+    };
+}
+
+export fn validate_brackets(source: String) -> Int32 {
+    return parse(source).status;
+}
+
+export fn rehearse(fuel: Int32) -> RunResult {
+    const parsed: ParseState = parse("ignored😀+.>++.<-");
+    if (parsed.status == 0) {
+        return run(parsed.opcodes, fuel);
+    }
+    return RunResult{
+        .tape = tape_empty(),
+        .output = List.empty(),
+        .remaining_program = parsed.opcodes,
+        .remaining_fuel = fuel,
+        .dispatches = 0,
+        .status = parsed.status,
+    };
+}
+
+export fn rehearse_checksum(fuel: Int32) -> Int32 {
+    const result: RunResult = rehearse(fuel);
+    return result.output.last_or_zero() +% result.dispatches +% result.remaining_fuel +% result.status;
+}

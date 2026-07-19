@@ -46,6 +46,108 @@ Fast tests do not start Java:
 cargo test --workspace
 ```
 
+The pre-scheduler semantic foundation can be exercised more narrowly:
+
+```sh
+cargo test -p mdl-compiler --lib ir::core::eval
+cargo test -p mdl-compiler --test core_semantics
+cargo test -p mdl-compiler --test ps2_arithmetic_control_flow
+cargo test -p mdl-compiler --test ps2_fixed_aggregates
+cargo test -p mdl-compiler --test ps2_owned_lists
+cargo test -p mdl-compiler --test ps2_runtime_strings
+cargo test -p mdl-compiler --test ps2_composition_rehearsal
+cargo test -p mdl-test --lib scenario
+cargo test -p mdl-test --test pre_scheduler_semantics
+cargo test -p mdl-test --test outcome_channels
+cargo test -p mdl-test --test exact_limit_scenario
+cargo test -p mdl-test --test ps1_calibration_suite
+cargo test -p mdl-test --test ps2_composition_semantics
+```
+
+The PS-2 rehearsal composes runtime string parsing, `List<Int32>` stacks and tape,
+wrapping bytes, structs, and returned dispatch fuel. Its ignored companion compares
+the same Core oracle with all four generated packs. The book suite separately pins
+the Java 26.2 item path and empty-result fallback:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test \
+  --test ps2_book_semantics \
+  --test ps2_composition_semantics \
+  -- --ignored --nocapture
+```
+
+The `pre_scheduler_semantics` command compiles the scalar calibration source under all four Core/Minecraft
+policy products, evaluates each optimized Core program, and validates every published
+ABI adapter without starting Java. Its ignored companion installs those four packs
+plus one generated driver before a single server startup:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test pre_scheduler_semantics \
+  scalar_core_result_matches_all_four_policies_in_one_vanilla_server \
+  -- --ignored --nocapture
+```
+
+The runner retains a failed sandbox and writes `scenario-failure.txt` beside
+`harness.log`; it includes the normalized contract and bounded state difference.
+Set `MDL_KEEP_TEST_DIR=1` to retain a successful run too.
+
+The outcome calibration uses the same runner and one server startup for all four
+policies. It keeps missing success/result channels distinct from numeric zero and
+checks ordinary failure, successful zero, `return 0`, nonzero return, zero child
+contexts, and outer continuation:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test outcome_channels \
+  synchronous_command_outcome_classes_are_distinct_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+```
+
+Command-sequence interruption remains in the bare exact-limit layer below; it is not
+faked by inserting a `return` into the semantic wrapper.
+
+The typed exact-limit calibration invokes policy entries directly. The sequence
+case uses a limit of two and proves its terminal completion write is interrupted.
+The fork case creates three controlled entities, uses a fork limit of three, and
+proves the rejected redirect runs no bodies while its containing function continues.
+All harness setup and observation commands are separate roots:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test exact_limit_scenario \
+  exact_sequence_and_fork_boundaries_run_without_semantic_wrappers_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+```
+
+The batched calibration exercises bounded exact-type SNBT plus zero/one/many and
+nested entity contexts for all four policies in one server lifecycle:
+
+```sh
+MDL_SERVER_JAR=/path/to/minecraft_server.26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test ps1_calibration_suite \
+  batched_nbt_and_nested_entity_calibration_runs_on_vanilla_26_2 \
+  -- --ignored --exact --nocapture
+```
+
+Scenario cases execute in caller order; use Cargo's test-name filter for focused
+local runs. A suite is capped at 64 cases. Observations, SNBT size/depth/node count,
+entity-query results, diff rendering, and attributed in-memory logs are bounded.
+The complete transcript still streams to `harness.log`.
+
+Failed scenario sandboxes additionally retain `artifacts/<policy-pack>/` compiler
+IR/debug material when supplied by the deployment bridge. The official 26.2 bundle
+hash accepted by these gates is
+`cdacdfb25898de5e4b4b0e5ddcc2722f77067e46605709c2d886c000ebb63ec5`;
+the extracted server hash is
+`183c0499c5f855570ee487dd38e141a53f0121f83a0b07a3bac2d8b6698823e8`.
+
 The real-server integration test is ignored by default:
 
 ```sh

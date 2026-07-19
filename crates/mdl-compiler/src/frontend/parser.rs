@@ -9,7 +9,9 @@ use super::ast::{
     AstCoordinateSigil, AstDeclaration, AstExpression, AstExpressionKind, AstFunction,
     AstFunctionVisibility, AstIfArm, AstIfStatement, AstImport, AstModule, AstName, AstParameter,
     AstResultType, AstResultTypeKind, AstReturnStatement, AstRunModifier, AstRunStatement,
-    AstStatement, AstUnsafeMinecraftStatement, AstValueType, AstValueTypeKind,
+    AstStatement, AstStruct, AstStructField, AstStructFieldInitializer, AstStructLiteral,
+    AstUnsafeMinecraftStatement, AstValueType, AstValueTypeKind, AstWhileStatement,
+    AstWrappingArithmeticOp,
 };
 use super::token::{Token, TokenBuffer, TokenKind};
 use crate::diagnostic::{Diagnostic, Diagnostics};
@@ -165,13 +167,18 @@ impl<'a> Parser<'a> {
     fn parse_module(&mut self) -> Result<AstModule, SourceError> {
         let start = self.sources.span(self.file, 0, 0)?;
         let mut imports = vec![];
+        let mut structs = vec![];
         let mut functions = vec![];
         while !self.at(TokenKind::EndOfFile) {
             let before = self.index;
             match self.current().kind() {
                 TokenKind::KeywordConst => {
-                    if let Some(import) = self.parse_import()? {
-                        imports.push(import);
+                    if self.nth_kind(3) == TokenKind::KeywordImport {
+                        if let Some(import) = self.parse_import()? {
+                            imports.push(import);
+                        }
+                    } else if let Some(struct_) = self.parse_struct()? {
+                        structs.push(struct_);
                     }
                 }
                 TokenKind::KeywordFn | TokenKind::KeywordPub | TokenKind::KeywordExport => {
@@ -193,9 +200,80 @@ impl<'a> Parser<'a> {
         let end = self.current().span();
         Ok(AstModule {
             imports,
+            structs,
             functions,
             span: self.cover(start, end)?,
         })
+    }
+
+    fn parse_struct(&mut self) -> Result<Option<AstStruct>, SourceError> {
+        self.item_boundary = false;
+        let start = self.bump().span();
+        let Some(name_token) = self.expect_identifier("expected a struct type name") else {
+            self.recover_item();
+            return Ok(None);
+        };
+        let name = AstName {
+            span: name_token.span(),
+        };
+        let mut clean = self
+            .expect(TokenKind::Equal, "expected `=` after the struct type name")
+            .is_some();
+        clean &= self
+            .expect(TokenKind::KeywordStruct, "expected `struct` after `=`")
+            .is_some();
+        clean &= self
+            .expect(TokenKind::LeftBrace, "expected `{` to begin struct fields")
+            .is_some();
+        let mut fields = vec![];
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
+            let field_start = self.current().span();
+            let Some(field_name) = self.expect_identifier("expected a field name") else {
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+                break;
+            };
+            clean &= self
+                .expect(TokenKind::Colon, "expected `:` after the field name")
+                .is_some();
+            let ty = self.parse_value_type();
+            clean &= ty.is_some();
+            let end = ty.map_or(field_start, |ty| ty.span);
+            if let Some(ty) = ty {
+                fields.push(AstStructField {
+                    name: AstName {
+                        span: field_name.span(),
+                    },
+                    ty,
+                    span: self.cover(field_start, end)?,
+                });
+            }
+            if self.eat(TokenKind::Comma).is_some() {
+                continue;
+            }
+            if !self.at(TokenKind::RightBrace) {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `}` after the field",
+                    self.current().span(),
+                );
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+            }
+        }
+        let close = self.expect(TokenKind::RightBrace, "expected `}` after struct fields");
+        clean &= close.is_some();
+        let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the struct");
+        clean &= semicolon.is_some();
+        let end = semicolon
+            .or(close)
+            .map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(start, end)?;
+        if !clean {
+            self.recover_item();
+            return Ok(None);
+        }
+        Ok(Some(AstStruct { name, fields, span }))
     }
 
     fn parse_import(&mut self) -> Result<Option<AstImport>, SourceError> {
@@ -380,8 +458,31 @@ impl<'a> Parser<'a> {
         let kind = match token.kind() {
             TokenKind::KeywordBool => AstValueTypeKind::Bool,
             TokenKind::KeywordInt32 => AstValueTypeKind::Int32,
+            TokenKind::Identifier
+                if self.sources.files().slice(token.span()).ok() == Some("List")
+                    && self.nth_kind(1) == TokenKind::Less =>
+            {
+                self.bump();
+                self.bump();
+                let element = self.expect(
+                    TokenKind::KeywordInt32,
+                    "expected `Int32` list element type",
+                );
+                let close = self.expect(TokenKind::Greater, "expected `>` after list element type");
+                let end = close.or(element).map_or(token.span(), Token::span);
+                return Some(AstValueType {
+                    kind: AstValueTypeKind::ListI32,
+                    span: self.cover(token.span(), end).ok()?,
+                });
+            }
+            TokenKind::Identifier
+                if self.sources.files().slice(token.span()).ok() == Some("String") =>
+            {
+                AstValueTypeKind::String
+            }
+            TokenKind::Identifier => AstValueTypeKind::Named(AstName { span: token.span() }),
             _ => {
-                self.error(EXPECTED_TYPE, "expected `Bool` or `Int32`", token.span());
+                self.error(EXPECTED_TYPE, "expected a value type", token.span());
                 return None;
             }
         };
@@ -394,23 +495,16 @@ impl<'a> Parser<'a> {
 
     fn parse_result_type(&mut self) -> Option<AstResultType> {
         let token = self.current();
-        let kind = match token.kind() {
-            TokenKind::KeywordBool => AstResultTypeKind::Value(AstValueTypeKind::Bool),
-            TokenKind::KeywordInt32 => AstResultTypeKind::Value(AstValueTypeKind::Int32),
-            TokenKind::KeywordVoid => AstResultTypeKind::Void,
-            _ => {
-                self.error(
-                    EXPECTED_TYPE,
-                    "expected `Bool`, `Int32`, or `Void` after `->`",
-                    token.span(),
-                );
-                return None;
-            }
-        };
-        self.bump();
-        Some(AstResultType {
-            kind,
-            span: token.span(),
+        if token.kind() == TokenKind::KeywordVoid {
+            self.bump();
+            return Some(AstResultType {
+                kind: AstResultTypeKind::Void,
+                span: token.span(),
+            });
+        }
+        self.parse_value_type().map(|ty| AstResultType {
+            kind: AstResultTypeKind::Value(ty.kind),
+            span: ty.span,
         })
     }
 
@@ -464,6 +558,9 @@ impl<'a> Parser<'a> {
         match self.current().kind() {
             TokenKind::KeywordConst | TokenKind::KeywordVar => self.parse_declaration(),
             TokenKind::KeywordIf => self.parse_if_statement(),
+            TokenKind::KeywordWhile => self.parse_while_statement(),
+            TokenKind::KeywordBreak => self.parse_loop_control_statement(true),
+            TokenKind::KeywordContinue => self.parse_loop_control_statement(false),
             TokenKind::KeywordReturn => self.parse_return_statement(),
             TokenKind::KeywordRun if self.nth_kind(1) == TokenKind::Equal => {
                 self.parse_assignment()
@@ -484,6 +581,60 @@ impl<'a> Parser<'a> {
                 Ok(AstStatement::Error(span))
             }
         }
+    }
+
+    fn parse_while_statement(&mut self) -> Result<AstStatement, SourceError> {
+        let start = self.bump().span();
+        let mut clean = self
+            .expect(TokenKind::LeftParenthesis, "expected `(` after `while`")
+            .is_some();
+        let condition = self.parse_expression()?;
+        clean &= !expression_has_error(&condition);
+        clean &= self
+            .expect(
+                TokenKind::RightParenthesis,
+                "expected `)` after the loop condition",
+            )
+            .is_some();
+        let Some(body) = self.parse_block()? else {
+            return self.error_statement(start);
+        };
+        let span = self.cover(start, body.span)?;
+        Ok(if clean {
+            AstStatement::While(AstWhileStatement {
+                condition,
+                body,
+                span,
+            })
+        } else {
+            AstStatement::Error(span)
+        })
+    }
+
+    fn parse_loop_control_statement(
+        &mut self,
+        is_break: bool,
+    ) -> Result<AstStatement, SourceError> {
+        let keyword = self.bump();
+        let semicolon = self.expect(
+            TokenKind::Semicolon,
+            if is_break {
+                "expected `;` after `break`"
+            } else {
+                "expected `;` after `continue`"
+            },
+        );
+        let end = semicolon.map_or(keyword.span(), Token::span);
+        let span = self.cover(keyword.span(), end)?;
+        if semicolon.is_none() {
+            self.note_item_boundary();
+            return Ok(AstStatement::Error(span));
+        }
+        Ok(if is_break {
+            AstStatement::Break(span)
+        } else {
+            AstStatement::Continue(span)
+        })
     }
 
     fn parse_declaration(&mut self) -> Result<AstStatement, SourceError> {
@@ -776,12 +927,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<AstExpression, SourceError> {
-        let left = self.parse_prefix()?;
+        let left = self.parse_wrapping_arithmetic()?;
         let Some(op) = comparison_op(self.current().kind()) else {
             return Ok(left);
         };
         self.bump();
-        let right = self.parse_prefix()?;
+        let right = self.parse_wrapping_arithmetic()?;
         let span = self.cover(left.span, right.span)?;
         let mut expression = AstExpression {
             kind: AstExpressionKind::Compare {
@@ -800,10 +951,33 @@ impl<'a> Parser<'a> {
             let start = expression.span;
             while comparison_op(self.current().kind()).is_some() {
                 self.bump();
-                let tail = self.parse_prefix()?;
+                let tail = self.parse_wrapping_arithmetic()?;
                 expression.span = self.cover(start, tail.span)?;
             }
             expression.kind = AstExpressionKind::Error;
+        }
+        Ok(expression)
+    }
+
+    fn parse_wrapping_arithmetic(&mut self) -> Result<AstExpression, SourceError> {
+        let mut expression = self.parse_prefix()?;
+        loop {
+            let op = match self.current().kind() {
+                TokenKind::PlusPercent => AstWrappingArithmeticOp::Add,
+                TokenKind::MinusPercent => AstWrappingArithmeticOp::Subtract,
+                _ => break,
+            };
+            self.bump();
+            let right = self.parse_prefix()?;
+            let span = self.cover(expression.span, right.span)?;
+            expression = AstExpression {
+                kind: AstExpressionKind::WrappingArithmetic {
+                    op,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
         }
         Ok(expression)
     }
@@ -876,12 +1050,83 @@ impl<'a> Parser<'a> {
                     };
                     continue;
                 }
+                if self.at(TokenKind::LeftBrace) {
+                    let AstExpressionKind::Name(ty) = &expression.kind else {
+                        break;
+                    };
+                    let (literal, clean) = self.parse_struct_literal(*ty)?;
+                    let span = literal.span;
+                    expression = AstExpression {
+                        kind: if clean {
+                            AstExpressionKind::StructLiteral(literal)
+                        } else {
+                            AstExpressionKind::Error
+                        },
+                        span,
+                    };
+                    continue;
+                }
                 break;
             }
             Ok(expression)
         })();
         self.depth = incoming_depth;
         result
+    }
+
+    fn parse_struct_literal(
+        &mut self,
+        ty: AstName,
+    ) -> Result<(AstStructLiteral, bool), SourceError> {
+        self.bump();
+        let mut fields = vec![];
+        let mut clean = true;
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
+            let start = self.current().span();
+            clean &= self
+                .expect(TokenKind::Dot, "expected `.` before a struct field")
+                .is_some();
+            let name = self.expect_identifier("expected a struct field name");
+            clean &= name.is_some();
+            clean &= self
+                .expect(TokenKind::Equal, "expected `=` after the struct field name")
+                .is_some();
+            let value = self.parse_expression()?;
+            clean &= !expression_has_error(&value);
+            if let Some(name) = name {
+                fields.push(AstStructFieldInitializer {
+                    name: AstName { span: name.span() },
+                    span: self.cover(start, value.span)?,
+                    value,
+                });
+            }
+            if self.eat(TokenKind::Comma).is_some() {
+                continue;
+            }
+            if !self.at(TokenKind::RightBrace) {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `}` after the struct field value",
+                    self.current().span(),
+                );
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+            }
+        }
+        let close = self.expect(
+            TokenKind::RightBrace,
+            "expected `}` after the struct literal",
+        );
+        clean &= close.is_some();
+        let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
+        Ok((
+            AstStructLiteral {
+                ty,
+                fields,
+                span: self.cover(ty.span, end)?,
+            },
+            clean,
+        ))
     }
 
     #[allow(
@@ -1405,8 +1650,13 @@ fn expression_has_error(expression: &AstExpression) -> bool {
         AstExpressionKind::Call(call) => {
             expression_has_error(&call.callee) || call.arguments.iter().any(expression_has_error)
         }
+        AstExpressionKind::StructLiteral(literal) => literal
+            .fields
+            .iter()
+            .any(|field| expression_has_error(&field.value)),
         AstExpressionKind::Not(operand) => expression_has_error(operand),
-        AstExpressionKind::Compare { left, right, .. } => {
+        AstExpressionKind::WrappingArithmetic { left, right, .. }
+        | AstExpressionKind::Compare { left, right, .. } => {
             expression_has_error(left) || expression_has_error(right)
         }
         AstExpressionKind::Bool(_)

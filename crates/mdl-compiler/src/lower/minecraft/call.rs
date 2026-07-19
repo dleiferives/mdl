@@ -3,13 +3,13 @@ use crate::ir::core::{CoreType, FunctionId, InstId};
 use crate::ir::minecraft::{
     CommandKind, DataCommand, DataModifyMode, DataSource, ExecuteCommand, ExecuteModifier,
     ExecuteModifierKind, ExecuteModifiers, FiniteF64, FunctionCall, InternalCallableRef, NbtValue,
-    ScoreCommand, ScoreOperation, StoreChannel, StoreDestination,
+    ScoreCommand, StoreChannel, StoreDestination,
 };
 use crate::source::OriginId;
 
 use super::construct::{FunctionLoweringCx, command, invariant_diagnostics};
 use super::plan::{CallResultDestination, HomeId, RecursiveSpill};
-use super::scalar::score_operation;
+use super::scalar::copy_home;
 
 #[cfg(test)]
 pub(crate) fn lower_call(
@@ -89,7 +89,7 @@ fn lower_call_with_destinations(
     if recursive {
         push_recursive_frame(context, origin)?;
         for spill in spill_homes.iter().copied() {
-            store_score_in_frame(context, spill, origin)?;
+            store_home_in_frame(context, spill, origin)?;
         }
     }
     let parameter_count = context
@@ -116,7 +116,7 @@ fn lower_call_with_destinations(
             .copied()
             .ok_or_else(|| invariant_diagnostics("planned call parameter disappeared", origin))?;
         context.require_same_type(parameter, argument)?;
-        score_operation(context, parameter, ScoreOperation::Assign, argument, origin)?;
+        copy_home(context, parameter, argument, origin)?;
     }
     let entry = context
         .plan()
@@ -131,7 +131,7 @@ fn lower_call_with_destinations(
     )?)?;
     if recursive {
         for spill in spill_homes.iter().copied() {
-            load_score_from_frame(context, spill, origin)?;
+            load_home_from_frame(context, spill, origin)?;
         }
     }
     for (index, destination) in results.iter().copied().enumerate() {
@@ -145,7 +145,7 @@ fn lower_call_with_destinations(
             .copied()
             .ok_or_else(|| invariant_diagnostics("planned call result disappeared", origin))?;
         context.require_same_type(destination, result)?;
-        score_operation(context, destination, ScoreOperation::Assign, result, origin)?;
+        copy_home(context, destination, result, origin)?;
     }
     if recursive {
         context.push(command(
@@ -178,15 +178,35 @@ fn push_recursive_frame(
     )?)
 }
 
-fn store_score_in_frame(
+fn store_home_in_frame(
     context: &mut FunctionLoweringCx<'_, '_>,
     spill: RecursiveSpill,
     origin: OriginId,
 ) -> Result<(), Diagnostics> {
+    if matches!(spill.ty(), CoreType::ListI32 | CoreType::String) {
+        let source = match spill.ty() {
+            CoreType::ListI32 => context.plan().list_storage(spill.home()),
+            CoreType::String => context.plan().string_storage(spill.home()),
+            CoreType::Bool | CoreType::I32 => None,
+        };
+        return context.push(command(
+            CommandKind::Data(DataCommand::Modify {
+                target: context
+                    .plan()
+                    .activation_frame_spill(spill.storage_ordinal()),
+                mode: DataModifyMode::Set,
+                source: DataSource::From(source.ok_or_else(|| {
+                    invariant_diagnostics("recursive NBT spill has no storage", origin)
+                })?),
+            }),
+            origin,
+        )?);
+    }
     let score = context.score(spill.home())?;
     let numeric_type = match spill.ty() {
         CoreType::Bool => crate::ir::minecraft::StorageNumericType::Byte,
         CoreType::I32 => crate::ir::minecraft::StorageNumericType::Int,
+        CoreType::ListI32 | CoreType::String => unreachable!("NBT spills use direct copies"),
     };
     let get = command(
         CommandKind::Score(ScoreCommand::PlayersGet { score }),
@@ -214,11 +234,32 @@ fn store_score_in_frame(
     )?)
 }
 
-fn load_score_from_frame(
+fn load_home_from_frame(
     context: &mut FunctionLoweringCx<'_, '_>,
     spill: RecursiveSpill,
     origin: OriginId,
 ) -> Result<(), Diagnostics> {
+    if matches!(spill.ty(), CoreType::ListI32 | CoreType::String) {
+        let target = match spill.ty() {
+            CoreType::ListI32 => context.plan().list_storage(spill.home()),
+            CoreType::String => context.plan().string_storage(spill.home()),
+            CoreType::Bool | CoreType::I32 => None,
+        };
+        return context.push(command(
+            CommandKind::Data(DataCommand::Modify {
+                target: target.ok_or_else(|| {
+                    invariant_diagnostics("recursive NBT spill has no storage", origin)
+                })?,
+                mode: DataModifyMode::Set,
+                source: DataSource::From(
+                    context
+                        .plan()
+                        .activation_frame_spill(spill.storage_ordinal()),
+                ),
+            }),
+            origin,
+        )?);
+    }
     let get = command(
         CommandKind::Data(DataCommand::Get {
             source: context

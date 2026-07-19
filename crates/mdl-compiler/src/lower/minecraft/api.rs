@@ -435,9 +435,10 @@ impl LoweringMap {
             .and_then(|index| self.functions.get(index))
     }
 
-    /// Looks up the exact generated command for one directly lowered semantic
-    /// Core occurrence. Nonsemantic, omitted, helper-based, and invalid identities
-    /// return `None`.
+    /// Looks up the primary correlated command for one directly lowered semantic
+    /// Core occurrence. Recipe-required adjacent setup remains part of the verified
+    /// target fragment but is not assigned a second source identity. Nonsemantic,
+    /// omitted, helper-based, and invalid identities return `None`.
     #[must_use]
     pub fn semantic_command(
         &self,
@@ -453,7 +454,7 @@ impl LoweringMap {
             .flatten()
     }
 
-    /// Iterates every direct semantic occurrence and its exact generated command
+    /// Iterates every direct semantic occurrence and its primary correlated command
     /// in stable Core function/instruction order.
     pub fn semantic_commands(
         &self,

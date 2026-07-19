@@ -1,0 +1,23 @@
+// MDL: success
+// HIR: String
+// HIR: string.ends_with_ascii
+// CORE: core.string.constant
+// CORE: core.string.ends_with_ascii
+// CORE: core.string.without_last_unit
+// TARGET: mode=Set string=StoragePath
+
+export fn parse_tail() -> List<Int32> {
+    var source: String = "ignored😀+->";
+    var output: List<Int32> = List.empty();
+    while (source.length() > 0) {
+        if (source.ends_with_ascii(">")) {
+            output = output.push(62);
+        } else if (source.ends_with_ascii("-")) {
+            output = output.push(45);
+        } else if (source.ends_with_ascii("+")) {
+            output = output.push(43);
+        }
+        source = source.without_last_unit();
+    }
+    return output;
+}

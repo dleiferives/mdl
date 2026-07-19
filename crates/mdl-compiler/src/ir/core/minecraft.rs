@@ -28,6 +28,11 @@ pub enum MinecraftOperationAttributes {
         offset: RelativeWorldOffset,
         component_origins: [OriginId; 3],
     },
+    /// Static main-hand written-book literal-page read.
+    BookPage {
+        page_index: u8,
+        page_origin: OriginId,
+    },
 }
 
 impl MinecraftOperationAttributes {
@@ -38,6 +43,7 @@ impl MinecraftOperationAttributes {
             Self::Say { .. } => MinecraftSemanticKey::Say,
             Self::Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
             Self::MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
+            Self::BookPage { .. } => MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
         }
     }
 
@@ -46,7 +52,7 @@ impl MinecraftOperationAttributes {
     pub const fn say_message(&self) -> Option<&MessageLiteral> {
         match self {
             Self::Say { message, .. } => Some(message),
-            Self::Teleport { .. } | Self::MoveBy { .. } => None,
+            Self::Teleport { .. } | Self::MoveBy { .. } | Self::BookPage { .. } => None,
         }
     }
 
@@ -61,6 +67,7 @@ impl MinecraftOperationAttributes {
             | Self::MoveBy {
                 component_origins, ..
             } => component_origins[0],
+            Self::BookPage { page_origin, .. } => *page_origin,
         }
     }
 
@@ -70,7 +77,7 @@ impl MinecraftOperationAttributes {
         let base = AmbientContextRequirements::NONE
             .with_executor(ContextRequirement::Required(receiver_kind));
         match self {
-            Self::Say { .. } | Self::MoveBy { .. } => base,
+            Self::Say { .. } | Self::MoveBy { .. } | Self::BookPage { .. } => base,
             Self::Teleport { position, .. } => {
                 let mut requirements = base.with_dimension(ContextRequirement::Required(()));
                 match position {

@@ -47,8 +47,14 @@ effects.
 
 ## Next boundaries
 
-Stage 9 may add loops and persistent scheduling, but must not reuse synchronous tail
-frames across ticks. The aggregate client plan is
-[`aggregate-values-plan.md`](aggregate-values-plan.md); it starts from source copy,
-mutation, ownership, and observation semantics before choosing scalarized or NBT
-layouts.
+Stage 8.5 is the immediate client of this handoff. Its
+[`pre-scheduler roadmap`](pre-scheduler/roadmap.md) first strengthens semantic and
+vanilla test oracles, then applies the realization boundary to aggregates, owned
+lists, strings, and the synchronous capabilities needed by an ordinary MDL
+Brainfuck interpreter. The aggregate client plan is
+[`aggregate-values-plan.md`](aggregate-values-plan.md); its first fixed-layout slice
+is now assigned to PS-2.
+
+Stage 9 adds persistent scheduling after that validation. It must not reuse
+synchronous tail frames across ticks, and it must preserve the source loop/fuel/value
+semantics already proven during Stage 8.5.

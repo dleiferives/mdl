@@ -11,16 +11,19 @@ use super::ast::{
     AstAssignment, AstBindingKind, AstBlock, AstCall, AstCallStatement, AstComparisonOp,
     AstCoordinateSigil, AstDeclaration, AstExpression, AstExpressionKind, AstFunction,
     AstFunctionVisibility, AstIfStatement, AstModule, AstName, AstResultTypeKind,
-    AstReturnStatement, AstRunModifier, AstRunStatement, AstStatement, AstValueTypeKind,
+    AstReturnStatement, AstRunModifier, AstRunStatement, AstStatement, AstStructLiteral,
+    AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::context::{apply_run_modifiers, function_entry_context};
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBinding, HirBindingKind,
     HirBlock, HirCall, HirComparisonOp, HirContextStep, HirEntityQuery, HirEntityQueryStep,
     HirExecutionContext, HirExecutorCapture, HirExpression, HirExpressionKind, HirExternalOp,
-    HirExternalSemantic, HirFunction, HirIf, HirIfArm, HirMinecraftOperationAttributes, HirModule,
-    HirModuleInfo, HirRun, HirRunModifier, HirStatement, HirStatementKind, HirVerificationError,
-    LocalId, SourceExternalOpId, SourceFunctionId, SourceModuleId, SourceRunId, ValueType, verify,
+    HirExternalSemantic, HirFunction, HirIf, HirIfArm, HirListI32Op,
+    HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun, HirRunModifier,
+    HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField, HirStructFieldValue,
+    HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId, SourceExternalOpId,
+    SourceFunctionId, SourceModuleId, SourceRunId, SourceStructId, ValueType, verify,
 };
 use super::input::{ModuleDependency, ModuleKey};
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
@@ -35,6 +38,14 @@ use crate::ir::semantic::{
 use crate::source::{Origin, OriginError, SourceContext, SourceError, Span};
 
 const DUPLICATE_FUNCTION: &str = "frontend.check.duplicate-function";
+const DUPLICATE_STRUCT: &str = "frontend.check.duplicate-struct";
+const DUPLICATE_STRUCT_FIELD: &str = "frontend.check.duplicate-struct-field";
+const UNKNOWN_TYPE: &str = "frontend.check.unknown-type";
+const UNKNOWN_STRUCT_FIELD: &str = "frontend.check.unknown-struct-field";
+const DUPLICATE_STRUCT_INITIALIZER: &str = "frontend.check.duplicate-struct-initializer";
+const MISSING_STRUCT_FIELD: &str = "frontend.check.missing-struct-field";
+const RECURSIVE_STRUCT: &str = "frontend.check.recursive-struct";
+const STRUCT_FIELD_LIMIT: &str = "frontend.check.struct-field-limit";
 const DUPLICATE_IMPORT: &str = "frontend.check.duplicate-import";
 const TOP_LEVEL_NAME_CONFLICT: &str = "frontend.check.top-level-name-conflict";
 const RESERVED_COMPILER_NAME: &str = "frontend.check.reserved-compiler-name";
@@ -65,13 +76,14 @@ const INVALID_QUERY_LIMIT: &str = "frontend.check.invalid-query-limit";
 const INVALID_EXECUTOR_CAPTURE: &str = "frontend.check.invalid-executor-capture";
 const SCOPED_CAPABILITY_VALUE: &str = "frontend.check.scoped-capability-value";
 const RETURN_IN_RUN_SCOPE: &str = "frontend.check.return-in-run-scope";
+const LOOP_CONTROL_OUTSIDE_LOOP: &str = "frontend.check.loop-control-outside-loop";
 const LITERAL_CONTEXT_REQUIRED: &str = "frontend.check.literal-context-required";
 const UNSUPPORTED_RUN_SCALAR_CAPTURE: &str = "frontend.check.unsupported-run-scalar-capture";
 const DIRTY_AST: &str = "frontend.check.dirty-ast";
 const TRUNCATED: &str = "frontend.check.truncated";
 
 fn is_reserved_compiler_name(name: &str) -> bool {
-    name == "mc" || EntityKind::from_source_name(name).is_some()
+    matches!(name, "mc" | "List") || EntityKind::from_source_name(name).is_some()
 }
 
 fn reserved_compiler_name_diagnostic(name: &str, span: Span) -> PendingDiagnostic {
@@ -116,6 +128,7 @@ impl CheckOutput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CheckedEntityKind {
     Module,
+    Struct,
     Function,
     ExternalOperation,
     RunScope,
@@ -126,6 +139,7 @@ impl fmt::Display for CheckedEntityKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Module => formatter.write_str("module"),
+            Self::Struct => formatter.write_str("struct"),
             Self::Function => formatter.write_str("function"),
             Self::ExternalOperation => formatter.write_str("external operation"),
             Self::RunScope => formatter.write_str("run scope"),
@@ -235,6 +249,26 @@ pub(super) fn check_package(
     let mut next_run_scope = 0_usize;
     let mut next_run_modifier = 0_usize;
 
+    let mut hir_structs = Vec::with_capacity(signatures.structs.len());
+    for struct_ in &signatures.structs {
+        let mut fields = Vec::with_capacity(struct_.fields.len());
+        for field in &struct_.fields {
+            fields.push(HirStructField {
+                name_origin: sources.add_origin(Origin::Source(field.name_span))?,
+                ty: field.ty,
+                type_origin: sources.add_origin(Origin::Source(field.type_span))?,
+                origin: sources.add_origin(Origin::Source(field.span))?,
+            });
+        }
+        hir_structs.push(HirStruct {
+            id: struct_.id,
+            module: struct_.module,
+            name_origin: sources.add_origin(Origin::Source(struct_.name_span))?,
+            fields: fields.into_boxed_slice(),
+            origin: sources.add_origin(Origin::Source(struct_.span))?,
+        });
+    }
+
     for signature in &signatures.functions {
         let module_index =
             signature
@@ -282,6 +316,7 @@ pub(super) fn check_package(
     let checked = CheckedFrontendOutput::new(HirModule {
         root,
         modules: hir_modules.into_boxed_slice(),
+        structs: hir_structs.into_boxed_slice(),
         external_ops,
         run_scope_count: next_run_scope,
         functions,
@@ -318,6 +353,25 @@ struct FunctionSignature {
     result_span: Option<Span>,
 }
 
+struct StructSignature {
+    id: SourceStructId,
+    module: SourceModuleId,
+    ast_index: usize,
+    name_span: Span,
+    fields: Box<[StructFieldSignature]>,
+    span: Span,
+}
+
+struct StructFieldSignature {
+    name: Box<str>,
+    name_span: Span,
+    ty: ValueType,
+    type_span: Span,
+    span: Span,
+}
+
+type StructsByModule = Vec<HashMap<Box<str>, SourceStructId>>;
+
 #[derive(Clone, Copy)]
 struct ParameterSignature {
     ty: ValueType,
@@ -325,6 +379,8 @@ struct ParameterSignature {
 }
 
 struct SignatureIndex {
+    structs: Vec<StructSignature>,
+    structs_by_module: Vec<HashMap<Box<str>, SourceStructId>>,
     functions: Vec<FunctionSignature>,
     by_module: Vec<HashMap<Box<str>, FunctionLookup>>,
     namespaces: Vec<HashMap<Box<str>, NamespaceLookup>>,
@@ -362,6 +418,14 @@ fn collect_signatures(
         .iter()
         .map(|module| (module.key.clone(), module.id))
         .collect::<BTreeMap<_, _>>();
+    let (mut structs, structs_by_module) = collect_struct_headers(sources, modules, diagnostics)?;
+    resolve_struct_fields(
+        sources,
+        modules,
+        &structs_by_module,
+        &mut structs,
+        diagnostics,
+    )?;
     let function_count = modules
         .iter()
         .map(|module| module.ast.functions.len())
@@ -377,6 +441,7 @@ fn collect_signatures(
             module,
             &imports.first_spans,
             &mut functions,
+            &structs_by_module,
             diagnostics,
         )?;
         namespaces.push(imports.namespaces);
@@ -384,10 +449,194 @@ fn collect_signatures(
     }
 
     Ok(SignatureIndex {
+        structs,
+        structs_by_module,
         functions,
         by_module,
         namespaces,
     })
+}
+
+fn collect_struct_headers(
+    sources: &SourceContext,
+    modules: &[PackageAstModule<'_>],
+    diagnostics: &mut DiagnosticSink,
+) -> Result<(Vec<StructSignature>, StructsByModule), CheckError> {
+    let mut structs = Vec::new();
+    let mut by_module = Vec::with_capacity(modules.len());
+    for module in modules {
+        let mut names = HashMap::new();
+        let mut first_spans = HashMap::<Box<str>, Span>::new();
+        for (ast_index, struct_) in module.ast.structs.iter().enumerate() {
+            let id = SourceStructId::from_index(structs.len()).ok_or(
+                CheckError::IdentitySpaceExhausted(CheckedEntityKind::Struct),
+            )?;
+            let name: Box<str> = sources.files().slice(struct_.name.span)?.into();
+            if let Some(original) = first_spans.get(name.as_ref()).copied() {
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        DUPLICATE_STRUCT,
+                        format!("struct `{name}` is declared more than once"),
+                        struct_.name.span,
+                    )
+                    .primary("duplicate struct declaration")
+                    .support(original, "first declaration is here"),
+                );
+            } else {
+                first_spans.insert(name.clone(), struct_.name.span);
+                names.insert(name.clone(), id);
+            }
+            structs.push(StructSignature {
+                id,
+                module: module.id,
+                ast_index,
+                name_span: struct_.name.span,
+                fields: Box::new([]),
+                span: struct_.span,
+            });
+        }
+        by_module.push(names);
+    }
+    Ok((structs, by_module))
+}
+
+fn resolve_struct_fields(
+    sources: &SourceContext,
+    modules: &[PackageAstModule<'_>],
+    by_module: &[HashMap<Box<str>, SourceStructId>],
+    structs: &mut [StructSignature],
+    diagnostics: &mut DiagnosticSink,
+) -> Result<(), CheckError> {
+    for struct_ in structs.iter_mut() {
+        let module_index = struct_
+            .module
+            .as_usize()
+            .ok_or(CheckError::IdentitySpaceExhausted(
+                CheckedEntityKind::Module,
+            ))?;
+        let ast = &modules[module_index].ast.structs[struct_.ast_index];
+        let mut fields = Vec::with_capacity(ast.fields.len());
+        if ast.fields.len() > 64 {
+            diagnostics.push(
+                PendingDiagnostic::new(
+                    STRUCT_FIELD_LIMIT,
+                    format!(
+                        "struct has {} fields; Phase 1 permits at most 64",
+                        ast.fields.len()
+                    ),
+                    ast.span,
+                )
+                .primary("split this value into smaller nominal structs"),
+            );
+        }
+        let mut first_spans = HashMap::<Box<str>, Span>::new();
+        for field in &ast.fields {
+            let name: Box<str> = sources.files().slice(field.name.span)?.into();
+            if let Some(original) = first_spans.insert(name.clone(), field.name.span) {
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        DUPLICATE_STRUCT_FIELD,
+                        format!("field `{name}` is declared more than once"),
+                        field.name.span,
+                    )
+                    .primary("duplicate field")
+                    .support(original, "first field is here"),
+                );
+            }
+            let ty = resolve_value_type(
+                sources,
+                struct_.module,
+                field.ty.kind,
+                by_module,
+                diagnostics,
+            )
+            .unwrap_or(ValueType::Int32);
+            fields.push(StructFieldSignature {
+                name,
+                name_span: field.name.span,
+                ty,
+                type_span: field.ty.span,
+                span: field.span,
+            });
+        }
+        struct_.fields = fields.into_boxed_slice();
+    }
+    reject_recursive_structs(structs, diagnostics);
+    Ok(())
+}
+
+fn reject_recursive_structs(structs: &[StructSignature], diagnostics: &mut DiagnosticSink) {
+    fn visit(
+        index: usize,
+        structs: &[StructSignature],
+        state: &mut [u8],
+        diagnostics: &mut DiagnosticSink,
+    ) {
+        state[index] = 1;
+        for field in &structs[index].fields {
+            let ValueType::Struct(target) = field.ty else {
+                continue;
+            };
+            let Some(target) = target.as_usize().filter(|target| *target < structs.len()) else {
+                continue;
+            };
+            if state[target] == 1 {
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        RECURSIVE_STRUCT,
+                        "struct values cannot contain themselves recursively",
+                        field.type_span,
+                    )
+                    .primary("this field closes an infinitely sized value cycle")
+                    .support(structs[target].name_span, "cycle reaches this struct"),
+                );
+            } else if state[target] == 0 {
+                visit(target, structs, state, diagnostics);
+            }
+        }
+        state[index] = 2;
+    }
+
+    let mut state = vec![0u8; structs.len()];
+    for index in 0..structs.len() {
+        if state[index] == 0 {
+            visit(index, structs, &mut state, diagnostics);
+        }
+    }
+}
+
+fn resolve_value_type(
+    sources: &SourceContext,
+    module: SourceModuleId,
+    kind: AstValueTypeKind,
+    by_module: &[HashMap<Box<str>, SourceStructId>],
+    diagnostics: &mut DiagnosticSink,
+) -> Option<ValueType> {
+    match kind {
+        AstValueTypeKind::Bool => Some(ValueType::Bool),
+        AstValueTypeKind::Int32 => Some(ValueType::Int32),
+        AstValueTypeKind::ListI32 => Some(ValueType::ListI32),
+        AstValueTypeKind::String => Some(ValueType::String),
+        AstValueTypeKind::Named(name) => {
+            let spelling = sources.files().slice(name.span).ok()?;
+            let resolved = module
+                .as_usize()
+                .and_then(|index| by_module.get(index))
+                .and_then(|types| types.get(spelling))
+                .copied();
+            if resolved.is_none() {
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        UNKNOWN_TYPE,
+                        format!("unknown type `{spelling}`"),
+                        name.span,
+                    )
+                    .primary("no nominal type with this name exists in the module"),
+                );
+            }
+            resolved.map(ValueType::Struct)
+        }
+    }
 }
 
 fn collect_imports(
@@ -473,6 +722,7 @@ fn collect_module_signatures(
     module: &PackageAstModule<'_>,
     import_spans: &HashMap<Box<str>, Span>,
     functions: &mut Vec<FunctionSignature>,
+    structs_by_module: &[HashMap<Box<str>, SourceStructId>],
     diagnostics: &mut DiagnosticSink,
 ) -> Result<HashMap<Box<str>, FunctionLookup>, CheckError> {
     let mut by_name = HashMap::with_capacity(module.ast.functions.len());
@@ -496,6 +746,19 @@ fn collect_module_signatures(
                 .support(import_span, "import binding is here"),
             );
             by_name.insert(name.clone(), FunctionLookup::Poisoned);
+        } else if structs_by_module
+            .get(module.id.as_usize().unwrap_or(usize::MAX))
+            .is_some_and(|types| types.contains_key(name.as_ref()))
+        {
+            diagnostics.push(
+                PendingDiagnostic::new(
+                    TOP_LEVEL_NAME_CONFLICT,
+                    format!("function `{name}` conflicts with a struct type"),
+                    function.name.span,
+                )
+                .primary("top-level names share one namespace"),
+            );
+            by_name.insert(name.clone(), FunctionLookup::Poisoned);
         } else if let Some(original) = first_spans.get(name.as_ref()).copied() {
             diagnostics.push(
                 PendingDiagnostic::new(
@@ -511,20 +774,33 @@ fn collect_module_signatures(
             first_spans.insert(name.clone(), function.name.span);
             by_name.insert(name.clone(), FunctionLookup::Unique(id));
         }
-        let parameters = function
-            .parameters
-            .iter()
-            .map(|parameter| ParameterSignature {
-                ty: value_type(parameter.ty.kind),
+        let mut parameters = Vec::with_capacity(function.parameters.len());
+        for parameter in &function.parameters {
+            let ty = resolve_value_type(
+                sources,
+                module.id,
+                parameter.ty.kind,
+                structs_by_module,
+                diagnostics,
+            )
+            .unwrap_or(ValueType::Int32);
+            parameters.push(ParameterSignature {
+                ty,
                 type_span: parameter.ty.span,
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let (result, result_span) = function
-            .result
-            .map_or((FunctionResult::Void, None), |result| {
-                (function_result(result.kind), Some(result.span))
             });
+        }
+        let (result, result_span) = if let Some(result_ast) = function.result {
+            let result = match result_ast.kind {
+                AstResultTypeKind::Void => FunctionResult::Void,
+                AstResultTypeKind::Value(kind) => FunctionResult::Value(
+                    resolve_value_type(sources, module.id, kind, structs_by_module, diagnostics)
+                        .unwrap_or(ValueType::Int32),
+                ),
+            };
+            (result, Some(result_ast.span))
+        } else {
+            (FunctionResult::Void, None)
+        };
         functions.push(FunctionSignature {
             id,
             module: module.id,
@@ -532,7 +808,7 @@ fn collect_module_signatures(
             name,
             name_span: function.name.span,
             visibility: function_visibility(function.visibility),
-            parameters,
+            parameters: parameters.into_boxed_slice(),
             result,
             result_span,
         });
@@ -588,6 +864,7 @@ struct BodyChecker<'a> {
     execution_context: HirExecutionContext,
     scopes: Vec<Vec<ScopeChange>>,
     run_depth: usize,
+    loop_depth: usize,
     run_binding_floors: Vec<usize>,
 }
 
@@ -615,6 +892,7 @@ impl<'a> BodyChecker<'a> {
             execution_context: function_entry_context(),
             scopes: vec![vec![]],
             run_depth: 0,
+            loop_depth: 0,
             run_binding_floors: vec![],
         }
     }
@@ -766,6 +1044,9 @@ impl<'a> BodyChecker<'a> {
             AstStatement::Assignment(assignment) => self.check_assignment(assignment, assigned),
             AstStatement::Call(statement) => self.check_call_statement(statement, assigned),
             AstStatement::If(conditional) => self.check_if(conditional, assigned),
+            AstStatement::While(statement) => self.check_while(statement, assigned),
+            AstStatement::Break(span) => self.check_loop_control(*span, true),
+            AstStatement::Continue(span) => self.check_loop_control(*span, false),
             AstStatement::Return(statement) => self.check_return(statement, assigned),
             AstStatement::Run(statement) => self.check_run(statement, assigned),
             AstStatement::UnsafeMinecraft(statement) => self.check_unsafe_minecraft(statement),
@@ -778,6 +1059,85 @@ impl<'a> BodyChecker<'a> {
                 Ok(CheckedStatement::invalid())
             }
         }
+    }
+
+    fn check_while(
+        &mut self,
+        statement: &AstWhileStatement,
+        assigned: &mut Assigned,
+    ) -> Result<CheckedStatement, CheckError> {
+        let condition = self.check_expression(&statement.condition, assigned)?;
+        let condition_is_bool = match condition.ty {
+            Some(ValueType::Bool) => true,
+            Some(actual) => {
+                self.type_mismatch_without_support(
+                    statement.condition.span,
+                    actual,
+                    ValueType::Bool,
+                    "loop conditions must have type Bool",
+                );
+                false
+            }
+            None => false,
+        };
+        let checkpoint = assigned.checkpoint();
+        self.loop_depth = self.loop_depth.saturating_add(1);
+        let body = self.check_block(&statement.body, assigned);
+        self.loop_depth = self.loop_depth.saturating_sub(1);
+        assigned.rollback(checkpoint);
+        let body = body?;
+
+        let valid = condition_is_bool && condition.expression.is_some() && body.valid;
+        let origin = self.origin(statement.span)?;
+        let kind = match (valid, condition.expression) {
+            (true, Some(condition)) => Some(HirStatementKind::While(HirWhile {
+                condition,
+                body: body.block,
+                origin,
+            })),
+            _ => None,
+        };
+        if kind.is_none() {
+            return Ok(CheckedStatement::invalid());
+        }
+        Ok(CheckedStatement::continuing(HirStatement {
+            kind: kind.expect("validated loop kind exists"),
+            origin,
+        }))
+    }
+
+    fn check_loop_control(
+        &mut self,
+        span: Span,
+        is_break: bool,
+    ) -> Result<CheckedStatement, CheckError> {
+        if self.loop_depth == 0 {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    LOOP_CONTROL_OUTSIDE_LOOP,
+                    if is_break {
+                        "`break` is only valid inside a loop"
+                    } else {
+                        "`continue` is only valid inside a loop"
+                    },
+                    span,
+                )
+                .primary("no enclosing loop is active here"),
+            );
+            return Ok(CheckedStatement::invalid());
+        }
+        let origin = self.origin(span)?;
+        Ok(CheckedStatement {
+            statement: Some(HirStatement {
+                kind: if is_break {
+                    HirStatementKind::Break
+                } else {
+                    HirStatementKind::Continue
+                },
+                origin,
+            }),
+            continues: false,
+        })
     }
 
     fn check_unsafe_minecraft(
@@ -1020,7 +1380,9 @@ impl<'a> BodyChecker<'a> {
         let checkpoint = assigned.checkpoint();
         self.run_binding_floors.push(self.bindings.len());
         self.run_depth = self.run_depth.saturating_add(1);
+        let outer_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
         let body = self.check_block(block, assigned);
+        self.loop_depth = outer_loop_depth;
         self.run_depth = self.run_depth.saturating_sub(1);
         self.run_binding_floors.pop();
         assigned.rollback(checkpoint);
@@ -1643,7 +2005,9 @@ impl<'a> BodyChecker<'a> {
             AstBindingKind::Const => HirBindingKind::Const,
             AstBindingKind::Var => HirBindingKind::Var,
         };
-        let declared_type = value_type(declaration.ty.kind);
+        let declared_type = self
+            .resolve_type(declaration.ty.kind)
+            .unwrap_or(ValueType::Int32);
         let local = self.allocate_binding(
             binding_kind,
             declared_type,
@@ -1704,6 +2068,16 @@ impl<'a> BodyChecker<'a> {
         let initializer = initializer.and_then(|initializer| initializer.expression);
         let kind = valid.then_some(HirStatementKind::Declaration { local, initializer });
         self.finish_statement(kind, declaration.span, true)
+    }
+
+    fn resolve_type(&mut self, kind: AstValueTypeKind) -> Option<ValueType> {
+        resolve_value_type(
+            self.sources,
+            self.signature.module,
+            kind,
+            &self.signatures.structs_by_module,
+            self.diagnostics,
+        )
     }
 
     fn check_assignment(
@@ -1996,6 +2370,10 @@ impl<'a> BodyChecker<'a> {
         self.finish_statement(kind, statement.span, false)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed expression syntax is checked exhaustively at one dispatch boundary"
+    )]
     fn check_expression(
         &mut self,
         expression: &AstExpression,
@@ -2022,24 +2400,36 @@ impl<'a> BodyChecker<'a> {
                 );
                 Ok(CheckedExpression::invalid(expression.span))
             }
-            AstExpressionKind::StringLiteral(_) => {
-                self.diagnostics.push(
-                    PendingDiagnostic::new(
-                        LITERAL_CONTEXT_REQUIRED,
-                        "string literals require a compiler-known typed context",
-                        expression.span,
-                    )
-                    .primary("this literal is not an ordinary runtime string value"),
-                );
-                Ok(CheckedExpression::invalid(expression.span))
+            AstExpressionKind::StringLiteral(literal) => {
+                let Some(value) = decode_string_literal(self.sources, *literal)? else {
+                    return Ok(CheckedExpression::invalid(expression.span));
+                };
+                Ok(CheckedExpression::valid(
+                    HirExpressionKind::String {
+                        op: HirStringOp::Constant(value),
+                        operands: Box::new([]),
+                    },
+                    ValueType::String,
+                    self.origin(expression.span)?,
+                    expression.span,
+                ))
             }
             AstExpressionKind::Name(name) => {
                 self.check_name_expression(*name, expression.span, assigned)
             }
             AstExpressionKind::Member {
                 receiver, member, ..
-            } => self.check_unresolved_member(receiver, member.span, expression.span, assigned),
+            } => self.check_member_expression(receiver, member.span, expression.span, assigned),
             AstExpressionKind::Call(call) => {
+                if let Some(checked) = self.check_length_call(call, assigned)? {
+                    return Ok(checked);
+                }
+                if let Some(checked) = self.check_string_call(call, assigned)? {
+                    return Ok(checked);
+                }
+                if let Some(checked) = self.check_list_i32_call(call, assigned)? {
+                    return Ok(checked);
+                }
                 let checked = self.check_call(call, assigned, true)?;
                 match (checked.target, checked.result) {
                     (Some(CheckedCallTarget::Function(call)), Some(FunctionResult::Value(ty))) => {
@@ -2050,11 +2440,37 @@ impl<'a> BodyChecker<'a> {
                             expression.span,
                         ))
                     }
+                    (
+                        Some(CheckedCallTarget::External(external)),
+                        Some(FunctionResult::Value(ty)),
+                    ) => {
+                        let origin = self
+                            .external_ops
+                            .get(
+                                external
+                                    .as_usize()
+                                    .expect("allocated external ID fits usize"),
+                            )
+                            .expect("checked external call was just allocated")
+                            .origin;
+                        Ok(CheckedExpression::valid(
+                            HirExpressionKind::External(external),
+                            ty,
+                            origin,
+                            expression.span,
+                        ))
+                    }
                     _ => Ok(CheckedExpression::invalid(expression.span)),
                 }
             }
+            AstExpressionKind::StructLiteral(literal) => {
+                self.check_struct_literal(literal, expression.span, assigned)
+            }
             AstExpressionKind::Not(operand) => {
                 self.check_not_expression(operand, expression.span, assigned)
+            }
+            AstExpressionKind::WrappingArithmetic { op, left, right } => {
+                self.check_wrapping_arithmetic(*op, left, right, expression.span, assigned)
             }
             AstExpressionKind::Compare { op, left, right } => {
                 self.check_comparison(*op, left, right, expression.span, assigned)
@@ -2068,6 +2484,471 @@ impl<'a> BodyChecker<'a> {
                 Ok(CheckedExpression::invalid(expression.span))
             }
         }
+    }
+
+    fn check_length_call(
+        &mut self,
+        call: &AstCall,
+        assigned: &Assigned,
+    ) -> Result<Option<CheckedExpression>, CheckError> {
+        let AstExpressionKind::Member {
+            receiver, member, ..
+        } = &call.callee.kind
+        else {
+            return Ok(None);
+        };
+        if self.spelling(member.span)?.as_ref() != "length" {
+            return Ok(None);
+        }
+
+        let receiver = self.check_expression(receiver, assigned)?;
+        let kind = match receiver.ty {
+            Some(ValueType::String) => {
+                receiver
+                    .expression
+                    .map(|receiver| HirExpressionKind::String {
+                        op: HirStringOp::Length,
+                        operands: vec![receiver].into_boxed_slice(),
+                    })
+            }
+            Some(ValueType::ListI32) => {
+                receiver
+                    .expression
+                    .map(|receiver| HirExpressionKind::ListI32 {
+                        op: HirListI32Op::Length,
+                        operands: vec![receiver].into_boxed_slice(),
+                    })
+            }
+            Some(actual) => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        TYPE_MISMATCH,
+                        format!("type {actual} has no `length` method"),
+                        receiver.span,
+                    )
+                    .primary("`length` requires String or List<Int32>"),
+                );
+                None
+            }
+            None => None,
+        };
+        if !call.arguments.is_empty() {
+            self.invalid_list_arity(call.span, "length", 0, call.arguments.len());
+            for argument in &call.arguments {
+                let _ = self.check_expression(argument, assigned)?;
+            }
+            return Ok(Some(CheckedExpression::invalid(call.span)));
+        }
+        let Some(kind) = kind else {
+            return Ok(Some(CheckedExpression::invalid(call.span)));
+        };
+        Ok(Some(CheckedExpression::valid(
+            kind,
+            ValueType::Int32,
+            self.origin(call.span)?,
+            call.span,
+        )))
+    }
+
+    fn check_string_call(
+        &mut self,
+        call: &AstCall,
+        assigned: &Assigned,
+    ) -> Result<Option<CheckedExpression>, CheckError> {
+        let AstExpressionKind::Member {
+            receiver, member, ..
+        } = &call.callee.kind
+        else {
+            return Ok(None);
+        };
+        let method = self.spelling(member.span)?;
+        let (op, expected_arguments, result) = match method.as_ref() {
+            "without_last_unit" => (HirStringOp::WithoutLastUnit, 0, ValueType::String),
+            "ends_with_ascii" => {
+                if call.arguments.len() != 1 {
+                    self.invalid_list_arity(call.span, &method, 1, call.arguments.len());
+                    let _ = self.check_expression(receiver, assigned)?;
+                    return Ok(Some(CheckedExpression::invalid(call.span)));
+                }
+                let AstExpressionKind::StringLiteral(literal) = call.arguments[0].kind else {
+                    let _ = self.check_expression(&call.arguments[0], assigned)?;
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            LITERAL_CONTEXT_REQUIRED,
+                            "ends_with_ascii requires one static single-byte ASCII string literal",
+                            call.arguments[0].span,
+                        )
+                        .primary("runtime command text never enters string-slice syntax"),
+                    );
+                    return Ok(Some(CheckedExpression::invalid(call.span)));
+                };
+                let Some(value) = decode_string_literal(self.sources, literal)? else {
+                    return Ok(Some(CheckedExpression::invalid(call.span)));
+                };
+                let bytes = value.as_bytes();
+                if bytes.len() != 1 || !bytes[0].is_ascii() {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            LITERAL_CONTEXT_REQUIRED,
+                            "ends_with_ascii requires exactly one ASCII character",
+                            literal,
+                        )
+                        .primary("this literal is not one ASCII byte"),
+                    );
+                    return Ok(Some(CheckedExpression::invalid(call.span)));
+                }
+                (HirStringOp::EndsWithAscii(bytes[0]), 1, ValueType::Bool)
+            }
+            _ => return Ok(None),
+        };
+        let receiver = self.check_expression(receiver, assigned)?;
+        let mut valid = receiver.ty == Some(ValueType::String) && receiver.expression.is_some();
+        if let Some(actual) = receiver.ty {
+            if actual != ValueType::String {
+                self.type_mismatch_without_support(
+                    receiver.span,
+                    actual,
+                    ValueType::String,
+                    "this method requires a String receiver",
+                );
+            }
+        }
+        if call.arguments.len() != expected_arguments {
+            self.invalid_list_arity(call.span, &method, expected_arguments, call.arguments.len());
+            valid = false;
+        }
+        Ok(Some(if valid {
+            CheckedExpression::valid(
+                HirExpressionKind::String {
+                    op,
+                    operands: receiver
+                        .expression
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                },
+                result,
+                self.origin(call.span)?,
+                call.span,
+            )
+        } else {
+            CheckedExpression::invalid(call.span)
+        }))
+    }
+
+    fn check_list_i32_call(
+        &mut self,
+        call: &AstCall,
+        assigned: &Assigned,
+    ) -> Result<Option<CheckedExpression>, CheckError> {
+        let AstExpressionKind::Member {
+            receiver, member, ..
+        } = &call.callee.kind
+        else {
+            return Ok(None);
+        };
+        let method = self.spelling(member.span)?;
+        if let AstExpressionKind::Name(root) = receiver.kind {
+            if self.spelling(root.span)?.as_ref() == "List" && method.as_ref() == "empty" {
+                if !call.arguments.is_empty() {
+                    self.invalid_list_arity(call.span, "List.empty", 0, call.arguments.len());
+                    for argument in &call.arguments {
+                        let _ = self.check_expression(argument, assigned)?;
+                    }
+                    return Ok(Some(CheckedExpression::invalid(call.span)));
+                }
+                return Ok(Some(CheckedExpression::valid(
+                    HirExpressionKind::ListI32 {
+                        op: HirListI32Op::Empty,
+                        operands: Box::new([]),
+                    },
+                    ValueType::ListI32,
+                    self.origin(call.span)?,
+                    call.span,
+                )));
+            }
+        }
+
+        let (op, argument_count, result) = match method.as_ref() {
+            "push" => (HirListI32Op::Push, 1, ValueType::ListI32),
+            "last_or_zero" => (HirListI32Op::LastOrZero, 0, ValueType::Int32),
+            "without_last" => (HirListI32Op::WithoutLast, 0, ValueType::ListI32),
+            _ => return Ok(None),
+        };
+        let receiver = self.check_expression(receiver, assigned)?;
+        let mut valid = receiver.ty == Some(ValueType::ListI32) && receiver.expression.is_some();
+        if let Some(actual) = receiver.ty {
+            if actual != ValueType::ListI32 {
+                self.type_mismatch_without_support(
+                    receiver.span,
+                    actual,
+                    ValueType::ListI32,
+                    "this method requires a List<Int32> receiver",
+                );
+            }
+        }
+        if call.arguments.len() != argument_count {
+            self.invalid_list_arity(call.span, &method, argument_count, call.arguments.len());
+            valid = false;
+        }
+        let mut operands = Vec::with_capacity(1 + call.arguments.len());
+        if let Some(receiver) = receiver.expression {
+            operands.push(receiver);
+        }
+        for argument in &call.arguments {
+            let argument = self.check_expression(argument, assigned)?;
+            if argument.ty != Some(ValueType::Int32) {
+                if let Some(actual) = argument.ty {
+                    self.type_mismatch_without_support(
+                        argument.span,
+                        actual,
+                        ValueType::Int32,
+                        "list push requires an Int32 element",
+                    );
+                }
+                valid = false;
+            }
+            if let Some(argument) = argument.expression {
+                operands.push(argument);
+            } else {
+                valid = false;
+            }
+        }
+        Ok(Some(if valid {
+            CheckedExpression::valid(
+                HirExpressionKind::ListI32 {
+                    op,
+                    operands: operands.into_boxed_slice(),
+                },
+                result,
+                self.origin(call.span)?,
+                call.span,
+            )
+        } else {
+            CheckedExpression::invalid(call.span)
+        }))
+    }
+
+    fn invalid_list_arity(&mut self, span: Span, method: &str, expected: usize, actual: usize) {
+        self.diagnostics.push(
+            PendingDiagnostic::new(
+                ARGUMENT_COUNT,
+                format!(
+                    "list method `{method}` expects {expected} arguments but received {actual}"
+                ),
+                span,
+            )
+            .primary("argument count does not match the list operation"),
+        );
+    }
+
+    fn check_struct_literal(
+        &mut self,
+        literal: &AstStructLiteral,
+        span: Span,
+        assigned: &Assigned,
+    ) -> Result<CheckedExpression, CheckError> {
+        let Some(ValueType::Struct(struct_id)) =
+            self.resolve_type(AstValueTypeKind::Named(literal.ty))
+        else {
+            for field in &literal.fields {
+                let _ = self.check_expression(&field.value, assigned)?;
+            }
+            return Ok(CheckedExpression::invalid(span));
+        };
+        let Some(struct_) = self.signatures.structs.get(struct_id.as_usize().ok_or(
+            CheckError::IdentitySpaceExhausted(CheckedEntityKind::Struct),
+        )?) else {
+            return Ok(CheckedExpression::invalid(span));
+        };
+        let field_specs = struct_
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.ty, field.name_span))
+            .collect::<Vec<_>>();
+        let mut seen = vec![None::<Span>; field_specs.len()];
+        let mut values = Vec::with_capacity(literal.fields.len());
+        let mut valid = true;
+        for initializer in &literal.fields {
+            let spelling = self.spelling(initializer.name.span)?;
+            let index = field_specs
+                .iter()
+                .position(|(name, _, _)| name.as_ref() == spelling.as_ref());
+            let checked = self.check_expression(&initializer.value, assigned)?;
+            let Some(index) = index else {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        UNKNOWN_STRUCT_FIELD,
+                        format!("struct has no field `{spelling}`"),
+                        initializer.name.span,
+                    )
+                    .primary("unknown field initializer"),
+                );
+                valid = false;
+                continue;
+            };
+            if let Some(original) = seen[index].replace(initializer.name.span) {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        DUPLICATE_STRUCT_INITIALIZER,
+                        format!("field `{spelling}` is initialized more than once"),
+                        initializer.name.span,
+                    )
+                    .primary("duplicate field initializer")
+                    .support(original, "first initializer is here"),
+                );
+                valid = false;
+            }
+            if checked.ty != Some(field_specs[index].1) {
+                if let Some(actual) = checked.ty {
+                    self.type_mismatch(
+                        checked.span,
+                        actual,
+                        field_specs[index].1,
+                        field_specs[index].2,
+                        "field type is declared here",
+                    );
+                }
+                valid = false;
+            }
+            if let Some(value) = checked.expression {
+                values.push(HirStructFieldValue {
+                    field: u32::try_from(index).unwrap_or(u32::MAX),
+                    value,
+                    origin: self.origin(initializer.span)?,
+                });
+            } else {
+                valid = false;
+            }
+        }
+        for (index, occurrence) in seen.iter().enumerate() {
+            if occurrence.is_none() {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        MISSING_STRUCT_FIELD,
+                        format!("missing initializer for field `{}`", field_specs[index].0),
+                        literal.ty.span,
+                    )
+                    .primary("every struct field must be initialized")
+                    .support(field_specs[index].2, "field is declared here"),
+                );
+                valid = false;
+            }
+        }
+        if !valid {
+            return Ok(CheckedExpression::invalid(span));
+        }
+        Ok(CheckedExpression::valid(
+            HirExpressionKind::StructConstruct {
+                struct_: struct_id,
+                fields: values.into_boxed_slice(),
+            },
+            ValueType::Struct(struct_id),
+            self.origin(span)?,
+            span,
+        ))
+    }
+
+    fn check_member_expression(
+        &mut self,
+        receiver: &AstExpression,
+        member_span: Span,
+        expression_span: Span,
+        assigned: &Assigned,
+    ) -> Result<CheckedExpression, CheckError> {
+        let receiver = self.check_expression(receiver, assigned)?;
+        let Some(ValueType::Struct(struct_id)) = receiver.ty else {
+            let member = self.spelling(member_span)?;
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    UNRESOLVED_MEMBER,
+                    format!("member `{member}` cannot be resolved on this value"),
+                    member_span,
+                )
+                .primary("field access requires a struct value"),
+            );
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        let Some(struct_) = struct_id
+            .as_usize()
+            .and_then(|index| self.signatures.structs.get(index))
+        else {
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        let member = self.spelling(member_span)?;
+        let Some((index, field)) = struct_
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| field.name.as_ref() == member.as_ref())
+        else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    UNKNOWN_STRUCT_FIELD,
+                    format!("struct has no field `{member}`"),
+                    member_span,
+                )
+                .primary("unknown struct field"),
+            );
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        let Some(receiver) = receiver.expression else {
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        Ok(CheckedExpression::valid(
+            HirExpressionKind::StructProject {
+                aggregate: Box::new(receiver),
+                field: u32::try_from(index).unwrap_or(u32::MAX),
+            },
+            field.ty,
+            self.origin(expression_span)?,
+            expression_span,
+        ))
+    }
+
+    fn check_wrapping_arithmetic(
+        &mut self,
+        op: AstWrappingArithmeticOp,
+        left: &AstExpression,
+        right: &AstExpression,
+        span: Span,
+        assigned: &Assigned,
+    ) -> Result<CheckedExpression, CheckError> {
+        let left = self.check_expression(left, assigned)?;
+        let right = self.check_expression(right, assigned)?;
+        let mut valid = left.expression.is_some() && right.expression.is_some();
+        for operand in [&left, &right] {
+            if let Some(actual) = operand.ty {
+                if actual != ValueType::Int32 {
+                    self.type_mismatch_without_support(
+                        operand.span,
+                        actual,
+                        ValueType::Int32,
+                        "wrapping arithmetic requires Int32 operands",
+                    );
+                    valid = false;
+                }
+            } else {
+                valid = false;
+            }
+        }
+        let kind = match (valid, left.expression, right.expression) {
+            (true, Some(left), Some(right)) => HirExpressionKind::WrappingArithmetic {
+                op: match op {
+                    AstWrappingArithmeticOp::Add => HirWrappingArithmeticOp::Add,
+                    AstWrappingArithmeticOp::Subtract => HirWrappingArithmeticOp::Subtract,
+                },
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            _ => return Ok(CheckedExpression::invalid(span)),
+        };
+        Ok(CheckedExpression::valid(
+            kind,
+            ValueType::Int32,
+            self.origin(span)?,
+            span,
+        ))
     }
 
     fn check_name_expression(
@@ -2191,26 +3072,6 @@ impl<'a> BodyChecker<'a> {
             self.origin(expression_span)?,
             expression_span,
         ))
-    }
-
-    fn check_unresolved_member(
-        &mut self,
-        receiver: &AstExpression,
-        member_span: Span,
-        expression_span: Span,
-        assigned: &Assigned,
-    ) -> Result<CheckedExpression, CheckError> {
-        let _ = self.check_expression(receiver, assigned)?;
-        let member_name = self.spelling(member_span)?;
-        self.diagnostics.push(
-            PendingDiagnostic::new(
-                UNRESOLVED_MEMBER,
-                format!("member `{member_name}` cannot be resolved on this value"),
-                member_span,
-            )
-            .primary("member access requires a known namespace or typed receiver"),
-        );
-        Ok(CheckedExpression::invalid(expression_span))
     }
 
     fn check_decimal(
@@ -2527,7 +3388,8 @@ impl<'a> BodyChecker<'a> {
         let descriptor = minecraft_descriptor(rule.semantic_key());
         let _signature = descriptor.signature();
         let expected_arguments = match rule.semantic_key() {
-            crate::ir::semantic::MinecraftSemanticKey::Say => 1,
+            crate::ir::semantic::MinecraftSemanticKey::Say
+            | crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage => 1,
             crate::ir::semantic::MinecraftSemanticKey::TeleportCurrentExecutor
             | crate::ir::semantic::MinecraftSemanticKey::MoveCurrentExecutorBy => 3,
         };
@@ -2546,7 +3408,7 @@ impl<'a> BodyChecker<'a> {
             );
             valid = false;
         }
-        if require_value {
+        if require_value && descriptor.signature().results().is_empty() {
             self.diagnostics.push(
                 PendingDiagnostic::new(
                     VOID_VALUE,
@@ -2664,6 +3526,45 @@ impl<'a> BodyChecker<'a> {
                     }
                 }
             }
+            crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage => {
+                if let [argument] = call.arguments.as_slice() {
+                    let AstExpressionKind::DecimalInteger(literal) = argument.kind else {
+                        let _ = self.check_expression(argument, assigned)?;
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                LITERAL_CONTEXT_REQUIRED,
+                                "written-book page index must be a static decimal integer from 0 through 99",
+                                argument.span,
+                            )
+                            .primary("dynamic NBT paths are not admitted by this intrinsic"),
+                        );
+                        return Ok(Some(CheckedCall {
+                            target: None,
+                            result: Some(FunctionResult::Value(ValueType::String)),
+                        }));
+                    };
+                    let spelling = self.spelling(literal)?;
+                    match spelling.parse::<u8>() {
+                        Ok(page_index) if page_index < 100 => {
+                            attributes = Some(HirMinecraftOperationAttributes::BookPage {
+                                page_index,
+                                page_origin: self.origin(literal)?,
+                            });
+                        }
+                        _ => {
+                            self.diagnostics.push(
+                                PendingDiagnostic::new(
+                                    LITERAL_CONTEXT_REQUIRED,
+                                    "written-book page index must be from 0 through 99",
+                                    literal,
+                                )
+                                .primary("index exceeds the pinned book page boundary"),
+                            );
+                            valid = false;
+                        }
+                    }
+                }
+            }
         }
 
         let target = if valid {
@@ -2694,7 +3595,11 @@ impl<'a> BodyChecker<'a> {
         };
         Ok(Some(CheckedCall {
             target,
-            result: Some(FunctionResult::Void),
+            result: Some(if descriptor.signature().results().is_empty() {
+                FunctionResult::Void
+            } else {
+                FunctionResult::Value(ValueType::String)
+            }),
         }))
     }
 
@@ -3256,20 +4161,6 @@ fn materialize_diagnostics(
         findings.push(diagnostic);
     }
     Ok(Diagnostics::from_findings(findings))
-}
-
-const fn value_type(kind: AstValueTypeKind) -> ValueType {
-    match kind {
-        AstValueTypeKind::Bool => ValueType::Bool,
-        AstValueTypeKind::Int32 => ValueType::Int32,
-    }
-}
-
-const fn function_result(kind: AstResultTypeKind) -> FunctionResult {
-    match kind {
-        AstResultTypeKind::Value(kind) => FunctionResult::Value(value_type(kind)),
-        AstResultTypeKind::Void => FunctionResult::Void,
-    }
 }
 
 const fn function_visibility(visibility: AstFunctionVisibility) -> FunctionVisibility {

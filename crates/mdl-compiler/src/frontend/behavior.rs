@@ -245,6 +245,12 @@ fn collect_statement_calls(
         }
         HirStatementKind::External(_) => true,
         HirStatementKind::If(conditional) => collect_if_calls(conditional, calls),
+        HirStatementKind::While(statement) => {
+            collect_expression_calls(&statement.condition, calls);
+            collect_block_calls(&statement.body, calls);
+            true
+        }
+        HirStatementKind::Break | HirStatementKind::Continue => false,
         HirStatementKind::Run(run) => {
             collect_block_calls(&run.body, calls);
             true
@@ -280,12 +286,30 @@ fn collect_call_calls(call: &HirCall, calls: &mut BTreeSet<SourceFunctionId>) {
 fn collect_expression_calls(expression: &HirExpression, calls: &mut BTreeSet<SourceFunctionId>) {
     match &expression.kind {
         HirExpressionKind::Call(call) => collect_call_calls(call, calls),
+        HirExpressionKind::StructConstruct { fields, .. } => {
+            for field in fields {
+                collect_expression_calls(&field.value, calls);
+            }
+        }
+        HirExpressionKind::StructProject { aggregate, .. } => {
+            collect_expression_calls(aggregate, calls);
+        }
+        HirExpressionKind::ListI32 { operands, .. }
+        | HirExpressionKind::String { operands, .. } => {
+            for operand in operands {
+                collect_expression_calls(operand, calls);
+            }
+        }
         HirExpressionKind::Not(operand) => collect_expression_calls(operand, calls),
-        HirExpressionKind::Compare { left, right, .. } => {
+        HirExpressionKind::WrappingArithmetic { left, right, .. }
+        | HirExpressionKind::Compare { left, right, .. } => {
             collect_expression_calls(left, calls);
             collect_expression_calls(right, calls);
         }
-        HirExpressionKind::Bool(_) | HirExpressionKind::Int32(_) | HirExpressionKind::Local(_) => {}
+        HirExpressionKind::External(_)
+        | HirExpressionKind::Bool(_)
+        | HirExpressionKind::Int32(_)
+        | HirExpressionKind::Local(_) => {}
     }
 }
 
@@ -403,6 +427,12 @@ impl BehaviorEvaluator<'_> {
             HirStatementKind::Call(call) => (self.call(call)?, true),
             HirStatementKind::External(operation) => (self.external(*operation)?, true),
             HirStatementKind::If(conditional) => self.conditional(conditional)?,
+            HirStatementKind::While(statement) => {
+                let condition = self.expression(&statement.condition)?;
+                let (body, _) = self.block(&statement.body)?;
+                (condition.join(body).join(RECURSIVE_WORK), true)
+            }
+            HirStatementKind::Break | HirStatementKind::Continue => (FunctionBehavior::NONE, false),
             HirStatementKind::Run(run) => (self.run(run)?, true),
             HirStatementKind::Return(value) => (
                 value
@@ -497,7 +527,8 @@ impl BehaviorEvaluator<'_> {
                 let descriptor = minecraft_descriptor(*key);
                 let requirements = match attributes {
                     super::hir::HirMinecraftOperationAttributes::Say { .. }
-                    | super::hir::HirMinecraftOperationAttributes::MoveBy { .. } => {
+                    | super::hir::HirMinecraftOperationAttributes::MoveBy { .. }
+                    | super::hir::HirMinecraftOperationAttributes::BookPage { .. } => {
                         crate::ir::semantic::AmbientContextRequirements::NONE.with_executor(
                             crate::ir::semantic::ContextRequirement::Required(*receiver_kind),
                         )
@@ -556,8 +587,28 @@ impl BehaviorEvaluator<'_> {
             HirExpressionKind::Bool(_) | HirExpressionKind::Int32(_) => Ok(FINITE_WORK),
             HirExpressionKind::Local(_) => Ok(FunctionBehavior::NONE),
             HirExpressionKind::Call(call) => self.call(call),
+            HirExpressionKind::External(operation) => self.external(*operation),
+            HirExpressionKind::StructConstruct { fields, .. } => {
+                let mut behavior = FINITE_WORK;
+                for field in fields {
+                    behavior = behavior.join(self.expression(&field.value)?);
+                }
+                Ok(behavior)
+            }
+            HirExpressionKind::StructProject { aggregate, .. } => {
+                Ok(self.expression(aggregate)?.join(FINITE_WORK))
+            }
+            HirExpressionKind::ListI32 { operands, .. }
+            | HirExpressionKind::String { operands, .. } => {
+                let mut behavior = FINITE_WORK;
+                for operand in operands {
+                    behavior = behavior.join(self.expression(operand)?);
+                }
+                Ok(behavior)
+            }
             HirExpressionKind::Not(operand) => Ok(self.expression(operand)?.join(FINITE_WORK)),
-            HirExpressionKind::Compare { left, right, .. } => Ok(self
+            HirExpressionKind::WrappingArithmetic { left, right, .. }
+            | HirExpressionKind::Compare { left, right, .. } => Ok(self
                 .expression(left)?
                 .join(self.expression(right)?)
                 .join(FINITE_WORK)),

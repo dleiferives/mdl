@@ -1,13 +1,15 @@
 use crate::diagnostic::Diagnostics;
 use crate::ir::core::{CoreOp, CoreType, I32Predicate};
 use crate::ir::minecraft::{
-    CommandKind, Condition, ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
-    ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation, ScoreRange, ScoreRef,
-    ScoreSelection, SingleScoreHolder,
+    CommandKind, Condition, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
+    ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FiniteF64, NbtKey, NbtPath,
+    NbtPathSegment, NbtValue, ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation,
+    ScoreRange, ScoreRef, ScoreSelection, SingleScoreHolder, StorageNumericType, StoragePath,
+    StoreChannel, StoreDestination,
 };
 use crate::source::OriginId;
 
-use super::construct::{FunctionLoweringCx, command};
+use super::construct::{FunctionLoweringCx, command, invariant_diagnostics};
 use super::plan::HomeId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,18 +60,30 @@ impl ScalarOutputContract {
 const BOOL_OUTPUT: &[CoreType] = &[CoreType::Bool];
 const I32_OUTPUT: &[CoreType] = &[CoreType::I32];
 const OVERFLOWING_ADD_OUTPUTS: &[CoreType] = &[CoreType::I32, CoreType::Bool];
+const LIST_I32_OUTPUT: &[CoreType] = &[CoreType::ListI32];
+const STRING_OUTPUT: &[CoreType] = &[CoreType::String];
 const ONE_NO_REUSE: &[Option<usize>] = &[None];
 const TWO_NO_REUSE: &[Option<usize>] = &[None, None];
 const WRAPPING_ADD_REUSE: &[Option<usize>] = &[Some(0)];
+const WRAPPING_SUB_REUSE: &[Option<usize>] = &[Some(0)];
 
 pub(super) const fn scalar_access_contract(operation: &CoreOp) -> Option<ScalarAccessContract> {
     let (result_types, reusable_operands) = match operation {
         CoreOp::BoolConstant(_) | CoreOp::I32Compare(_) | CoreOp::BoolNot => {
             (BOOL_OUTPUT, ONE_NO_REUSE)
         }
-        CoreOp::I32Constant(_) => (I32_OUTPUT, ONE_NO_REUSE),
+        CoreOp::I32Constant(_)
+        | CoreOp::ListI32Length
+        | CoreOp::ListI32LastOrZero
+        | CoreOp::StringLength => (I32_OUTPUT, ONE_NO_REUSE),
         CoreOp::I32AddWrapping => (I32_OUTPUT, WRAPPING_ADD_REUSE),
+        CoreOp::I32SubWrapping => (I32_OUTPUT, WRAPPING_SUB_REUSE),
         CoreOp::I32AddOverflowing => (OVERFLOWING_ADD_OUTPUTS, TWO_NO_REUSE),
+        CoreOp::ListI32Empty | CoreOp::ListI32Push | CoreOp::ListI32WithoutLast => {
+            (LIST_I32_OUTPUT, ONE_NO_REUSE)
+        }
+        CoreOp::StringConstant(_) | CoreOp::StringWithoutLastUnit => (STRING_OUTPUT, ONE_NO_REUSE),
+        CoreOp::StringEndsWithAscii(_) => (BOOL_OUTPUT, ONE_NO_REUSE),
         CoreOp::Call(_) | CoreOp::External(_) => return None,
     };
     Some(ScalarAccessContract {
@@ -111,6 +125,12 @@ pub(crate) fn lower_scalar_operation(
             };
             lower_i32_add_wrapping(context, *result, *left, *right, origin)?;
         }
+        CoreOp::I32SubWrapping => {
+            let ([left, right], [result]) = (operands, results) else {
+                return Err(invalid_scalar_shape(operation, origin));
+            };
+            lower_i32_sub_wrapping(context, *result, *left, *right, origin)?;
+        }
         CoreOp::I32AddOverflowing => {
             let ([left, right], [sum, overflowed]) = (operands, results) else {
                 return Err(invalid_scalar_shape(operation, origin));
@@ -129,10 +149,359 @@ pub(crate) fn lower_scalar_operation(
             };
             lower_bool_not(context, *result, *operand, origin)?;
         }
+        CoreOp::ListI32Empty
+        | CoreOp::ListI32Length
+        | CoreOp::ListI32Push
+        | CoreOp::ListI32LastOrZero
+        | CoreOp::ListI32WithoutLast => {
+            lower_list_i32_operation(context, operation, operands, results, origin)?;
+        }
+        CoreOp::StringConstant(_)
+        | CoreOp::StringLength
+        | CoreOp::StringEndsWithAscii(_)
+        | CoreOp::StringWithoutLastUnit => {
+            lower_string_operation(context, operation, operands, results, origin)?;
+        }
         CoreOp::Call(_) => return Ok(ScalarLowering::Call),
         CoreOp::External(_) => return Err(invalid_scalar_shape(operation, origin)),
     }
     Ok(ScalarLowering::Lowered)
+}
+
+/// Copies one semantic home using its type-selected physical representation.
+pub(super) fn copy_home(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    destination: HomeId,
+    source: HomeId,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    let destination_type = context.plan().home_type(destination);
+    let source_type = context.plan().home_type(source);
+    let nbt_type = [destination_type, source_type]
+        .into_iter()
+        .flatten()
+        .find(|ty| matches!(ty, CoreType::ListI32 | CoreType::String));
+    if let Some(nbt_type) = nbt_type {
+        if destination_type.is_some_and(|ty| ty != nbt_type)
+            || source_type.is_some_and(|ty| ty != nbt_type)
+        {
+            return Err(invariant_diagnostics(
+                "NBT transfer mixes incompatible physical home types",
+                origin,
+            ));
+        }
+        let storage = |home| match nbt_type {
+            CoreType::ListI32 => context.plan().list_storage(home),
+            CoreType::String => context.plan().string_storage(home),
+            CoreType::Bool | CoreType::I32 => None,
+        };
+        let target = storage(destination).ok_or_else(|| {
+            invariant_diagnostics("NBT transfer destination has no storage path", origin)
+        })?;
+        let source = storage(source).ok_or_else(|| {
+            invariant_diagnostics("NBT transfer source has no storage path", origin)
+        })?;
+        context.push(command(
+            CommandKind::Data(DataCommand::Modify {
+                target,
+                mode: DataModifyMode::Set,
+                source: DataSource::From(source),
+            }),
+            origin,
+        )?)
+    } else {
+        score_operation(context, destination, ScoreOperation::Assign, source, origin)
+    }
+}
+
+fn lower_string_operation(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    operation: &CoreOp,
+    operands: &[HomeId],
+    results: &[HomeId],
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    match (operation, operands, results) {
+        (CoreOp::StringConstant(value), [], [result]) => {
+            context.require_type(*result, CoreType::String)?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: string_path(context, *result, origin)?,
+                    mode: DataModifyMode::Set,
+                    source: DataSource::Value(NbtValue::string(value)),
+                }),
+                origin,
+            )?)
+        }
+        (CoreOp::StringLength, [value], [result]) => {
+            context.require_type(*value, CoreType::String)?;
+            context.require_type(*result, CoreType::I32)?;
+            store_data_result_in_score(
+                context,
+                *result,
+                DataCommand::Get {
+                    source: string_path(context, *value, origin)?,
+                    scale: None,
+                },
+                origin,
+            )
+        }
+        (CoreOp::StringWithoutLastUnit, [value], [result]) => {
+            context.require_type(*value, CoreType::String)?;
+            context.require_type(*result, CoreType::String)?;
+            copy_home(context, *result, *value, origin)?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: string_path(context, *result, origin)?,
+                    mode: DataModifyMode::Set,
+                    source: DataSource::StringSlice {
+                        source: string_path(context, *value, origin)?,
+                        start: 0,
+                        end: Some(-1),
+                    },
+                }),
+                origin,
+            )?)
+        }
+        (CoreOp::StringEndsWithAscii(ascii), [value], [result]) if ascii.is_ascii() => {
+            context.require_type(*value, CoreType::String)?;
+            context.require_type(*result, CoreType::Bool)?;
+            let scratch = context.plan().string_unit_scratch();
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: scratch.clone(),
+                    mode: DataModifyMode::Set,
+                    source: DataSource::Value(NbtValue::string("")),
+                }),
+                origin,
+            )?)?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: scratch.clone(),
+                    mode: DataModifyMode::Set,
+                    source: DataSource::StringSlice {
+                        source: string_path(context, *value, origin)?,
+                        start: -1,
+                        end: None,
+                    },
+                }),
+                origin,
+            )?)?;
+            lower_bool_constant(context, *result, false, origin)?;
+            let pattern = NbtValue::compound(vec![(
+                NbtKey::new("string_unit_scratch"),
+                NbtValue::string(&char::from(*ascii).to_string()),
+            )])
+            .map_err(|error| {
+                invariant_diagnostics(format!("string pattern is invalid: {error}"), origin)
+            })?;
+            conditional_set(
+                context,
+                [(
+                    true,
+                    Condition::DataMatches(scratch.storage().clone(), pattern),
+                )],
+                *result,
+                1,
+                origin,
+            )
+        }
+        _ => Err(invalid_scalar_shape(operation, origin)),
+    }
+}
+
+fn string_path(
+    context: &FunctionLoweringCx<'_, '_>,
+    home: HomeId,
+    origin: OriginId,
+) -> Result<StoragePath, Diagnostics> {
+    context
+        .plan()
+        .string_storage(home)
+        .ok_or_else(|| invariant_diagnostics("string home has no physical storage path", origin))
+}
+
+fn lower_list_i32_operation(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    operation: &CoreOp,
+    operands: &[HomeId],
+    results: &[HomeId],
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    match (operation, operands, results) {
+        (CoreOp::ListI32Empty, [], [result]) => {
+            context.require_type(*result, CoreType::ListI32)?;
+            let empty = NbtValue::list(vec![]).map_err(|error| {
+                invariant_diagnostics(format!("empty list literal is invalid: {error}"), origin)
+            })?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: list_path(context, *result, origin)?,
+                    mode: DataModifyMode::Set,
+                    source: DataSource::Value(empty),
+                }),
+                origin,
+            )?)
+        }
+        (CoreOp::ListI32Length, [list], [result]) => {
+            context.require_type(*list, CoreType::ListI32)?;
+            context.require_type(*result, CoreType::I32)?;
+            store_data_result_in_score(
+                context,
+                *result,
+                DataCommand::Get {
+                    source: list_path(context, *list, origin)?,
+                    scale: None,
+                },
+                origin,
+            )
+        }
+        (CoreOp::ListI32Push, [list, element], [result]) => {
+            context.require_type(*list, CoreType::ListI32)?;
+            context.require_type(*element, CoreType::I32)?;
+            context.require_type(*result, CoreType::ListI32)?;
+            copy_home(context, *result, *list, origin)?;
+            let get = command(
+                CommandKind::Score(ScoreCommand::PlayersGet {
+                    score: context.score(*element)?,
+                }),
+                origin,
+            )?;
+            let store = ExecuteModifier::new(
+                ExecuteModifierKind::Store(
+                    StoreChannel::Result,
+                    StoreDestination::Storage {
+                        target: context.plan().list_i32_scratch(),
+                        numeric_type: StorageNumericType::Int,
+                        scale: FiniteF64::new(1.0).expect("one is finite"),
+                    },
+                ),
+                origin,
+            );
+            context.push(command(
+                CommandKind::Execute(ExecuteCommand::new(
+                    ExecuteModifiers::new(store, vec![]),
+                    get,
+                )),
+                origin,
+            )?)?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: list_path(context, *result, origin)?,
+                    mode: DataModifyMode::Append,
+                    source: DataSource::From(context.plan().list_i32_scratch()),
+                }),
+                origin,
+            )?)
+        }
+        (CoreOp::ListI32LastOrZero, [list], [result]) => {
+            context.require_type(*list, CoreType::ListI32)?;
+            context.require_type(*result, CoreType::I32)?;
+            lower_i32_constant(context, *result, 0, origin)?;
+            store_data_result_in_score_if_present(
+                context,
+                *result,
+                list_element_path(context, *list, -1, origin)?,
+                origin,
+            )
+        }
+        (CoreOp::ListI32WithoutLast, [list], [result]) => {
+            context.require_type(*list, CoreType::ListI32)?;
+            context.require_type(*result, CoreType::ListI32)?;
+            copy_home(context, *result, *list, origin)?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Remove {
+                    target: list_element_path(context, *result, -1, origin)?,
+                }),
+                origin,
+            )?)
+        }
+        _ => Err(invalid_scalar_shape(operation, origin)),
+    }
+}
+
+fn list_path(
+    context: &FunctionLoweringCx<'_, '_>,
+    home: HomeId,
+    origin: OriginId,
+) -> Result<StoragePath, Diagnostics> {
+    context
+        .plan()
+        .list_storage(home)
+        .ok_or_else(|| invariant_diagnostics("list home has no physical storage path", origin))
+}
+
+fn list_element_path(
+    context: &FunctionLoweringCx<'_, '_>,
+    home: HomeId,
+    index: i32,
+    origin: OriginId,
+) -> Result<StoragePath, Diagnostics> {
+    let base = list_path(context, home, origin)?;
+    let mut segments = base.path().segments().to_vec();
+    segments.push(NbtPathSegment::Index(index));
+    Ok(StoragePath::new(
+        base.storage().clone(),
+        NbtPath::from_segments(segments).expect("list element path is nonempty"),
+    ))
+}
+
+fn store_data_result_in_score(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    result: HomeId,
+    data: DataCommand,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    let modifier = ExecuteModifier::new(
+        ExecuteModifierKind::Store(
+            StoreChannel::Result,
+            StoreDestination::Score(context.score(result)?),
+        ),
+        origin,
+    );
+    let get = command(CommandKind::Data(data), origin)?;
+    context.push(command(
+        CommandKind::Execute(ExecuteCommand::new(
+            ExecuteModifiers::new(modifier, vec![]),
+            get,
+        )),
+        origin,
+    )?)
+}
+
+/// Reads one optional numeric NBT value without depending on the result of a
+/// failed `data get`. Callers initialize `result` to their semantic fallback.
+fn store_data_result_in_score_if_present(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    result: HomeId,
+    source: StoragePath,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    let exists = ExecuteModifier::new(
+        ExecuteModifierKind::If(Condition::DataExists(source.clone())),
+        origin,
+    );
+    let store = ExecuteModifier::new(
+        ExecuteModifierKind::Store(
+            StoreChannel::Result,
+            StoreDestination::Score(context.score(result)?),
+        ),
+        origin,
+    );
+    let get = command(
+        CommandKind::Data(DataCommand::Get {
+            source,
+            scale: None,
+        }),
+        origin,
+    )?;
+    context.push(command(
+        CommandKind::Execute(ExecuteCommand::new(
+            ExecuteModifiers::new(exists, vec![store]),
+            get,
+        )),
+        origin,
+    )?)
 }
 
 fn invalid_scalar_shape(operation: &CoreOp, origin: OriginId) -> Diagnostics {
@@ -192,6 +561,28 @@ pub(crate) fn lower_i32_add_wrapping(
         score_operation(context, destination, ScoreOperation::Assign, left, origin)?;
     }
     score_operation(context, destination, ScoreOperation::Add, right, origin)
+}
+
+pub(crate) fn lower_i32_sub_wrapping(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    destination: HomeId,
+    left: HomeId,
+    right: HomeId,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    for home in [destination, left, right] {
+        context.require_type(home, CoreType::I32)?;
+    }
+    if destination != left {
+        score_operation(context, destination, ScoreOperation::Assign, left, origin)?;
+    }
+    score_operation(
+        context,
+        destination,
+        ScoreOperation::Subtract,
+        right,
+        origin,
+    )
 }
 
 pub(crate) fn lower_i32_add_overflowing(

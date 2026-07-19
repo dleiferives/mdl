@@ -832,3 +832,87 @@ Evidence:
 - [`../../crates/mdl-test/tests/stage8_activation_contract.rs`](../../crates/mdl-test/tests/stage8_activation_contract.rs)
 - [`../../crates/mdl-test/tests/stage8_compiler_server.rs`](../../crates/mdl-test/tests/stage8_compiler_server.rs)
 - [`stage-8/8-0-contract-and-evidence.md`](stage-8/8-0-contract-and-evidence.md)
+
+## A-023 — Command channel absence is distinct from numeric zero
+
+**Status:** Java 26.2 behavior measured; PS-1 typed observation policy implemented.
+
+Minecraft does not guarantee that an `execute store success` or `execute store
+result` destination is written. A function that completes without producing a
+command result leaves both attached destinations unchanged. An `execute as` redirect
+with zero child contexts likewise performs no store callback. These cases are
+observably different from ordinary command failure, which writes success `0` and
+result `0`.
+
+Java 26.2 also reports a function executing `return 0` as success `1`, result `0`.
+The numeric return value therefore cannot stand in for command success. The compiler
+and semantic harness must retain channel availability, channel value, and outer
+continuation separately. Until a structured operation has a precise native outcome
+contract, target analysis remains conservative rather than inferring failure from a
+missing context or zero result.
+
+The complete measured matrix and reproduction are recorded in
+[`../mcfunction/command-outcomes.md`](../mcfunction/command-outcomes.md).
+
+## A-024 — Phase-1 arithmetic overflow and loop-control boundaries
+
+**Status:** Source semantics frozen and implemented in PS-2A.
+
+Plain signed arithmetic must not inherit whichever overflow behavior happens to be
+convenient in Rust, Core, or Minecraft scoreboards. Phase 1 therefore exposes only
+explicit wrapping `Int32` addition and subtraction as `+%` and `-%`. Plain `+` and
+`-` remain reserved, and division/remainder remain absent until their zero and
+negative-edge behavior is separately frozen. Brainfuck bytes are normalized
+`Int32` values in `0..=255`; library boundary branches implement byte increment and
+decrement without assuming a native `UInt8` or target remainder rule.
+
+`while` is a pre-test loop. Its condition runs once per attempted iteration and
+source expressions evaluate left-to-right. `break` and `continue` bind to the
+innermost lexical loop and cannot cross an outlined `run` boundary. A loop may run
+zero times, so assignments first made only in its body do not become definitely
+assigned after it. Runtime termination does not imply that static target analysis
+can prove a finite command bound. The PS-2 fuel client supplies deterministic
+semantic termination, while the current target analysis honestly retains
+`NoFiniteBoundProven` for its data-dependent CFG cycle.
+
+The implementation and evidence are indexed in
+[`pre-scheduler/ps-2/arithmetic-and-control-flow.md`](pre-scheduler/ps-2/arithmetic-and-control-flow.md).
+
+## A-025 — Runtime string units are target-aligned UTF-16 in Phase 1
+
+**Status:** implementation-defined Phase-1 contract; frozen Unicode-scalar proposal revised.
+
+Minecraft Java 26.2 `data modify ... string` indexes Java UTF-16 code units. The
+first implementation lowers `String.length`, `ends_with_ascii`, and
+`without_last_unit` directly through that representation, so claiming Unicode-scalar
+length or consumption would be false. Phase-1 `String` therefore has immutable value
+semantics over Java UTF-16 units. A supplementary scalar contributes two units.
+
+Brainfuck recognition remains correct because every opcode is one ASCII unit. A
+non-ASCII supplementary character is consumed as two ignored units; it never becomes
+command syntax. A future Unicode-scalar API must validate/combine surrogate pairs or
+use an explicitly converted representation. It cannot silently change the meaning
+of the existing target-aligned primitive.
+
+Evidence is recorded in
+[`../mcfunction/written-books-26.2.md`](../mcfunction/written-books-26.2.md) and
+`crates/mdl-compiler/tests/ps2_runtime_strings.rs`.
+
+## A-026 — Written-book raw content is a typed partial conversion
+
+**Status:** supported subset explicit; other text-component shapes unsupported.
+
+The Java 26.2 entity/item path is target-version-specific and runtime-dependent.
+The first intrinsic accepts a current inventory-capable executor and a static page
+index, then reads
+`equipment.mainhand.components."minecraft:written_book_content".pages[i].raw`.
+Vanilla normalizes a simple literal raw component to an NBT string. Styled compound
+or list components and dynamic text kinds are not equivalent to that string path.
+
+Phase 1 therefore defines the intrinsic as “literal page or empty,” not as arbitrary
+client-rendered text. Missing equipment, wrong items, absent pages, and unsupported
+non-string raw content return empty after an explicit fallback initialization. This
+is defined behavior, not leaked command failure. Flattening styled/nested literal
+spans and returning distinct absence/unsupported variants remain future typed API
+work; the compiler must not guess locale-, entity-, score-, or NBT-dependent client
+rendering.

@@ -27,6 +27,17 @@
 - [Stage 8 per-substep design dossiers](stage-8/README.md)
 - [Stage 8 completion audit](stage-8-completion-audit.md)
 - [Stage 8 handoff](stage-8-handoff.md)
+- [Stage 8.5 pre-scheduler capability-validation index](pre-scheduler/README.md)
+- [Stage 8.5 roadmap](pre-scheduler/roadmap.md)
+- [PS-1 semantic and vanilla testing plan](pre-scheduler/ps-1-testing-plan.md)
+- [PS-1 implementation checklist](pre-scheduler/ps-1-testing-todo.md)
+- [PS-1 to PS-2 handoff](pre-scheduler/ps-1-handoff.md)
+- [PS-2 Brainfuck-driven capability-expansion plan](pre-scheduler/ps-2-capability-expansion-plan.md)
+- [PS-2.0 frozen semantics and ownership decisions](pre-scheduler/ps-2-0-decisions.md)
+- [PS-2 implementation checklist](pre-scheduler/ps-2-capability-expansion-todo.md)
+- [PS-2 language/standard-library/intrinsic/runtime boundary](pre-scheduler/ps-2/standard-library-boundary.md)
+- [PS-3 Brainfuck capstone plan](pre-scheduler/ps-3-brainfuck-capstone-plan.md)
+- [PS-3 implementation checklist](pre-scheduler/ps-3-brainfuck-capstone-todo.md)
 - [Post-Stage-8 aggregate value client plan](aggregate-values-plan.md)
 - [Historical Stage 7A module handoff](stage-6-modules-plan.md)
 - [Historical Stage 7B effect/raw-command handoff](stage-6-effects-plan.md)
@@ -71,5 +82,12 @@ correlation, and clientless Java 26.2 differentials are gated. Stage 8 is comple
 for the bounded scalar-realization/calling-convention boundary: serial many-context
 reuse, recursive-SCC-only typed spill frames, explicit recovery, physical recipe
 accounting, determinism/corruption gates, and clientless Java 26.2 execution are
-verified. Scheduling remains Stage 9 and runtime interpolation Stage 10; aggregate
-value semantics have a separate post-Stage-8 client plan.
+verified. Stage 8.5's PS-1 testing foundation is complete: bounded Core evaluation,
+typed semantic and exact-limit scenario runners, batched four-policy vanilla
+differentials, normalized NBT/entity observations, outcome-channel calibration, and
+the hardening gates all pass. PS-2 is ready to begin with its semantic-decision
+tranche before synchronous capability implementation. Stage 8.5 assigns the first
+aggregate/list/string clients, same-tick loops, and any narrowly required typed
+Minecraft macro recipe without adding suspension. Persistent continuations and
+multi-tick scheduling remain Stage 9; general language metaprogramming and broader
+runtime interpolation remain later work.

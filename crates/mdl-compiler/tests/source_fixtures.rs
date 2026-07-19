@@ -373,7 +373,7 @@ fn run_fixture(fixture: &Fixture) {
                 );
                 let diagnostics = failure_diagnostics(&failure);
                 assert!(
-                    diagnostics.contains_code(code),
+                    diagnostics.is_some_and(|diagnostics| diagnostics.contains_code(code)),
                     "{} [{}] did not report {}:\n{}",
                     fixture.name,
                     policy.label,
@@ -533,19 +533,25 @@ fn failure_phase(failure: &CompilationFailure) -> &'static str {
     }
 }
 
-fn failure_diagnostics(failure: &CompilationFailure) -> &mdl_compiler::diagnostic::Diagnostics {
-    failure
-        .diagnostics()
-        .or_else(|| {
-            failure
-                .minecraft_lowering_failure()
-                .map(mdl_compiler::lower::minecraft::LoweringFailure::diagnostics)
-        })
-        .unwrap_or_else(|| panic!("{} failure has no diagnostics", failure_phase(failure)))
+fn failure_diagnostics(
+    failure: &CompilationFailure,
+) -> Option<&mdl_compiler::diagnostic::Diagnostics> {
+    failure.diagnostics().or_else(|| {
+        failure
+            .minecraft_lowering_failure()
+            .map(mdl_compiler::lower::minecraft::LoweringFailure::diagnostics)
+    })
 }
 
 fn render_failure(failure: &CompilationFailure) -> String {
-    let diagnostics = failure_diagnostics(failure);
+    let Some(diagnostics) = failure_diagnostics(failure) else {
+        let mut rendered = failure.to_string();
+        if let (Some(checked), Some(sources)) = (failure.checked_frontend(), failure.sources()) {
+            rendered.push_str("\n\nretained checked HIR:\n");
+            rendered.push_str(&checked.dump(sources));
+        }
+        return rendered;
+    };
     failure.sources().map_or_else(
         || diagnostics.to_string(),
         |sources| render_diagnostics(diagnostics, sources),

@@ -143,6 +143,8 @@ impl fmt::Display for FrontendInfrastructurePhase {
 pub enum FrontendEntityKind {
     /// Source modules in canonical package order.
     Module,
+    /// Nominal source struct types in canonical package order.
+    Struct,
     /// Source functions in declaration order.
     Function,
     /// Source-level external operations in canonical package order.
@@ -157,6 +159,7 @@ impl fmt::Display for FrontendEntityKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Module => formatter.write_str("module"),
+            Self::Struct => formatter.write_str("struct"),
             Self::Function => formatter.write_str("function"),
             Self::ExternalOperation => formatter.write_str("external operation"),
             Self::RunScope => formatter.write_str("run scope"),
@@ -283,6 +286,11 @@ impl From<CheckError> for FrontendInfrastructureFailure {
                     entity: FrontendEntityKind::Module,
                 }
             }
+            CheckError::IdentitySpaceExhausted(CheckedEntityKind::Struct) => {
+                Self::IdentitySpaceExhausted {
+                    entity: FrontendEntityKind::Struct,
+                }
+            }
             CheckError::IdentitySpaceExhausted(CheckedEntityKind::Function) => {
                 Self::IdentitySpaceExhausted {
                     entity: FrontendEntityKind::Function,
@@ -381,13 +389,16 @@ impl CompilationOutput {
         self.lowering.map().function(core_function)
     }
 
-    /// Resolves one typed source-semantic operation occurrence to its exact generated
-    /// target command.
+    /// Resolves one typed source-semantic operation occurrence to its primary
+    /// correlated target command.
     ///
     /// The lookup composes retained source/Core and post-construction maps while
     /// defensively checking that the optimized Core instruction still invokes the
-    /// recorded typed Minecraft declaration. Unsafe externals, unreachable source
-    /// operations, non-direct lowerings, and foreign identities return `None`.
+    /// recorded typed Minecraft declaration. A selected recipe may also require
+    /// structurally verified adjacent setup commands, such as empty-result
+    /// initialization before a partial book-page read. Unsafe externals,
+    /// unreachable source operations, non-direct lowerings, and foreign identities
+    /// return `None`.
     #[must_use]
     pub fn source_semantic_command(
         &self,

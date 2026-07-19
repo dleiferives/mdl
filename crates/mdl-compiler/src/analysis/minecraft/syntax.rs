@@ -41,6 +41,8 @@ pub enum DataCommandClass {
     Remove,
     ModifyValue,
     ModifyFrom,
+    ModifyString,
+    ModifyEntity,
 }
 
 impl DataCommandClass {
@@ -58,6 +60,14 @@ impl DataCommandClass {
                 source: DataSource::From(_),
                 ..
             } => Self::ModifyFrom,
+            DataCommand::Modify {
+                source: DataSource::StringSlice { .. },
+                ..
+            } => Self::ModifyString,
+            DataCommand::Modify {
+                source: DataSource::Entity { .. },
+                ..
+            } => Self::ModifyEntity,
         }
     }
 }
@@ -68,6 +78,7 @@ pub enum ConditionClass {
     ScoreMatches,
     ScoreCompare,
     DataExists,
+    DataMatches,
     EntityExists(Cardinality),
     InternalFunction(McFunctionId),
 }
@@ -80,6 +91,7 @@ impl ConditionClass {
             Condition::ScoreMatches(_, _) => Self::ScoreMatches,
             Condition::ScoreCompare(_, _, _) => Self::ScoreCompare,
             Condition::DataExists(_) => Self::DataExists,
+            Condition::DataMatches(_, _) => Self::DataMatches,
             Condition::EntityExists(selector) => Self::EntityExists(selector.cardinality()),
             Condition::Function(function) => Self::InternalFunction(*function),
         }

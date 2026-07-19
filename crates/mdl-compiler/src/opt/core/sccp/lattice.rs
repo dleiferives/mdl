@@ -102,6 +102,23 @@ pub(super) fn i32_add_wrapping(
     })
 }
 
+pub(super) fn i32_sub_wrapping(
+    lhs: LatticeValue,
+    rhs: LatticeValue,
+) -> Result<LatticeValue, LatticeTypeError> {
+    check_i32_operand(lhs)?;
+    check_i32_operand(rhs)?;
+    Ok(match (lhs, rhs) {
+        (LatticeValue::I32Constant(lhs), LatticeValue::I32Constant(rhs)) => {
+            LatticeValue::I32Constant(lhs.wrapping_sub(rhs))
+        }
+        (LatticeValue::Overdefined, _) | (_, LatticeValue::Overdefined) => {
+            LatticeValue::Overdefined
+        }
+        _ => LatticeValue::Unknown,
+    })
+}
+
 pub(super) fn i32_add_overflowing(
     lhs: LatticeValue,
     rhs: LatticeValue,

@@ -416,21 +416,38 @@ fn score_contract(command: &ScoreCommand) -> CommandContract {
 }
 
 fn data_contract(command: &DataCommand) -> CommandContract {
-    let effects = match command {
-        DataCommand::Get { .. } => EffectCategories::STORAGE_READ,
+    let (effects, reads) = match command {
+        DataCommand::Get { .. } => (EffectCategories::STORAGE_READ, ContextMask::NONE),
         DataCommand::Remove { .. }
         | DataCommand::Modify {
             source: DataSource::Value(_),
             ..
-        } => EffectCategories::STORAGE_WRITE,
+        } => (EffectCategories::STORAGE_WRITE, ContextMask::NONE),
         DataCommand::Modify {
             source: DataSource::From(_),
             ..
-        } => EffectCategories::STORAGE_READ.union(EffectCategories::STORAGE_WRITE),
+        }
+        | DataCommand::Modify {
+            source: DataSource::StringSlice { .. },
+            ..
+        } => (
+            EffectCategories::STORAGE_READ.union(EffectCategories::STORAGE_WRITE),
+            ContextMask::NONE,
+        ),
+        DataCommand::Modify {
+            source: DataSource::Entity { selector, .. },
+            ..
+        } => (
+            EffectCategories::ENTITY_QUERY.union(EffectCategories::STORAGE_WRITE),
+            selector.context_reads(),
+        ),
     };
     CommandContract::new(
         EffectSummary::Known(effects),
-        ContextSummary::NONE,
+        ContextSummary::Known {
+            reads,
+            changes: ContextMask::NONE,
+        },
         ForkClass::NEVER,
     )
 }
@@ -558,7 +575,7 @@ fn condition_contract(condition: &Condition) -> CommandContract {
                 .union(single_holder_effects(right)),
             single_holder_context(left).union(single_holder_context(right)),
         ),
-        Condition::DataExists(_) => {
+        Condition::DataExists(_) | Condition::DataMatches(_, _) => {
             known_condition_contract(EffectCategories::STORAGE_READ, ContextMask::NONE)
         }
         Condition::EntityExists(selector) => {

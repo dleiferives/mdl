@@ -136,6 +136,10 @@ fn dump_baseline_function_details(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the stable plan dump renders every closed instruction-plan variant together"
+)]
 fn dump_instruction(output: &mut String, instruction: usize, plan: &InstructionPlan) {
     match plan {
         InstructionPlan::OmittedPure => {
@@ -149,13 +153,38 @@ fn dump_instruction(output: &mut String, instruction: usize, plan: &InstructionP
             )
             .unwrap();
         }
-        InstructionPlan::Minecraft { external, recipe } => {
+        InstructionPlan::Minecraft {
+            external,
+            recipe,
+            results,
+        } => {
             writeln!(
                 output,
                 "  instruction {instruction} minecraft external={} recipe={recipe:?}",
                 external.index(),
             )
             .unwrap();
+            for result in results {
+                match *result {
+                    ScalarResultPlacement::Semantic {
+                        result_index,
+                        value,
+                        home,
+                    } => writeln!(
+                        output,
+                        "    result {result_index} semantic value={} home={}",
+                        value.index(),
+                        home.index(),
+                    )
+                    .unwrap(),
+                    ScalarResultPlacement::RecipeTemporary { result_index, home } => writeln!(
+                        output,
+                        "    result {result_index} recipe-temporary home={}",
+                        home.index(),
+                    )
+                    .unwrap(),
+                }
+            }
         }
         InstructionPlan::Scalar { operands, results } => {
             writeln!(output, "  instruction {instruction} scalar").unwrap();

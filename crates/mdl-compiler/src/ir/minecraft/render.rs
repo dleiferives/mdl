@@ -271,6 +271,19 @@ fn render_data(command: &DataCommand, sink: &mut CommandSink) -> Result<(), Rend
                     sink.push_checked("from ")?;
                     render_storage_path(path, sink)
                 }
+                DataSource::StringSlice { source, start, end } => {
+                    sink.push_checked("string ")?;
+                    render_storage_path(source, sink)?;
+                    sink.write_arguments(format_args!(" {start}"))?;
+                    if let Some(end) = end {
+                        sink.write_arguments(format_args!(" {end}"))?;
+                    }
+                    Ok(())
+                }
+                DataSource::Entity { selector, path } => {
+                    sink.write_arguments(format_args!("from entity {selector} "))?;
+                    sink.write_arguments(format_args!("{path}"))
+                }
             }
         }
     }
@@ -357,6 +370,10 @@ fn render_condition(
         Condition::DataExists(path) => {
             sink.push_checked("data ")?;
             render_storage_path(path, sink)
+        }
+        Condition::DataMatches(storage, pattern) => {
+            sink.write_arguments(format_args!("data storage {storage} "))?;
+            render_nbt(pattern, sink)
         }
         Condition::EntityExists(selector) => {
             sink.write_arguments(format_args!("entity {selector}"))

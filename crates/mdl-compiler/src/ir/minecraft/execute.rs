@@ -1,8 +1,8 @@
 use crate::source::OriginId;
 
 use super::{
-    CommandNode, DimensionId, FiniteF64, McFunctionId, ScoreRange, ScoreRef, Selector, StoragePath,
-    TargetAnchor, TargetAxes, TargetPosition, TargetRotation,
+    CommandNode, DimensionId, FiniteF64, McFunctionId, NbtValue, ScoreRange, ScoreRef, Selector,
+    StorageId, StoragePath, TargetAnchor, TargetAxes, TargetPosition, TargetRotation,
 };
 
 /// One ordered `execute` command and its nested command.
@@ -136,6 +136,8 @@ pub enum Condition {
     ScoreCompare(ScoreRef, ScoreComparison, ScoreRef),
     /// Test whether a static storage path exists.
     DataExists(StoragePath),
+    /// Test a command-storage root against one literal NBT pattern.
+    DataMatches(StorageId, NbtValue),
     /// Test whether a selector resolves to at least one entity without forking.
     EntityExists(Selector),
     /// Run one internal function and match when at least one invocation returns nonzero.

@@ -916,3 +916,32 @@ is defined behavior, not leaked command failure. Flattening styled/nested litera
 spans and returning distinct absence/unsupported variants remain future typed API
 work; the compiler must not guess locale-, entity-, score-, or NBT-dependent client
 rendering.
+
+PS-3 deliberately maps every empty conversion to its adapter-level `NO_PROGRAM`
+result. It cannot distinguish a missing holder slot, wrong item, absent page, empty
+literal page, or unsupported raw-component shape because the accepted public
+operation intentionally erases that distinction. A future richer API must return a
+typed variant; inferring the cause from an empty string would be incorrect.
+
+## A-027 — Brainfuck dispatch fuel excludes bracket-search work
+
+**Status:** application semantics frozen and differentially implemented in PS-3.
+
+PS-3 consumes one semantic fuel unit after removing one normalized opcode from the
+future cursor and before applying that opcode. Jumping from a zero `[` to its
+matching `]`, or from a nonzero `]` back to its matching `[`, moves cursor elements
+but does not dispatch those scanned instructions and consumes no additional
+Brainfuck fuel. A nonzero `]` requeues itself after the body so later iterations
+dispatch the close again; the matching open is not re-dispatched.
+
+This makes output and fuel independent of a particular jump-table optimization, but
+semantic fuel is not a direct bound on emitted Minecraft commands. Search cost is
+also bounded by the admitted normalized program length for a selected concrete run,
+yet current target CFG analysis does not combine that value bound with runtime fuel
+and correctly retains `NoFiniteBoundProven(PositiveCycle)`. Stage 9 must treat an
+in-progress search as an atomic bounded region or make its cursor suspendable.
+
+Evidence:
+
+- [`../../tests/programs/brainfuck/cases.json`](../../tests/programs/brainfuck/cases.json)
+- [`../../crates/mdl-test/tests/ps3_brainfuck.rs`](../../crates/mdl-test/tests/ps3_brainfuck.rs)

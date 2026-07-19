@@ -1,6 +1,6 @@
 # PS-3: Brainfuck Capstone
 
-Status: **ready to begin from the accepted PS-2 handoff**
+Status: **complete; see [`ps-3-handoff.md`](ps-3-handoff.md)**
 
 ## Objective
 
@@ -13,23 +13,25 @@ compiler plugin, raw-command shortcut, or privileged access to private runtime
 storage. A missing facility discovered here is reported as a PS-2 capability gap and
 implemented/tested generically before the capstone resumes.
 
-## Proposed package
+## Implemented package
 
 ```text
 tests/programs/brainfuck/
   README.md
-  cases.toml
+  cases.json
+  book-cases.json
   src/
     main.mdl
     opcode.mdl
+    byte.mdl
     parser.mdl
     tape.mdl
     io.mdl
     interpreter.mdl
 ```
 
-Exact filesystem package conventions are still Stage 12 work. The test corpus may
-load these files through the existing in-memory package API while retaining their
+Exact filesystem package conventions remain Stage 12 work. The test corpus loads
+these files through the existing public in-memory package API while retaining their
 logical module/source identities.
 
 ## Program architecture
@@ -75,8 +77,8 @@ Develop and retain all tiers rather than keeping only the final large test:
 2. **Parser tier:** runtime semantic string to opcodes/result.
 3. **Book-value tier:** controlled written-book value/holder to program text on a
    clientless server where the selected target operation permits it.
-4. **Player-held tier:** actual connected player with a written book in the selected
-   slot.
+4. **Player-held tier:** explicitly deferred by the frozen PS-2.0 decision; the
+   holder-independent exact-one armor-stand proof is the PS-3 gate.
 5. **Full vertical tier:** held book through parse/execute/output.
 
 The connected client should be the narrowest reliable external fixture available.
@@ -172,3 +174,8 @@ must not be reported as a normal Brainfuck result.
 - Normal completion/error paths leak no compiler-private activation state.
 - Footprint, cost, selected recipes, and target prerequisites are inspectable.
 - Any discovered general gap was repaired in PS-2 with its own evidence.
+
+All required criteria are closed by the [PS-3 handoff](ps-3-handoff.md). Strict
+deployment enforcement, static fuel-to-command proofs, rich book-component variants,
+and connected-player automation remain the explicit accepted deferrals rather than
+retroactive capstone requirements.

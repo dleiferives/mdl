@@ -108,6 +108,23 @@ cargo test -p mdl-test \
   -- --ignored --nocapture
 ```
 
+PS-3 adds a normal multi-module application corpus rather than a compiler-special
+fixture. Its fast suite compiles all four policy products, compares every returned
+Brainfuck state field with an independent host reference, tests component module
+boundaries directly, and pins exact footprint/recipe/cost evidence. Its ignored
+server gate installs all four products in one Java 26.2 lifecycle and checks split
+book pages, output attribution, wrong-item fallback, and malformed brackets:
+
+```sh
+cargo test -p mdl-test --test ps3_brainfuck --no-default-features
+
+MDL_SERVER_JAR=/path/to/bundled-minecraft-server-26.2.jar \
+MDL_JAVA=/path/to/java25 \
+cargo test -p mdl-test --test ps3_brainfuck --no-default-features \
+  split_written_book_executes_the_capstone_under_all_four_policies \
+  -- --ignored --nocapture
+```
+
 Fast Stage 8 gates remain in the ordinary workspace suite; the dedicated files are
 `stage8_lowering`, physical-plan unit corruption/scale tests, the four-policy source
 fixture runner, and the non-ignored structural/determinism portion of

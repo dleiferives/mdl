@@ -1,0 +1,35 @@
+pub fn empty_left() -> List<Int32> {
+    return List.empty();
+}
+
+pub fn empty_right() -> List<Int32> {
+    return List.empty().push(0);
+}
+
+pub fn current(right: List<Int32>) -> Int32 {
+    return right.last_or_zero();
+}
+
+pub fn set_current(right: List<Int32>, value: Int32) -> List<Int32> {
+    return right.without_last().push(value);
+}
+
+pub fn right_left(left: List<Int32>, right: List<Int32>) -> List<Int32> {
+    return left.push(current(right));
+}
+
+pub fn right_right(right: List<Int32>) -> List<Int32> {
+    var remaining: List<Int32> = right.without_last();
+    if (remaining.length() == 0) {
+        remaining = remaining.push(0);
+    }
+    return remaining;
+}
+
+pub fn left_left(left: List<Int32>) -> List<Int32> {
+    return left.without_last();
+}
+
+pub fn left_right(left: List<Int32>, right: List<Int32>) -> List<Int32> {
+    return right.push(left.last_or_zero());
+}

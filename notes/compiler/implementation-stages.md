@@ -504,7 +504,7 @@ Exit criteria:
 
 ## Stage 8.5: Pre-scheduler capability validation
 
-Status: **PS-1 and PS-2 complete; PS-3 is ready to begin.** See the
+Status: **complete through PS-3.** See the
 [`Stage 8.5 documentation index`](pre-scheduler/README.md) and
 [`roadmap`](pre-scheduler/roadmap.md).
 
@@ -523,7 +523,8 @@ Stage 8.5 has three required substages:
    runtime strings/parsing, typed books/items, bounded execution, and any narrowly
    justified typed Minecraft macro recipe.
 3. PS-3 writes the interpreter as an ordinary MDL package and validates independent
-   interpreter, parser, book, player-held, output, limit, cost, and cleanup layers.
+   interpreter, parser, book, output, limit, cost, and cleanup layers. The actual
+   connected-player fixture remains the explicit PS-2.0 deferral.
 
 PS-2 explicitly separates core language semantics, public MDL standard-library
 algorithms, sealed typed platform intrinsics, and compiler-private runtime support.
@@ -551,6 +552,9 @@ Exit criteria:
 
 PS-4 and later validation programs are individually accepted using the Stage 8.5
 template. They do not silently extend this stage's required exit after PS-3.
+
+Completion evidence and the concrete state that Stage 9 must persist are recorded
+in [`pre-scheduler/ps-3-handoff.md`](pre-scheduler/ps-3-handoff.md).
 
 ## Stage 9: Persistent continuations and static multi-tick scheduling
 

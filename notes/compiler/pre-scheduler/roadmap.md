@@ -1,6 +1,6 @@
 # Stage 8.5 Roadmap
 
-Status: **PS-2 handoff accepted for planning; PS-3 is next**
+Status: **Stage 8.5 complete through PS-3; Stage 9 is next**
 
 ## Why the roadmap changes here
 
@@ -44,7 +44,7 @@ PS-3 Brainfuck capstone
   +-> pre-parsed opcode execution
   +-> runtime string parsing
   +-> written-book input
-  +-> real player-held-book boundary when a test client is available
+  +-> controlled exact-one holder proof; connected player remains deferred
   +-> output, failure, cost, and cleanup evidence
   |
 Stage 9 persistent continuations and scheduling
@@ -72,7 +72,7 @@ PS-2 froze:
 These are language/runtime semantics. They may influence syntax, but they cannot be
 left for the emitter to decide.
 
-## Stage 8.5 exit
+## Stage 8.5 exit — achieved 2026-07-19
 
 Stage 8.5 is complete after PS-3 when:
 
@@ -89,6 +89,10 @@ Stage 8.5 is complete after PS-3 when:
 
 Additional validation programs can be completed before or after the scheduling
 design begins, but they do not retroactively make Stage 8.5 unfinishable.
+
+The exact closure audit is [`ps-3-handoff.md`](ps-3-handoff.md). Runtime fuel gives
+deterministic application termination but is not yet a static Minecraft command
+bound; that distinction is retained in the Stage 9 input rather than hidden.
 
 ## Stage 9 after the split
 

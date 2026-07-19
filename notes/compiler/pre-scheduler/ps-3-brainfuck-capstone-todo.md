@@ -1,115 +1,88 @@
 # PS-3 Brainfuck Capstone Checklist
 
-Status: **ready to begin PS-3.0 from [`ps-2-handoff.md`](ps-2-handoff.md)**
+Status: **complete on 2026-07-19; see [`ps-3-handoff.md`](ps-3-handoff.md)**
 
 Authoritative design: [`ps-3-brainfuck-capstone-plan.md`](ps-3-brainfuck-capstone-plan.md).
 
 ## PS-3.0 — Accept the handoff
 
-- [ ] Confirm every PS-2 exit criterion and public API required by the frozen
-      Brainfuck contract.
-- [ ] Freeze package modules, case schema, default limits, and output adapter.
-- [ ] Confirm whether the actual-player-held-book test is required or explicitly
-      deferred after the holder-independent proof.
-- [ ] Confirm the capstone contains no raw command, private storage/objective, sealed
-      intrinsic forgery, or compiler-only test hook.
-- [ ] Record discovered missing capabilities as PS-2 work instead of hiding them in
-      the application.
+- [x] Confirm the accepted PS-2 public API and frozen Brainfuck contract.
+- [x] Freeze seven package modules, JSON case schemas, default limits, and output marker adapter.
+- [x] Retain the PS-2.0 connected-player deferral; require the holder-independent exact-one proof.
+- [x] Audit out raw commands, private names, intrinsic forgery, and compiler-only hooks.
+- [x] Adapt to the public cross-module type surface without adding a compiler exception.
 
-Gate: PS-3 is composition work over accepted public facilities.
+Gate: passed; PS-3 is ordinary composition work.
 
 ## PS-3A — Tape and opcode model
 
-- [ ] Implement opcode and byte abstractions with the frozen semantics.
-- [ ] Implement the two-sided zero-extending tape through standard-library zipper
-      operations.
-- [ ] Test wrapping, left/right movement, revisit, and copy independence in the Core
-      evaluator.
-- [ ] Compile tape cases through all policies and compare server observations where
-      physical list behavior is exercised.
+- [x] Implement opcode and wrapping byte abstractions.
+- [x] Implement the two-sided zero-extending two-list tape.
+- [x] Evaluate wrap, movement, revisit, tail orientation, and copy behavior independently.
+- [x] Compile the complete application through all four policies.
 
-Gate: tape behavior is independent from parsing and books.
+Gate: passed independently from books.
 
 ## PS-3B — Parser
 
-- [ ] Implement text traversal and ignored-character filtering.
-- [ ] Implement normalized opcode construction and source-position tracking.
-- [ ] Implement bracket validation and the selected jump representation.
-- [ ] Test empty/comments, ASCII, Unicode ignored text, nested brackets, unmatched
-      brackets, and maximum limits.
-- [ ] Compare constant/runtime and evaluator/vanilla results.
+- [x] Implement UTF-16 tail traversal and ignored-character filtering.
+- [x] Construct normalized opcodes with normalized positions.
+- [x] Validate nested brackets before execution and retain unmatched positions.
+- [x] Cover empty/comments, Unicode, nested/unmatched brackets, and exact/exceeded limits.
+- [x] Compare the application with an independent reference under all policies.
 
-Gate: arbitrary accepted semantic program text becomes a validated program or typed
-parse error.
+Gate: passed; runtime text becomes a validated reverse opcode list or typed status.
 
 ## PS-3C — Fuel-bounded interpreter
 
-- [ ] Implement all eight instructions using public arithmetic, list, aggregate, and
-      control-flow facilities.
-- [ ] Consume fuel exactly according to the frozen dispatch rule.
-- [ ] Implement input consumption/end behavior and byte output accumulation.
-- [ ] Return completed, step-limit, and invalid-program states distinctly.
-- [ ] Test zero/exact/one-short/surplus fuel, simple/nested loops, I/O, and tape
-      movement in the evaluator.
-- [ ] Compile and run the interpreter tier under all four policies.
+- [x] Implement all eight instructions with public operations.
+- [x] Consume exactly one fuel unit per dispatched opcode.
+- [x] Implement input, EOF-zero, ordered byte output, and output bounds.
+- [x] Return completed, fuel, parse, and resource-limit states distinctly.
+- [x] Compare the complete returned state for all 30 semantic cases.
+- [x] Compile/evaluate under all four policy products.
 
-Gate: pre-normalized and runtime-string programs execute correctly without a book.
+Gate: passed without a book or Brainfuck intrinsic.
 
 ## PS-3D — Book and Minecraft adapters
 
-- [ ] Implement typed book acquisition from the supported exact-one holder/slot.
-- [ ] Implement page conversion/joining through public platform/standard APIs.
-- [ ] Keep missing/wrong/oversized book results separate from parser failures.
-- [ ] Implement selected output effect without replacing semantic byte observations.
-- [ ] Run clientless holder/book-value cases on pinned vanilla.
-- [ ] Verify executor attribution and execution frame where the output operation
-      depends on them.
+- [x] Read an exact-one typed holder/main-hand written book.
+- [x] Inspect all static page indices 0..99 and preserve page order through reverse normalization.
+- [x] Keep empty/wrong/unsupported conversion as `NO_PROGRAM`, distinct from parse and fuel errors.
+- [x] Retain semantic byte output and add a typed reader-attributed `say` marker.
+- [x] Run split-page, wrong-item, and malformed-book cases on pinned Java 26.2.
+- [x] Prove attribution to `MDL_PS3_READER` under all four policies.
 
-Gate: a controlled written-book value drives the ordinary parser/interpreter path.
+Gate: passed in one clientless server lifecycle.
 
 ## PS-3E — Connected-player boundary
 
-- [ ] Research and select an existing narrow test-client/bot dependency or external
-      fixture compatible with the pinned Java 26.2 server.
-- [ ] Pin its version and document offline-mode credentials/protocol assumptions.
-- [ ] Connect one player, wait for server-visible readiness, place a written book in
-      the selected slot through supported server commands, and invoke the pack.
-- [ ] Observe the same semantic output and attribution as the holder-independent
-      case.
-- [ ] Terminate the client reliably and preserve client/server logs on failure.
-- [ ] Keep this suite opt-in and out of the default workspace tests.
-
-Gate: required only if PS-3.0 freezes actual-player-held input as an exit criterion.
+Not applicable to the PS-3 exit. PS-2.0 explicitly selected the controlled
+inventory-capable non-player holder and deferred a pinned client dependency,
+credentials/protocol handling, and player lifecycle automation. This remains
+optional future breadth and was not disguised as capstone work.
 
 ## PS-3F — Full corpus and policy differential
 
-- [ ] Encode every case with tier, program/book, input, fuel, expected result/output,
-      and server/client requirement.
-- [ ] Include empty, wrap, movement, I/O, simple/nested loops, comments/pages,
-      bracket errors, fuel boundaries, and size limits.
-- [ ] Add one recognizable showcase program within the synchronous contract.
-- [ ] Compile all four policy products and execute compatible cases in batched server
-      lifecycles.
-- [ ] Compare normalized observations and produce concise case/policy state diffs.
-- [ ] Assert normal completion/error cleanup and explicit recovery after a separate
-      abnormal command-limit case.
+- [x] Encode target-independent and book-adapter cases in machine-readable JSON.
+- [x] Cover empty, wrap, movement, I/O, loops, Unicode/comments/pages, brackets, fuel, and bounds.
+- [x] Produce the recognizable `A` showcase with 108 dispatches.
+- [x] Compile all four policies and run the compatible book path for all four in one server.
+- [x] Compare normalized complete state and concise case names against an independent oracle.
+- [x] Retain Stage 8's separate command-limit abort/recovery test as the abnormal authority.
 
-Gate: the complete frozen semantic corpus passes through its declared authorities.
+Gate: passed; semantic fuel exhaustion is not Minecraft interruption.
 
 ## PS-3G — Cost, inspection, and handoff
 
-- [ ] Record exact pack files/lines/bytes and selected recipe census.
-- [ ] Record conservative command-sequence, redirect/fork, function, score, NBT, and
-      macro work for the bounded capstone configurations.
-- [ ] Prove strict accepted/rejected configurations at selected pinned-server hard
-      boundaries without semantic instrumentation.
-- [ ] Run wall-time/reload/cache experiments only through the measurement protocol.
-- [ ] Confirm no unused standard-library modules or private runtime helpers are
-      emitted.
-- [ ] Audit source-to-HIR/Core/lowering/target/pack explanations for representative
-      operations.
-- [ ] Update the roadmap, testing notes, semantic ambiguities, and Stage 9 handoff.
-- [ ] Mark Stage 8.5 complete only after the PS-1/2/3 audits remain green together.
+- [x] Pin exact pack files/functions/lines/bytes/maximum-line/trace metrics for every policy.
+- [x] Pin command census plus physical homes, realizations, materializations, and recipe work.
+- [x] Record `NoFiniteBoundProven(PositiveCycle)` for sequence work and `ProvenWithin` forks.
+- [x] Classify strict deployment rejection/static fuel proofs as accepted deferred breadth.
+- [x] Make no wall-time performance claim; use only the semantic server protocol.
+- [x] Prove zero raw commands, zero function macros, and zero recursive activation edges.
+- [x] Retain source/Core/lowering/target/pack products through the production compilation facade.
+- [x] Update the roadmap, testing notes, ambiguities, and Stage 9 state handoff.
+- [x] Keep PS-1, PS-2, PS-3, workspace, and pinned-server gates green together.
 
-Gate: Brainfuck is a reproducible compiler capability proof and Stage 9 receives a
-concrete persistent-work client rather than an abstract scheduler wish list.
+Gate: passed. Stage 8.5 is complete and Stage 9 has a concrete persistent-work client.

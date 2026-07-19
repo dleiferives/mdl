@@ -1,0 +1,43 @@
+const interpreter = import("interpreter");
+
+export fn showcase_checksum(fuel: Int32) -> Int32 {
+    return interpreter.run_text_checksum(
+        "++++++++[>++++++++<-]>+.",
+        List.empty(),
+        fuel,
+        8192,
+        8192,
+        4096,
+        4096,
+    );
+}
+
+export fn selected_case_checksum(case: Int32, fuel: Int32) -> Int32 {
+    if (case == 0) {
+        return interpreter.run_text_checksum(
+            "", List.empty(), fuel, 8192, 8192, 4096, 4096,
+        );
+    }
+    if (case == 1) {
+        return interpreter.run_text_checksum(
+            "-.", List.empty(), fuel, 8192, 8192, 4096, 4096,
+        );
+    }
+    if (case == 2) {
+        return interpreter.run_text_checksum(
+            ",.", List.empty().push(65), fuel, 8192, 8192, 4096, 4096,
+        );
+    }
+    if (case == 3) {
+        return interpreter.run_text_checksum(
+            "++[>++[>+<-]<-]>>.", List.empty(), fuel, 8192, 8192, 4096, 4096,
+        );
+    }
+    return interpreter.run_text_checksum(
+        "ignored prose 😀 +.", List.empty(), fuel, 8192, 8192, 4096, 4096,
+    );
+}
+
+export fn run_book_showcase() {
+    interpreter.run_book_showcase();
+}

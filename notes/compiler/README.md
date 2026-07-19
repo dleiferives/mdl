@@ -38,6 +38,7 @@
 - [PS-2 language/standard-library/intrinsic/runtime boundary](pre-scheduler/ps-2/standard-library-boundary.md)
 - [PS-3 Brainfuck capstone plan](pre-scheduler/ps-3-brainfuck-capstone-plan.md)
 - [PS-3 implementation checklist](pre-scheduler/ps-3-brainfuck-capstone-todo.md)
+- [PS-3 to Stage 9 handoff](pre-scheduler/ps-3-handoff.md)
 - [Post-Stage-8 aggregate value client plan](aggregate-values-plan.md)
 - [Historical Stage 7A module handoff](stage-6-modules-plan.md)
 - [Historical Stage 7B effect/raw-command handoff](stage-6-effects-plan.md)
@@ -82,12 +83,12 @@ correlation, and clientless Java 26.2 differentials are gated. Stage 8 is comple
 for the bounded scalar-realization/calling-convention boundary: serial many-context
 reuse, recursive-SCC-only typed spill frames, explicit recovery, physical recipe
 accounting, determinism/corruption gates, and clientless Java 26.2 execution are
-verified. Stage 8.5's PS-1 testing foundation is complete: bounded Core evaluation,
-typed semantic and exact-limit scenario runners, batched four-policy vanilla
-differentials, normalized NBT/entity observations, outcome-channel calibration, and
-the hardening gates all pass. PS-2 is ready to begin with its semantic-decision
-tranche before synchronous capability implementation. Stage 8.5 assigns the first
-aggregate/list/string clients, same-tick loops, and any narrowly required typed
-Minecraft macro recipe without adding suspension. Persistent continuations and
-multi-tick scheduling remain Stage 9; general language metaprogramming and broader
-runtime interpolation remain later work.
+verified. Stage 8.5 is complete through PS-3. Its testing foundation, synchronous
+language/value capabilities, and ordinary seven-module Brainfuck application all
+pass. The 30-case complete-state reference differential runs under all four policy
+products; the full 0..99-page typed book adapter runs the split-page `A` showcase on
+pinned Java 26.2 under every policy, with wrong-item and malformed-book cases kept
+distinct. Exact artifact/cost evidence is pinned and sequence-cycle uncertainty is
+retained honestly. Persistent continuations and multi-tick scheduling are now Stage
+9; general language metaprogramming and broader runtime interpolation remain later
+work.

@@ -1,0 +1,19 @@
+pub fn decode_tail(source: String) -> Int32 {
+    if (source.ends_with_ascii(">")) { return 62; }
+    if (source.ends_with_ascii("<")) { return 60; }
+    if (source.ends_with_ascii("+")) { return 43; }
+    if (source.ends_with_ascii("-")) { return 45; }
+    if (source.ends_with_ascii(".")) { return 46; }
+    if (source.ends_with_ascii(",")) { return 44; }
+    if (source.ends_with_ascii("[")) { return 91; }
+    if (source.ends_with_ascii("]")) { return 93; }
+    return 0;
+}
+
+pub fn is_open(value: Int32) -> Bool {
+    return value == 91;
+}
+
+pub fn is_close(value: Int32) -> Bool {
+    return value == 93;
+}

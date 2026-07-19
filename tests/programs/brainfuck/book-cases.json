@@ -1,0 +1,23 @@
+[
+  {
+    "name": "split-showcase-a",
+    "item": "written_book",
+    "pages": ["++++++++[>++++", "++++<-]>+."],
+    "expected_marker": "MDL_PS3_BRAINFUCK_A",
+    "all_policies": true
+  },
+  {
+    "name": "wrong-item",
+    "item": "stone",
+    "pages": [],
+    "expected_marker": "MDL_PS3_BRAINFUCK_NO_PROGRAM",
+    "all_policies": false
+  },
+  {
+    "name": "malformed-bracket",
+    "item": "written_book",
+    "pages": ["["],
+    "expected_marker": "MDL_PS3_BRAINFUCK_PARSE_ERROR",
+    "all_policies": false
+  }
+]

@@ -487,17 +487,24 @@ fn define_external_helpers(
                         data.origin(),
                     ));
                 };
-                define_external_helper(target, core, plan, *helper, *operation, data, commands)?;
+                define_external_helper(
+                    target, core, plan, function, *helper, *operation, data, commands,
+                )?;
             }
         }
     }
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a disjoint piece of the construction/plan context the closed binding vocabulary needs"
+)]
 fn define_external_helper(
     target: &mut TargetConstruction,
     core: &CoreProgram,
     plan: &LoweringPlan,
+    function: FunctionId,
     helper: PlannedFunctionId,
     operation: crate::ir::core::ExternalOpId,
     data: &InstData,
@@ -542,7 +549,7 @@ fn define_external_helper(
                     data.origin(),
                 ));
             }
-            let base_cmd = recipe.command_kind();
+            let base_cmd = retarget_to_result_home(recipe.command_kind(), function, data, plan)?;
             let operands = super::crossings::collect_runtime_operands(&base_cmd);
             let frame = super::crossings::build_frame(&operands)
                 .expect("unusable-inline recipe must have runtime operands");
@@ -551,6 +558,47 @@ fn define_external_helper(
             target.define_external_helper(helper, body)
         }
     }
+}
+
+/// Redirects a macro-routed data-modify recipe's target from the recipe's
+/// placeholder scratch path to the instruction's real, per-occurrence result
+/// home, so the macro helper's read reaches the caller instead of a scratch
+/// storage path nothing else ever consumes.
+fn retarget_to_result_home(
+    base_cmd: CommandKind,
+    function: FunctionId,
+    data: &InstData,
+    plan: &LoweringPlan,
+) -> Result<CommandKind, Diagnostics> {
+    let CommandKind::Data(DataCommand::Modify { mode, source, .. }) = base_cmd else {
+        return Err(invariant_diagnostics(
+            "macro-routed external helper base command is not a data-modify command",
+            data.origin(),
+        ));
+    };
+    let [result] = data.results() else {
+        return Err(invariant_diagnostics(
+            "macro-routed external read requires exactly one result",
+            data.origin(),
+        ));
+    };
+    let home = plan.value_home(function, *result).ok_or_else(|| {
+        invariant_diagnostics(
+            "macro-routed external result has no planned home",
+            data.origin(),
+        )
+    })?;
+    let target = plan.string_storage(home).ok_or_else(|| {
+        invariant_diagnostics(
+            "macro-routed external result has no string storage",
+            data.origin(),
+        )
+    })?;
+    Ok(CommandKind::Data(DataCommand::Modify {
+        target,
+        mode,
+        source,
+    }))
 }
 
 fn define_run_scope_helper(

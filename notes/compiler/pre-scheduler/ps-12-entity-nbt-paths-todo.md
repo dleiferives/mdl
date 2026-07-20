@@ -1,6 +1,6 @@
 # PS-12 Composable Entity-NBT Paths Checklist
 
-Status: **in progress — PS-12.0 starting**
+Status: **PS-12.0 landed; PS-12A starting**
 
 Authoritative design: [`ps-12-entity-nbt-paths-plan.md`](ps-12-entity-nbt-paths-plan.md) and
 [`../entity-nbt-path-composability.md`](../entity-nbt-path-composability.md).
@@ -8,25 +8,44 @@ Authoritative design: [`ps-12-entity-nbt-paths-plan.md`](ps-12-entity-nbt-paths-
 Implement the tranches in order. PS-12.0 is independent and must land first — every later
 tranche builds on the engine actually being correct.
 
-## PS-12.0 — Fix the two confirmed engine bugs (do first, small, high-value)
+## PS-12.0 — Fix the two confirmed engine bugs (do first, small, high-value) — DONE
 
-- [ ] Add a regression test that exercises a **genuinely runtime** (non-literal) book-page
+- [x] Add a regression test that exercises a **genuinely runtime** (non-literal) book-page
       index end to end and asserts the read *value* — not just command shape — reaches the
       caller's result home. This test must fail against the current tree before the fix.
-- [ ] Add a regression test asserting the macro-rendered entity read honors a non-`@s`
-      `DataSource::Entity` selector (currently hardcoded).
-- [ ] Fix `lower/minecraft/emit.rs`'s `InstructionPlan::External { helper }` arm (~300-335):
-      resolve each of `data.results()` (already in scope, `InstData::results() -> &[ValueId]`)
-      to its home via `plan.value_home(function, value_id)`, and route the macro helper's read
-      to that home instead of the `mdl:preflight`/`book_page` placeholder.
-- [ ] Fix `lower/minecraft/crossings.rs::render_data_modify_as_macro` (~line 159): render
-      `{selector}` from the real `DataSource::Entity { selector, .. }` instead of the literal
-      `"@s"`; stop discarding `selector` via `..` in both `collect_from_data_source` and this
-      function.
-- [ ] Both fixes green under `cargo test -p mdl-compiler`, `cargo clippy --workspace
-      --all-targets -- -D warnings`, `cargo fmt --all -- --check`.
+      Landed as `crates/mdl-compiler/tests/ps12_book_page_runtime.rs`
+      (`runtime_book_page_index_routes_to_caller_result_home`); confirmed failing
+      pre-fix (macro helper wrote to `mdl:preflight "book_page"` while the caller's
+      `ends_with_ascii` lowering read the value's real, independently assigned home
+      `ps12_book:__mdl/runtime/v0 "s1"`). Deliberately embeds its source inline rather than
+      under `tests/source-fixtures/` so it isn't swept into `source_fixtures.rs`'s four-policy
+      differential (PS-12D's job) — `CoreOptimizationLevel::Baseline` would constant-fold the
+      index and never exercise the runtime/macro path.
+- [x] Add a regression test asserting the macro-rendered entity read honors a non-`@s`
+      `DataSource::Entity` selector (currently hardcoded). Landed as a `#[cfg(test)]` unit test
+      in `lower/minecraft/crossings.rs`
+      (`render_data_modify_as_macro_honors_non_self_selector`), constructing a
+      `DataSource::Entity` with `AtMostOneSelector::NearestPlayer` and asserting the rendered
+      macro text contains `@p` and never `@s`.
+- [x] Fix `lower/minecraft/emit.rs`'s `InstructionPlan::External { helper }` arm: added
+      `retarget_to_result_home`, called from `define_external_helper`'s `MinecraftOperation`
+      arm, which resolves `data.results()` (`InstData::results() -> &[ValueId]`) to its home via
+      `plan.value_home(function, value_id)` / `plan.string_storage(home)` and rewrites the
+      recipe's `CommandKind::Data(DataCommand::Modify)` target before `render_as_macro` runs.
+      `function: FunctionId` threaded through `define_external_helpers` →
+      `define_external_helper` to make this possible (needed `#[allow(clippy::
+      too_many_arguments)]`, matching existing precedent in this module).
+- [x] Fix `lower/minecraft/crossings.rs::render_data_modify_as_macro`: renders `{selector}` from
+      the real `DataSource::Entity { selector, path }` instead of the literal `"@s"`.
+      `collect_from_data_source` still discards `selector` via `..` — left as-is, since no
+      `Selector` variant carries a runtime component today, so there is nothing to collect;
+      revisit if/when PS-12B introduces selector expressions with runtime parts.
+- [x] Both fixes green under `cargo test --workspace --all-targets`, `cargo clippy --workspace
+      --all-targets -- -D warnings`, `cargo fmt --all -- --check` (734 passed in
+      `mdl-compiler`, 0 failed, workspace-wide 0 failed).
 
 Gate: the existing generic engine is actually trustworthy before anything is built on top of it.
+**Met.**
 
 ## PS-12A — Grammar, parser, AST
 

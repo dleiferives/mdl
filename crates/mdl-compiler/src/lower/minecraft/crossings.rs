@@ -151,12 +151,12 @@ fn render_data_modify_as_macro(
 
     // Line 2: the actual read, with path segments substituted
     let read_line = match source {
-        DataSource::Entity { path, .. } => {
+        DataSource::Entity { selector, path } => {
             let mut segments: Vec<MacroSegment> = Vec::new();
             let mut literal_buf = String::new();
             write!(
                 literal_buf,
-                "data modify storage {target_storage} {target_path} set from entity @s "
+                "data modify storage {target_storage} {target_path} set from entity {selector} "
             )
             .unwrap();
 
@@ -317,4 +317,69 @@ pub(crate) fn push_macro_call(
         origin,
     )?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RuntimeOperand, build_frame, render_as_macro};
+    use crate::entity::EntityId;
+    use crate::ir::core::{Operand, ValueId};
+    use crate::ir::minecraft::{
+        AtMostOneSelector, CommandKind, DataCommand, DataModifyMode, DataSource, MacroSegment,
+        NbtPath, NbtPathKey, NbtPathSegment, Selector, StorageId, StoragePath, SyntaxSlot,
+    };
+    use crate::source::OriginId;
+
+    // PS-12.0 regression: the macro renderer must honor the real
+    // `DataSource::Entity` selector, not a hardcoded `@s` literal. Reads
+    // through a non-executor selector (e.g. a general entity-NBT path root)
+    // would silently render the wrong entity's data otherwise.
+    #[test]
+    fn render_data_modify_as_macro_honors_non_self_selector() {
+        let value = ValueId::from_index(0);
+        let target = StoragePath::new(
+            StorageId::parse("mdl:test").unwrap(),
+            NbtPath::new(
+                NbtPathSegment::Key(NbtPathKey::new("result").unwrap()),
+                vec![],
+            ),
+        );
+        let source = DataSource::Entity {
+            selector: Selector::from(AtMostOneSelector::NearestPlayer),
+            path: NbtPath::new(
+                NbtPathSegment::Key(NbtPathKey::new("pages").unwrap()),
+                vec![NbtPathSegment::Index(Operand::Runtime(value))],
+            ),
+        };
+        let base_cmd = CommandKind::Data(DataCommand::Modify {
+            target,
+            mode: DataModifyMode::Set,
+            source,
+        });
+        let operands = vec![RuntimeOperand {
+            value_id: value,
+            slot: SyntaxSlot::NbtIndex,
+        }];
+        let frame = build_frame(&operands).expect("one runtime operand builds a frame");
+        let macro_cmd = render_as_macro(&base_cmd, &frame, OriginId::UNKNOWN);
+
+        let rendered = macro_cmd
+            .lines
+            .iter()
+            .flat_map(|line| line.segments.iter())
+            .filter_map(|segment| match segment {
+                MacroSegment::Literal(text) => Some(text.as_str()),
+                MacroSegment::Variable(_) => None,
+            })
+            .collect::<String>();
+
+        assert!(
+            rendered.contains("entity @p "),
+            "expected the real selector `@p` in the rendered macro text: {rendered}"
+        );
+        assert!(
+            !rendered.contains("@s"),
+            "rendered macro text still hardcodes `@s`: {rendered}"
+        );
+    }
 }

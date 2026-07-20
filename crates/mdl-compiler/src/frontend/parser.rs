@@ -2229,6 +2229,8 @@ fn expression_has_error(expression: &AstExpression) -> bool {
         | AstExpressionKind::StaticDecimal { .. }
         | AstExpressionKind::StringLiteral(_)
         | AstExpressionKind::InferredEnumLiteral(_)
+        | AstExpressionKind::InferredStructLiteral(_)
+        | AstExpressionKind::Index { .. }
         | AstExpressionKind::Name(_) => false,
     }
 }

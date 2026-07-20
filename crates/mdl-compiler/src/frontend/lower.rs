@@ -2861,6 +2861,20 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 };
                 ValueBundle::scalar(result)
             }
+            HirExpressionKind::AnonymousStructConstruct { .. } => {
+                return Err(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::InvalidAggregateProjection {
+                        source_function: self.function.id,
+                    },
+                ));
+            }
+            HirExpressionKind::AnonymousStructProject { .. } => {
+                return Err(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::InvalidAggregateProjection {
+                        source_function: self.function.id,
+                    },
+                ));
+            }
             HirExpressionKind::Switch(switch) => {
                 self.lower_switch_expression(block, environment, switch)?
             }

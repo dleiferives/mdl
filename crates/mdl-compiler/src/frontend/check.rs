@@ -1412,6 +1412,14 @@ impl<'a> BodyChecker<'a> {
             AstStatement::Return(statement) => self.check_return(statement, assigned),
             AstStatement::Run(statement) => self.check_run(statement, assigned),
             AstStatement::UnsafeMinecraft(statement) => self.check_unsafe_minecraft(statement),
+            AstStatement::Destructure(stmt) => {
+                self.diagnostics.push(PendingDiagnostic::new(
+                    DIRTY_AST,
+                    "destructuring let is not yet supported",
+                    stmt.span,
+                ));
+                Ok(CheckedStatement::invalid())
+            }
             AstStatement::Error(span) => {
                 self.diagnostics.push(PendingDiagnostic::new(
                     DIRTY_AST,
@@ -3314,6 +3322,23 @@ impl<'a> BodyChecker<'a> {
             }
             AstExpressionKind::Compare { op, left, right } => {
                 self.check_comparison(*op, left, right, expression.span, assigned)
+            }
+            AstExpressionKind::InferredStructLiteral(literal) => {
+                self.diagnostics.push(PendingDiagnostic::new(
+                    DIRTY_AST,
+                    "anonymous struct literal is not yet supported",
+                    literal.span,
+                ));
+                Ok(CheckedExpression::invalid(expression.span))
+            }
+            AstExpressionKind::Index { aggregate, .. } => {
+                let _ = self.check_expression(aggregate, assigned)?;
+                self.diagnostics.push(PendingDiagnostic::new(
+                    DIRTY_AST,
+                    "index expression is not yet supported",
+                    expression.span,
+                ));
+                Ok(CheckedExpression::invalid(expression.span))
             }
             AstExpressionKind::Error => {
                 self.diagnostics.push(PendingDiagnostic::new(

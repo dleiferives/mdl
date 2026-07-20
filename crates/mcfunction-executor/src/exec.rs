@@ -1001,7 +1001,7 @@ impl Executor {
                 outcome.success == 1
             }
             ExecuteCondition::Block { x, y, z, block } => {
-                self.world.blocks.matches(*x, *y, *z, "minecraft:overworld", block)
+                self.world.blocks.matches(*x, *y, *z, &ctx.dimension, block)
             }
         }
     }
@@ -1018,6 +1018,24 @@ impl Executor {
             let numeric_type = words.get(3).map_or("int", |s| *s);
             let scale: f64 = words.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
             let _ = self.world.storage.store_numeric(&storage, &path, numeric_type, scale, value);
+        } else if words.len() >= 3 && words[0] == "entity" {
+            // execute store result entity @s Pos[0] double 0.001
+            let selector = &words[1];
+            let path = &words[2];
+            let numeric_type = words.get(3).map_or("double", |s| *s);
+            let scale: f64 = words.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+            let scaled = (value as f64) * scale;
+            let ids = self.world.entities.resolve_selector(selector);
+            for id in ids {
+                let Some(e) = self.world.entities.get(id) else { continue; };
+                let (nx, ny, nz) = match &**path {
+                    "Pos[0]" => (scaled, e.y, e.z),
+                    "Pos[1]" => (e.x, scaled, e.z),
+                    "Pos[2]" => (e.x, e.y, scaled),
+                    _ => (e.x, e.y, e.z),
+                };
+                self.world.entities.teleport_absolute(id, nx, ny, nz, e.yaw, e.pitch);
+            }
         }
     }
 }

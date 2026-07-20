@@ -17,13 +17,14 @@ use super::hir::{
     SourceStructId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
+use crate::entity::EntityId;
 use crate::ir::core::{
     BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
     CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityQueryDecl, EntityQueryStep,
     ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder, FunctionId,
-    I32ClosedRange, I32Predicate, InstId, MinecraftOperationAttributes, MinecraftOperationOrigins,
-    ProgramError, RunModifierInstance, TargetFragment, Terminator, TerminatorKind, ValueId,
-    verify_program,
+    I32ClosedRange, I32Predicate, InstId, MacroOrStatic, MinecraftOperationAttributes,
+    MinecraftOperationOrigins, ProgramError, RunModifierInstance, TargetFragment, Terminator,
+    TerminatorKind, ValueId, verify_program,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -1147,9 +1148,15 @@ fn declare_external_operations(
                         page_index,
                         page_origin,
                     } => MinecraftOperationAttributes::BookPage {
-                        page_index: *page_index,
+                        page_index: MacroOrStatic::Static(*page_index),
                         page_origin: *page_origin,
                     },
+                    HirMinecraftOperationAttributes::BookPageRuntime { page_origin, .. } => {
+                        MinecraftOperationAttributes::BookPage {
+                            page_index: MacroOrStatic::Macro(ValueId::from_index(0)),
+                            page_origin: *page_origin,
+                        }
+                    }
                 };
                 let operation = program
                     .declare_minecraft_operation(
@@ -1335,10 +1342,10 @@ fn verify_source_semantic_correlation(
                         page_origin,
                     },
                     MinecraftOperationAttributes::BookPage {
-                        page_index: core_index,
+                        page_index: MacroOrStatic::Static(core_n),
                         page_origin: core_origin,
                     },
-                ) => page_index == core_index && page_origin == core_origin,
+                ) => *page_index == *core_n && page_origin == core_origin,
                 _ => false,
             };
             if operation.key() != *key
@@ -1980,6 +1987,10 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
         Ok(continuation)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "statement lowering keeps one arm per HIR statement kind in a single dispatch"
+    )]
     fn lower_statement(
         &mut self,
         mut block: BlockId,
@@ -2060,7 +2071,7 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                     }
                     crate::frontend::hir::HirAnonymousStructKind::Positional(fields) => fields,
                 };
-                for target in targets.iter() {
+                for target in targets {
                     let component_index = usize::try_from(target.component).unwrap_or(usize::MAX);
                     let Some(component_ty) = components.get(component_index) else {
                         return Err(CoreGenerationFailure::Invariant(

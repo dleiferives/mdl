@@ -562,7 +562,8 @@ impl BehaviorEvaluator<'_> {
                 let requirements = match attributes {
                     super::hir::HirMinecraftOperationAttributes::Say { .. }
                     | super::hir::HirMinecraftOperationAttributes::MoveBy { .. }
-                    | super::hir::HirMinecraftOperationAttributes::BookPage { .. } => {
+                    | super::hir::HirMinecraftOperationAttributes::BookPage { .. }
+                    | super::hir::HirMinecraftOperationAttributes::BookPageRuntime { .. } => {
                         crate::ir::semantic::AmbientContextRequirements::NONE.with_executor(
                             crate::ir::semantic::ContextRequirement::Required(*receiver_kind),
                         )

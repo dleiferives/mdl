@@ -512,7 +512,7 @@ impl AstPrinter<'_> {
                 format_args!(
                     "field {}: {} {}",
                     self.spelling(field.name.span),
-                    self.value_type(field.ty.kind),
+                    self.value_type(&field.ty.kind),
                     location(field.span)
                 ),
             );
@@ -539,17 +539,17 @@ impl AstPrinter<'_> {
                 format_args!(
                     "parameter {}: {} {}",
                     self.spelling(parameter.name.span),
-                    self.value_type(parameter.ty.kind),
+                    self.value_type(&parameter.ty.kind),
                     location(parameter.span)
                 ),
             );
         }
-        match function.result {
+        match &function.result {
             Some(result) => self.line(
                 2,
                 format_args!(
                     "result {} {}",
-                    self.result_type(result.kind),
+                    self.result_type(&result.kind),
                     location(result.span)
                 ),
             ),
@@ -576,12 +576,16 @@ impl AstPrinter<'_> {
                     AstBindingKind::Const => "const",
                     AstBindingKind::Var => "var",
                 };
+                let ty_text = match &declaration.ty {
+                    Some(ty) => self.value_type(&ty.kind),
+                    None => "<inferred>".to_owned(),
+                };
                 self.line(
                     indent,
                     format_args!(
                         "{kind} {}: {} {}",
                         self.spelling(declaration.name.span),
-                        self.value_type(declaration.ty.kind),
+                        ty_text,
                         location(declaration.span)
                     ),
                 );
@@ -934,14 +938,14 @@ impl AstPrinter<'_> {
             .to_owned()
     }
 
-    fn value_type(&self, ty: AstValueTypeKind) -> String {
+    fn value_type(&self, ty: &AstValueTypeKind) -> String {
         match ty {
             AstValueTypeKind::Bool => "Bool".to_owned(),
             AstValueTypeKind::Int32 => "Int32".to_owned(),
             AstValueTypeKind::ListI32 => "List<Int32>".to_owned(),
             AstValueTypeKind::String => "String".to_owned(),
             AstValueTypeKind::Named(name) => self.spelling(name.span),
-            AstValueTypeKind::Anonymous(anon) => match anon.kind {
+            AstValueTypeKind::Anonymous(anon) => match &anon.kind {
                 AstAnonymousStructTypeKind::Named(fields) => {
                     let fields = fields
                         .iter()
@@ -949,7 +953,7 @@ impl AstPrinter<'_> {
                             format!(
                                 "{}: {}",
                                 self.spelling(field.name.span),
-                                self.value_type(field.ty.kind)
+                                self.value_type(&field.ty.kind)
                             )
                         })
                         .collect::<Vec<_>>()
@@ -959,7 +963,7 @@ impl AstPrinter<'_> {
                 AstAnonymousStructTypeKind::Positional(types) => {
                     let types = types
                         .iter()
-                        .map(|ty| self.value_type(ty.kind))
+                        .map(|ty| self.value_type(&ty.kind))
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("{{ {types} }}")
@@ -968,7 +972,7 @@ impl AstPrinter<'_> {
         }
     }
 
-    fn result_type(&self, ty: AstResultTypeKind) -> String {
+    fn result_type(&self, ty: &AstResultTypeKind) -> String {
         match ty {
             AstResultTypeKind::Value(value) => self.value_type(value),
             AstResultTypeKind::Void => "Void".to_owned(),

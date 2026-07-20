@@ -11,6 +11,7 @@ mod builder;
 mod edit;
 mod eval;
 mod external;
+mod macro_or_static;
 mod minecraft;
 mod print;
 mod query;
@@ -40,6 +41,7 @@ pub use external::{
     ExternalOpDecl, ExternalSemanticBinding, TargetFragment, UnsafeCommandFragmentError,
     UnsafeMinecraftCommandFragment,
 };
+pub use macro_or_static::MacroOrStatic;
 pub use minecraft::{
     MinecraftOperationAttributes, MinecraftOperationDecl, MinecraftOperationOrigins,
 };

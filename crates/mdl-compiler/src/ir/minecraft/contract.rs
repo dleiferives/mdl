@@ -355,7 +355,10 @@ fn contract_for_kind(kind: &CommandKind) -> CommandContract {
             }
             contract
         }
-        CommandKind::Function(_) | CommandKind::Raw(_) => CommandContract::new(
+        CommandKind::Function(_)
+        | CommandKind::Raw(_)
+        | CommandKind::Macro(_)
+        | CommandKind::FunctionWithStorage(_) => CommandContract::new(
             EffectSummary::Unknown,
             ContextSummary::Unknown,
             ForkClass::UNKNOWN,

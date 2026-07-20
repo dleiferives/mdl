@@ -102,7 +102,9 @@ fn verify_command_shape(
         CommandKind::Score(_)
         | CommandKind::Teleport(_)
         | CommandKind::Function(_)
-        | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail) => {}
+        | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
+        | CommandKind::Macro(_)
+        | CommandKind::FunctionWithStorage(_) => {}
         CommandKind::Say(say) => {
             if let Err(error) = SayMessage::new_for_target(say.message().as_str(), target) {
                 verifier.report(
@@ -297,6 +299,14 @@ fn verify_command_references(
                 verify_external_alias(target, symbols, location, command.origin(), verifier);
             }
         },
+        CommandKind::FunctionWithStorage(call) => match &call.target {
+            CallableRef::Internal(target) => {
+                verify_internal_callable(*target, program, location, command.origin(), verifier);
+            }
+            CallableRef::External(target) => {
+                verify_external_alias(target, symbols, location, command.origin(), verifier);
+            }
+        },
         CommandKind::Execute(execute) => {
             for (index, modifier) in execute.modifiers().as_slice().iter().enumerate() {
                 match modifier.kind() {
@@ -339,6 +349,7 @@ fn verify_command_references(
         | CommandKind::Say(_)
         | CommandKind::Teleport(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
+        | CommandKind::Macro(_)
         | CommandKind::Raw(_) => {}
     }
 }
@@ -567,8 +578,10 @@ fn verify_command_origins(
         | CommandKind::Say(_)
         | CommandKind::Teleport(_)
         | CommandKind::Function(_)
+        | CommandKind::FunctionWithStorage(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
-        | CommandKind::Raw(_) => {}
+        | CommandKind::Raw(_)
+        | CommandKind::Macro(_) => {}
     }
 }
 

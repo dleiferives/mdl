@@ -761,6 +761,10 @@ fn flatten_instruction_plans(
         .map(Vec::into_boxed_slice)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "instruction-plan flattening keeps one arm per InstructionPlan variant in a single pass"
+)]
 fn flatten_instruction_plan(
     function: FunctionId,
     instruction: InstId,
@@ -780,6 +784,13 @@ fn flatten_instruction_plan(
                 return Err(invalid_assignment(function));
             };
             if let Some(recipe) = preflight.selected_recipe(*external) {
+                if recipe.is_unusable_inline() {
+                    return Ok(InstructionPlan::External {
+                        helper: resources
+                            .external_helper(instruction)
+                            .ok_or_else(|| invalid_resources(function))?,
+                    });
+                }
                 if resources.external_helper(instruction).is_some() {
                     return Err(invalid_resources(function));
                 }

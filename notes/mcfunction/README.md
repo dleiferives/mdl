@@ -35,7 +35,9 @@ received direct server tests.
 - [Which NBT/dictionary experiments and source inspections have been recorded?](nbt/research-ledger.md)
 - [Which range domains exist, how do they compose, and what are native float semantics?](ranges/README.md)
 - [Which range/float probes and public implementations have been recorded?](ranges/research-ledger.md)
-- [How should macros be used as a backend primitive?](macro-composition.md)
+- [How should macros be used as a backend primitive?](macro-composition.md) — the
+  compiler architecture built on this is the value-crossing model in
+  [`../compiler/macro-reference-crossing-model.md`](../compiler/macro-reference-crossing-model.md)
 - [How do we concatenate strings?](string-concatenation.md)
 - [How do we search through a string?](string-search.md)
 - [How do we append one element to a list?](list-append-one.md)

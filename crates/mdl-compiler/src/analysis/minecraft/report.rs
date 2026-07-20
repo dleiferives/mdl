@@ -125,12 +125,16 @@ impl TargetExecutionCensus {
         self.command_nodes = self.command_nodes.checked_add(1)?;
         match command {
             CommandKind::Score(_) => self.score_commands = self.score_commands.checked_add(1)?,
-            CommandKind::Data(_) => self.data_commands = self.data_commands.checked_add(1)?,
+            // A macro helper body is emitted as data-modify lines, so it counts as data.
+            CommandKind::Data(_) | CommandKind::Macro(_) => {
+                self.data_commands = self.data_commands.checked_add(1)?;
+            }
             CommandKind::Say(_) => self.say_commands = self.say_commands.checked_add(1)?,
             CommandKind::Teleport(_) => {
                 self.teleport_commands = self.teleport_commands.checked_add(1)?;
             }
-            CommandKind::Function(_) => {
+            // `function … with storage` is still a function invocation.
+            CommandKind::Function(_) | CommandKind::FunctionWithStorage(_) => {
                 self.function_calls = self.function_calls.checked_add(1)?;
             }
             CommandKind::Raw(_) => self.raw_commands = self.raw_commands.checked_add(1)?,

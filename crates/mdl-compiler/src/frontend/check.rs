@@ -2589,6 +2589,10 @@ impl<'a> BodyChecker<'a> {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the declaration checker handles annotated, inferred `:=`, and destructuring forms in one exhaustive pass"
+    )]
     fn check_declaration(
         &mut self,
         declaration: &AstDeclaration,
@@ -3848,6 +3852,10 @@ impl<'a> BodyChecker<'a> {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "context-inferred struct literals validate every named and positional entry form in one pass"
+    )]
     fn check_inferred_struct_literal(
         &mut self,
         literal: &AstInferredStructLiteral,
@@ -3920,7 +3928,7 @@ impl<'a> BodyChecker<'a> {
                         );
                         return Ok(CheckedExpression::invalid(span));
                     }
-                };
+                }
                 let mut seen = vec![None::<Span>; field_specs.len()];
                 let mut values = Vec::with_capacity(fields.len());
                 let mut valid = true;
@@ -4247,19 +4255,18 @@ impl<'a> BodyChecker<'a> {
             return Ok(CheckedExpression::invalid(expression_span));
         };
         let index_text = self.spelling(index_span)?;
-        let index: u32 = match index_text.parse() {
-            Ok(value) => value,
-            Err(_) => {
-                self.diagnostics.push(
-                    PendingDiagnostic::new(
-                        INTEGER_OUT_OF_RANGE,
-                        "index must be a non-negative integer literal",
-                        index_span,
-                    )
-                    .primary("only compile-time integer literals are accepted as an index"),
-                );
-                return Ok(CheckedExpression::invalid(expression_span));
-            }
+        let index: u32 = if let Ok(value) = index_text.parse() {
+            value
+        } else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INTEGER_OUT_OF_RANGE,
+                    "index must be a non-negative integer literal",
+                    index_span,
+                )
+                .primary("only compile-time integer literals are accepted as an index"),
+            );
+            return Ok(CheckedExpression::invalid(expression_span));
         };
         let component = usize::try_from(index).ok();
         if component.is_none_or(|c| c >= components.len()) {
@@ -4290,6 +4297,10 @@ impl<'a> BodyChecker<'a> {
         ))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "member, projection, and index-access checking keeps its case analysis in one exhaustive function"
+    )]
     fn check_member_expression(
         &mut self,
         receiver: &AstExpression,
@@ -5052,39 +5063,34 @@ impl<'a> BodyChecker<'a> {
             }
             crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage => {
                 if let [argument] = call.arguments.as_slice() {
-                    let AstExpressionKind::DecimalInteger(literal) = argument.kind else {
-                        let _ = self.check_expression(argument, assigned)?;
-                        self.diagnostics.push(
-                            PendingDiagnostic::new(
-                                LITERAL_CONTEXT_REQUIRED,
-                                "written-book page index must be a static decimal integer from 0 through 99",
-                                argument.span,
-                            )
-                            .primary("dynamic NBT paths are not admitted by this intrinsic"),
-                        );
-                        return Ok(Some(CheckedCall {
-                            target: None,
-                            result: Some(FunctionResult::Value(ValueType::String)),
-                        }));
-                    };
-                    let spelling = self.spelling(literal)?;
-                    match spelling.parse::<u8>() {
-                        Ok(page_index) if page_index < 100 => {
-                            attributes = Some(HirMinecraftOperationAttributes::BookPage {
-                                page_index,
-                                page_origin: self.origin(literal)?,
-                            });
+                    match argument.kind {
+                        AstExpressionKind::DecimalInteger(literal) => {
+                            let spelling = self.spelling(literal)?;
+                            match spelling.parse::<u8>() {
+                                Ok(page_index) if page_index < 100 => {
+                                    attributes = Some(HirMinecraftOperationAttributes::BookPage {
+                                        page_index,
+                                        page_origin: self.origin(literal)?,
+                                    });
+                                }
+                                _ => {
+                                    self.diagnostics.push(
+                                        PendingDiagnostic::new(
+                                            LITERAL_CONTEXT_REQUIRED,
+                                            "written-book page index must be from 0 through 99",
+                                            literal,
+                                        )
+                                        .primary("index exceeds the pinned book page boundary"),
+                                    );
+                                    valid = false;
+                                }
+                            }
                         }
                         _ => {
-                            self.diagnostics.push(
-                                PendingDiagnostic::new(
-                                    LITERAL_CONTEXT_REQUIRED,
-                                    "written-book page index must be from 0 through 99",
-                                    literal,
-                                )
-                                .primary("index exceeds the pinned book page boundary"),
-                            );
-                            valid = false;
+                            let _ = self.check_expression(argument, assigned)?;
+                            attributes = Some(HirMinecraftOperationAttributes::BookPageRuntime {
+                                page_origin: self.origin(argument.span)?,
+                            });
                         }
                     }
                 }

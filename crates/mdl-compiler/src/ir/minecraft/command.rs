@@ -5,7 +5,11 @@ use crate::ir::command_line::{CommandLineShapeError, validate_command_line_shape
 use crate::source::OriginId;
 use crate::target::JavaEditionTarget;
 
-use super::{CallableRef, DataCommand, ExecuteCommand, SayCommand, ScoreCommand, TeleportCommand};
+use super::macro_command::MacroCommand;
+use super::{
+    CallableRef, DataCommand, ExecuteCommand, SayCommand, ScoreCommand, StoragePath,
+    TeleportCommand,
+};
 
 /// Initial maximum nesting depth for recursive commands.
 pub const MAX_COMMAND_DEPTH: usize = 64;
@@ -59,7 +63,9 @@ impl CommandNode {
             | CommandKind::Teleport(_)
             | CommandKind::Function(_)
             | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
-            | CommandKind::Raw(_) => 0,
+            | CommandKind::Raw(_)
+            | CommandKind::Macro(_)
+            | CommandKind::FunctionWithStorage(_) => 0,
         }
     }
 
@@ -95,12 +101,32 @@ pub enum CommandKind {
     Return(ReturnCommand),
     /// Explicit unparsed escape hatch.
     Raw(UnsafeRawCommand),
+    /// A typed macro function command.
+    Macro(MacroCommand),
+    /// A function invocation with storage macro arguments.
+    FunctionWithStorage(FunctionWithStorage),
 }
 
 /// One typed function or function-tag invocation.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct FunctionCall {
     target: CallableRef,
+}
+
+/// A function invocation carrying a storage compound for macro argument
+/// substitution via `function <target> with storage <path>`.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct FunctionWithStorage {
+    pub target: CallableRef,
+    pub storage: StoragePath,
+}
+
+impl FunctionWithStorage {
+    /// Constructs a function-with-storage call.
+    #[must_use]
+    pub const fn new(target: CallableRef, storage: StoragePath) -> Self {
+        Self { target, storage }
+    }
 }
 
 impl FunctionCall {

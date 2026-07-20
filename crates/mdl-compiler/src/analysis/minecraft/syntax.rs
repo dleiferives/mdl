@@ -160,6 +160,7 @@ pub enum CallableClass {
     InternalTag(FunctionTagId),
     ExternalFunction,
     ExternalTag,
+    FunctionWithStorage,
 }
 
 impl CallableClass {
@@ -250,6 +251,7 @@ pub enum CommandStepClass {
     Function(CallableClass),
     Return(ReturnCommandClass),
     Raw,
+    Macro,
 }
 
 impl CommandStepClass {
@@ -276,6 +278,10 @@ impl CommandStepClass {
             }
             CommandKind::Return(command) => Self::Return(ReturnCommandClass::classify(command)),
             CommandKind::Raw(_) => Self::Raw,
+            CommandKind::Macro(_) => Self::Macro,
+            CommandKind::FunctionWithStorage(_) => {
+                Self::Function(CallableClass::FunctionWithStorage)
+            }
         }
     }
 }

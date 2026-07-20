@@ -7,9 +7,10 @@ use crate::source::OriginId;
 use super::{
     CallableRef, CommandId, CommandKind, CommandNode, Condition, DataCommand, DataModifyMode,
     DataSource, ExecuteModifierKind, ExternalCallableRef, FunctionTagId, InternalCallableRef,
-    McFunction, McFunctionId, MinecraftProgram, NbtValue, ReturnCommand, ScoreCommand,
-    ScoreComparison, ScoreHolders, ScoreOperation, ScoreRef, ScoreSelection, SingleScoreHolder,
-    StorageNumericType, StoragePath, StoreChannel, StoreDestination,
+    MacroCommand, MacroSegment, McFunction, McFunctionId, MinecraftProgram, NbtValue,
+    ReturnCommand, ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation, ScoreRef,
+    ScoreSelection, SingleScoreHolder, StorageNumericType, StoragePath, StoreChannel,
+    StoreDestination,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -165,6 +166,17 @@ fn render_command(
             render_command(program, command, sink)
         }
         CommandKind::Raw(command) => sink.push_checked(command.as_str()),
+        CommandKind::Macro(command) => render_macro(command, sink),
+        CommandKind::FunctionWithStorage(call) => {
+            sink.push_checked("function ")?;
+            render_callable(program, &call.target, sink)?;
+            sink.push_checked(" with storage ")?;
+            sink.write_arguments(format_args!(
+                "{} {}",
+                call.storage.storage(),
+                call.storage.path()
+            ))
+        }
     }
 }
 
@@ -474,6 +486,36 @@ fn render_internal_callable(
     }
 }
 
+fn render_macro(command: &MacroCommand, sink: &mut CommandSink) -> Result<(), RenderError> {
+    // A macro command node spans several physical lines. The caller
+    // (`render_function`) terminates the command node with one trailing newline, so
+    // this only inserts separators *between* the macro's own lines — a trailing
+    // `finish_command` here would emit a spurious blank line.
+    for (index, line) in command.lines.iter().enumerate() {
+        if index > 0 {
+            sink.finish_command();
+        }
+        if line.has_variables() {
+            sink.push_checked("$")?;
+        }
+        for segment in &line.segments {
+            match segment {
+                MacroSegment::Literal(text) => sink.push_checked(text)?,
+                MacroSegment::Variable(id) => {
+                    let variable = command
+                        .arguments
+                        .get(*id)
+                        .ok_or(RenderError::FormattingFailed)?;
+                    sink.push_checked("$(")?;
+                    sink.push_checked(&variable.key)?;
+                    sink.push_checked(")")?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CommandSink, RenderError, render_function};
@@ -481,11 +523,12 @@ mod tests {
         CallableRef, CommandKind, CommandNode, Condition, DataCommand, DataModifyMode, DataSource,
         ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
         ExternalCallableRef, FakeScoreHolder, FiniteF64, FunctionCall, FunctionResourceId,
-        JavaDecimal, MinecraftProgramBuilder, NbtKey, NbtPath, NbtPathKey, NbtPathSegment,
-        NbtValue, NonNegativeI32, ObjectiveName, ReturnCommand, SayCommand, SayMessage,
-        ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation, ScoreRange, ScoreRef,
-        ScoreSelection, SingleScoreHolder, StorageId, StorageNumericType, StoragePath,
-        StoreChannel, StoreDestination, TargetAnchor, TargetAxes, TargetLocalPosition,
+        FunctionWithStorage, JavaDecimal, MacroArguments, MacroCommand, MacroLine, MacroSegment,
+        MacroSlot, MacroVariable, MacroVariableId, MinecraftProgramBuilder, NbtKey, NbtPath,
+        NbtPathKey, NbtPathSegment, NbtValue, NonNegativeI32, ObjectiveName, ReturnCommand,
+        SayCommand, SayMessage, ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation,
+        ScoreRange, ScoreRef, ScoreSelection, SingleScoreHolder, StorageId, StorageNumericType,
+        StoragePath, StoreChannel, StoreDestination, TargetAnchor, TargetAxes, TargetLocalPosition,
         TargetPosition, TargetRotation, TargetRotationAxis, TargetWorldAxis, TargetWorldPosition,
         TeleportCommand, UnboundedSelector,
     };
@@ -703,6 +746,51 @@ mod tests {
             concat!(
                 "execute as @e if score #a mdl.reg matches 1..3 unless score #a mdl.reg >= #b mdl.reg store success storage mdl:state \"ok\" byte 1 run function other:run\n",
                 "return run scoreboard players get #a mdl.reg\n"
+            )
+        );
+    }
+
+    #[test]
+    fn macro_and_function_with_storage_render_exactly() {
+        // A macro helper body: one $-prefixed line substituting an NBT index, and a
+        // plain line that needs no substitution (so it is not $-prefixed).
+        let arguments = MacroArguments::new(vec![MacroVariable {
+            key: "index".to_owned(),
+            slot: MacroSlot::NbtIndex,
+            source: storage("index"),
+        }])
+        .unwrap();
+        let macro_command = MacroCommand::new(
+            vec![
+                MacroLine {
+                    segments: vec![MacroSegment::Literal("say plain line".to_owned())],
+                },
+                MacroLine {
+                    segments: vec![
+                        MacroSegment::Literal("say page ".to_owned()),
+                        MacroSegment::Variable(MacroVariableId(0)),
+                    ],
+                },
+            ],
+            arguments,
+            OriginId::UNKNOWN,
+        )
+        .unwrap();
+
+        // The calling convention: `function <id> with storage <storage> <path>`.
+        let call = node(CommandKind::FunctionWithStorage(FunctionWithStorage::new(
+            CallableRef::from(ExternalCallableRef::Function(
+                FunctionResourceId::parse("mdl:helper").unwrap(),
+            )),
+            storage("args"),
+        )));
+
+        assert_eq!(
+            render(vec![node(CommandKind::Macro(macro_command)), call]),
+            concat!(
+                "say plain line\n",
+                "$say page $(index)\n",
+                "function mdl:helper with storage mdl:state \"args\"\n",
             )
         );
     }

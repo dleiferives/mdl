@@ -6,8 +6,8 @@ use std::fmt::Write;
 
 use super::{
     BlockTarget, CoreOp, CoreProgram, Diagnostics, ExternalSemanticBinding, FunctionBody,
-    FunctionId, MinecraftOperationAttributes, RunModifierInstance, TargetFragment, TerminatorKind,
-    ValueId, verify_program,
+    FunctionId, MacroOrStatic, MinecraftOperationAttributes, RunModifierInstance, TargetFragment,
+    TerminatorKind, ValueId, verify_program,
 };
 use crate::entity::EntityId;
 use crate::source::SourceContext;
@@ -565,9 +565,14 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             MinecraftOperationAttributes::MoveBy { offset, .. } => {
                 let _ = writeln!(output, "offset={offset:?}");
             }
-            MinecraftOperationAttributes::BookPage { page_index, .. } => {
-                let _ = writeln!(output, "page_index={page_index}");
-            }
+            MinecraftOperationAttributes::BookPage { page_index, .. } => match page_index {
+                MacroOrStatic::Static(n) => {
+                    let _ = writeln!(output, "page_index={n}");
+                }
+                MacroOrStatic::Macro(v) => {
+                    let _ = writeln!(output, "page_index=@{}", v.index());
+                }
+            },
         }
     }
     for (operation, declaration) in program.external_ops() {

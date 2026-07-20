@@ -41,15 +41,19 @@ fn classify_step(command: &CommandKind) -> Option<CommandStepCost> {
                 CommandOutcome::Fail,
             ],
         )),
-        CommandKind::Raw(_) => Some(unknown_step(
-            UnknownCostReason::RawCommand,
-            vec![
-                CommandOutcome::Continue,
-                CommandOutcome::Return(ReturnValueClass::UnknownInteger),
-                CommandOutcome::NoResult,
-                CommandOutcome::Fail,
-            ],
-        )),
+        // Raw commands and both macro-emission encodings are opaque unknown steps
+        // until the PS-11 crossing engine gives macros a structured contract.
+        CommandKind::Raw(_) | CommandKind::Macro(_) | CommandKind::FunctionWithStorage(_) => {
+            Some(unknown_step(
+                UnknownCostReason::RawCommand,
+                vec![
+                    CommandOutcome::Continue,
+                    CommandOutcome::Return(ReturnValueClass::UnknownInteger),
+                    CommandOutcome::NoResult,
+                    CommandOutcome::Fail,
+                ],
+            ))
+        }
         CommandKind::Function(call) => Some(classify_call(call.target())),
         CommandKind::Return(ReturnCommand::Value(value)) => Some(simple_step(
             CommandStepCounts::default(),

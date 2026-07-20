@@ -1,6 +1,13 @@
 # Stage 8.5 Roadmap
 
-Status: **PS-1 through PS-4 complete; PS-5 planned before Stage 9 resumes**
+Status: **PS-1 through PS-5 complete; PS-11 (generic macro engine) in progress**
+
+The macro/reference work has its own architecture of record —
+[`../macro-reference-crossing-model.md`](../macro-reference-crossing-model.md) — and
+its first executable slice is [`ps-11-macro-reference-crossing-plan.md`](ps-11-macro-reference-crossing-plan.md)
+(Tier A: generic value-crossing engine and wired runtime bridge). Tiers B/C
+(first-class references / `DataRef<T>`, all-command generalization) are later PS
+milestones.
 
 ## Why the roadmap changes here
 

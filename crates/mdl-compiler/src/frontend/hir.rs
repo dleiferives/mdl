@@ -565,6 +565,9 @@ pub(super) enum HirMinecraftOperationAttributes {
         page_index: u8,
         page_origin: OriginId,
     },
+    BookPageRuntime {
+        page_origin: OriginId,
+    },
 }
 
 impl HirMinecraftOperationAttributes {
@@ -573,7 +576,9 @@ impl HirMinecraftOperationAttributes {
             Self::Say { .. } => MinecraftSemanticKey::Say,
             Self::Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
             Self::MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
-            Self::BookPage { .. } => MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
+            Self::BookPage { .. } | Self::BookPageRuntime { .. } => {
+                MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage
+            }
         }
     }
 }
@@ -1145,6 +1150,9 @@ impl<'a> Dumper<'a> {
                         HirMinecraftOperationAttributes::BookPage { page_index, .. } => {
                             format!("page_index={page_index}")
                         }
+                        HirMinecraftOperationAttributes::BookPageRuntime { .. } => {
+                            "page_index=<runtime>".to_string()
+                        }
                     };
                     self.line(
                         1,
@@ -1321,19 +1329,17 @@ impl<'a> Dumper<'a> {
             ),
             HirStatementKind::Destructure { operand, targets } => {
                 let mut parts: Vec<String> = Vec::new();
-                for target in targets.iter() {
+                for target in targets {
                     let prefix = match target.role {
                         HirDestructureTargetRole::Const => "const ",
                         HirDestructureTargetRole::Var => "var ",
                         HirDestructureTargetRole::Assign => "",
                         HirDestructureTargetRole::Discard => "_",
                     };
-                    if target.role != HirDestructureTargetRole::Discard {
-                        if let Some(local) = target.local {
-                            parts.push(format!("{prefix}%{}", local.index()));
-                        }
-                    } else {
+                    if target.role == HirDestructureTargetRole::Discard {
                         parts.push(prefix.to_owned());
+                    } else if let Some(local) = target.local {
+                        parts.push(format!("{prefix}%{}", local.index()));
                     }
                 }
                 self.line(
@@ -1791,6 +1797,14 @@ impl Verifier<'_> {
                                 ));
                             }
                         }
+                        HirMinecraftOperationAttributes::BookPageRuntime {
+                            page_origin, ..
+                        } => {
+                            self.origin(
+                                *page_origin,
+                                "Minecraft written-book page index (runtime)",
+                            )?;
+                        }
                     }
                 }
             }
@@ -2208,7 +2222,7 @@ impl Verifier<'_> {
                         components.len()
                     )));
                 }
-                for target in targets.iter() {
+                for target in targets {
                     let component_index = target.component as usize;
                     if component_index >= components.len() {
                         return Err(HirVerificationError::new(format!(

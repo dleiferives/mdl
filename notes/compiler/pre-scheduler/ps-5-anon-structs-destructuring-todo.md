@@ -1,6 +1,6 @@
 # PS-5 Anonymous Structs, Multiple Results, and Destructuring Checklist
 
-Status: **planned; no implementation boxes are complete**
+Status: **complete — shipped in commit d5321eb**
 
 Authoritative design:
 [`ps-5-anon-structs-destructuring-plan.md`](ps-5-anon-structs-destructuring-plan.md).

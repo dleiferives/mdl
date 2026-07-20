@@ -6,6 +6,7 @@ mod contract;
 mod data;
 mod dump;
 mod execute;
+mod macro_command;
 mod names;
 mod nbt;
 mod number;
@@ -19,8 +20,8 @@ mod verify;
 
 pub use builder::{BuildError, FunctionBodyBuilder, FunctionTagBuilder, MinecraftProgramBuilder};
 pub use command::{
-    CommandDepthError, CommandKind, CommandNode, FunctionCall, MAX_COMMAND_DEPTH, RawCommandError,
-    ReturnCommand, UnsafeRawCommand,
+    CommandDepthError, CommandKind, CommandNode, FunctionCall, FunctionWithStorage,
+    MAX_COMMAND_DEPTH, RawCommandError, ReturnCommand, UnsafeRawCommand,
 };
 pub use contract::{
     CommandContract, ContextMask, ContextSummary, EffectCategories, EffectSummary, ForkClass,
@@ -31,6 +32,10 @@ pub use dump::MinecraftDebugDumper;
 pub use execute::{
     Condition, ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
     ScoreComparison, StorageNumericType, StoreChannel, StoreDestination,
+};
+pub use macro_command::{
+    MacroArguments, MacroArgumentsError, MacroArgumentsErrorReason, MacroCommand, MacroKeyError,
+    MacroLine, MacroSegment, MacroSlot, MacroVariable, MacroVariableId,
 };
 pub use names::{
     DimensionId, FunctionResourceId, FunctionTagResourceId, NameError, NameErrorReason, NameKind,

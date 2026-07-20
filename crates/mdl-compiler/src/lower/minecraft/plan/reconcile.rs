@@ -597,7 +597,9 @@ fn command_node_count(command: &crate::ir::minecraft::CommandNode) -> u64 {
         | CommandKind::Teleport(_)
         | CommandKind::Function(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
-        | CommandKind::Raw(_) => 0,
+        | CommandKind::Raw(_)
+        | CommandKind::Macro(_)
+        | CommandKind::FunctionWithStorage(_) => 0,
     }
 }
 
@@ -614,8 +616,8 @@ mod tests {
     use crate::entity::EntityId;
     use crate::ir::core::{
         BlockId, BlockTarget, CoreProgram, CoreType, ExternalSemanticBinding, FunctionBuilder,
-        FunctionId, InstId, MinecraftOperationAttributes, MinecraftOperationOrigins, Terminator,
-        TerminatorKind,
+        FunctionId, InstId, MacroOrStatic, MinecraftOperationAttributes, MinecraftOperationOrigins,
+        Terminator, TerminatorKind,
     };
     use crate::ir::minecraft::{
         CommandKind, CommandNode, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
@@ -903,7 +905,7 @@ mod tests {
                 MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
                 EntityKind::ArmorStand,
                 MinecraftOperationAttributes::BookPage {
-                    page_index: 0,
+                    page_index: MacroOrStatic::Static(0),
                     page_origin: OriginId::UNKNOWN,
                 },
                 MinecraftOperationOrigins::new(

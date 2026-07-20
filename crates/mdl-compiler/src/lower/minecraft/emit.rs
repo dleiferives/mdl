@@ -6,8 +6,9 @@ use crate::ir::core::{
 };
 use crate::ir::minecraft::{
     CommandId, CommandKind, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
-    ExecuteModifier, ExecuteModifiers, FunctionCall, InternalCallableRef, McFunctionId,
-    MinecraftProgram, NbtValue, Selector, UnsafeRawCommand,
+    ExecuteModifier, ExecuteModifiers, FunctionCall, FunctionWithStorage, InternalCallableRef,
+    McFunctionId, MinecraftProgram, NbtPath, NbtPathKey, NbtPathSegment, NbtValue, Selector,
+    StorageId, StoragePath, UnsafeRawCommand,
 };
 use crate::source::OriginId;
 
@@ -300,13 +301,39 @@ fn lower_instruction(
     match instruction_plan {
         InstructionPlan::OmittedPure => Ok(None),
         InstructionPlan::External { helper } => {
-            let CoreOp::External(_) = data.op() else {
+            let CoreOp::External(external) = data.op() else {
                 return Err(invariant_diagnostics(
                     "non-external instruction has an external physical plan",
                     data.origin(),
                 ));
             };
             let target = context.function(*helper)?;
+            if let Some(recipe) = plan.selected_semantic_recipe(*external) {
+                if recipe.is_unusable_inline() {
+                    let arg_storage = StorageId::parse("mdl:__mdl/macro").expect("valid");
+                    let arg_path = NbtPath::new(
+                        NbtPathSegment::Key(NbtPathKey::new("args").expect("valid")),
+                        vec![],
+                    );
+                    let args = StoragePath::new(arg_storage, arg_path);
+                    context.push(command(
+                        CommandKind::Data(DataCommand::Modify {
+                            target: args.clone(),
+                            mode: DataModifyMode::Set,
+                            source: DataSource::Value(NbtValue::compound(vec![]).unwrap()),
+                        }),
+                        data.origin(),
+                    )?)?;
+                    context.push(command(
+                        CommandKind::FunctionWithStorage(FunctionWithStorage::new(
+                            InternalCallableRef::Function(target).into(),
+                            args,
+                        )),
+                        data.origin(),
+                    )?)?;
+                    return Ok(None);
+                }
+            }
             context.push(command(
                 CommandKind::Function(FunctionCall::new(
                     InternalCallableRef::Function(target).into(),
@@ -511,10 +538,22 @@ fn define_external_helper(
         ExternalSemanticBinding::MinecraftRunScope(scope) => {
             define_run_scope_helper(target, core, plan, helper, scope, data, commands)
         }
-        ExternalSemanticBinding::MinecraftOperation(_) => Err(invariant_diagnostics(
-            "typed Minecraft operation incorrectly received an external helper",
-            data.origin(),
-        )),
+        ExternalSemanticBinding::MinecraftOperation(_) => {
+            let recipe = plan.selected_semantic_recipe(operation).ok_or_else(|| {
+                invariant_diagnostics(
+                    "typed Minecraft operation helper has no retained preflight recipe",
+                    data.origin(),
+                )
+            })?;
+            if !recipe.is_unusable_inline() {
+                return Err(invariant_diagnostics(
+                    "typed Minecraft operation incorrectly received an external helper",
+                    data.origin(),
+                ));
+            }
+            let body = command(recipe.command_kind(), data.origin())?;
+            target.define_external_helper(helper, body)
+        }
     }
 }
 
@@ -2837,7 +2876,9 @@ mod tests {
                 CommandKind::Data(_)
                 | CommandKind::Say(_)
                 | CommandKind::Teleport(_)
-                | CommandKind::Raw(_) => {
+                | CommandKind::Raw(_)
+                | CommandKind::Macro(_)
+                | CommandKind::FunctionWithStorage(_) => {
                     panic!("loop lowering emitted a non-score primitive")
                 }
             }

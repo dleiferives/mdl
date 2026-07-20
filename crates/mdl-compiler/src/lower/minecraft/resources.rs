@@ -874,7 +874,12 @@ fn external_requires_helper(operation: &CoreOp, preflight: Option<&TargetPreflig
     let CoreOp::External(external) = operation else {
         return false;
     };
-    preflight.is_none_or(|preflight| preflight.selected_recipe(*external).is_none())
+    preflight.is_none_or(|preflight| {
+        let Some(recipe) = preflight.selected_recipe(*external) else {
+            return true;
+        };
+        recipe.is_unusable_inline()
+    })
 }
 
 fn is_materialized(

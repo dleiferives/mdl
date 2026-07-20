@@ -1075,7 +1075,9 @@ fn evaluate_command(command: &CommandKind, context: &SolverContext<'_>) -> Optio
             output.merge(CommandFlow::continuing(CommandResult::Failure, metrics));
             Some(output)
         }
-        CommandKind::Raw(_) => {
+        // Raw commands and both macro-emission encodings are opaque unknown flow
+        // until the PS-11 crossing engine gives macros a structured contract.
+        CommandKind::Raw(_) | CommandKind::Macro(_) | CommandKind::FunctionWithStorage(_) => {
             let metrics = MetricSet::raw_unknown();
             let mut output = CommandFlow::unknown(UnknownCostReason::RawCommand);
             for cell in output.continues.iter_mut().flatten() {

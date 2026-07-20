@@ -106,6 +106,10 @@ fn write_command(
             return Ok(());
         }
         CommandKind::Raw(raw) => write!(output, "raw.unknown {:?}", raw.as_str())?,
+        CommandKind::Macro(command) => write!(output, "macro lines={}", command.lines.len())?,
+        CommandKind::FunctionWithStorage(call) => {
+            { write!(output, "function-with-storage target={:?}", call.target) }?;
+        }
     }
     output.write_char('\n')
 }

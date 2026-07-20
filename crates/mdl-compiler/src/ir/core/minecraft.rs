@@ -1,6 +1,6 @@
 //! Program-owned, target-independent typed Minecraft operations.
 
-use super::{CoreProgram, MinecraftOperationId, ProgramError};
+use super::{CoreProgram, MacroOrStatic, MinecraftOperationId, ProgramError};
 use crate::entity::EntityLimitError;
 use crate::ir::semantic::{
     AmbientContextRequirements, ContextRequirement, EntityCapability, EntityKind, MessageLiteral,
@@ -28,9 +28,9 @@ pub enum MinecraftOperationAttributes {
         offset: RelativeWorldOffset,
         component_origins: [OriginId; 3],
     },
-    /// Static main-hand written-book literal-page read.
+    /// Static or dynamic-index main-hand written-book literal-page read.
     BookPage {
-        page_index: u8,
+        page_index: MacroOrStatic<u8>,
         page_origin: OriginId,
     },
 }
@@ -210,6 +210,24 @@ impl CoreProgram {
         self.minecraft_operations
             .push(declaration)
             .map_err(|EntityLimitError| ProgramError::EntityLimit)
+    }
+
+    /// Replaces the page index of a previously declared `BookPage` operation
+    /// with a dynamically resolved `ValueId`.
+    #[allow(dead_code, reason = "used by Stage 10 macro lowering when fully wired")]
+    pub(crate) fn patch_book_page_index(
+        &mut self,
+        operation: MinecraftOperationId,
+        value: super::ValueId,
+    ) {
+        let decl = self
+            .minecraft_operations
+            .get_mut(operation)
+            .expect("patch_book_page_index called with valid operation id");
+        let MinecraftOperationAttributes::BookPage { page_index, .. } = &mut decl.attributes else {
+            panic!("patch_book_page_index called on non-BookPage operation");
+        };
+        *page_index = MacroOrStatic::Macro(value);
     }
 
     /// Returns a typed Minecraft operation, or `None` for a foreign identity.

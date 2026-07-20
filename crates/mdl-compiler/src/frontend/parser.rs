@@ -989,9 +989,10 @@ impl<'a> Parser<'a> {
             ty
         };
 
-        let initializer = if inferred {
-            Some(self.parse_expression()?)
-        } else if self.eat(TokenKind::Equal).is_some() {
+        // An inferred `:=` declaration always has an initializer; an annotated one
+        // has an initializer only after an `=` (short-circuit avoids eating `=` when
+        // the binding was inferred).
+        let initializer = if inferred || self.eat(TokenKind::Equal).is_some() {
             Some(self.parse_expression()?)
         } else if kind == AstBindingKind::Const {
             clean = false;
@@ -1398,6 +1399,10 @@ impl<'a> Parser<'a> {
         self.parse_postfix()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "postfix parsing keeps member, call, and index suffixes in one reviewed depth-bounded loop"
+    )]
     fn parse_postfix(&mut self) -> Result<AstExpression, SourceError> {
         // The loop builds a left-nested AST even though parsing itself is iterative.
         // Retain each completed wrapper in `depth` until the whole spine is done so
@@ -2371,7 +2376,7 @@ fn notify() -> Void {
         assert_eq!(functions[0].parameters.len(), 3);
         assert_eq!(functions[0].parameters[0].ty.kind, AstValueTypeKind::Bool);
         assert_eq!(
-            functions[0].result.unwrap().kind,
+            functions[0].result.as_ref().unwrap().kind,
             AstResultTypeKind::Value(AstValueTypeKind::Int32)
         );
         assert!(matches!(
@@ -2401,9 +2406,12 @@ fn notify() -> Void {
         };
         assert_eq!(spelling(&sources, call.callee.span), "choose");
         assert_eq!(call.arguments.len(), 3);
-        assert_eq!(functions[2].result.unwrap().kind, AstResultTypeKind::Void);
         assert_eq!(
-            spelling(&sources, functions[0].result.unwrap().span),
+            functions[2].result.as_ref().unwrap().kind,
+            AstResultTypeKind::Void
+        );
+        assert_eq!(
+            spelling(&sources, functions[0].result.as_ref().unwrap().span),
             "-> Int32"
         );
         assert!(matches!(

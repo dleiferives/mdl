@@ -37,7 +37,13 @@ received direct server tests.
 - [Which range/float probes and public implementations have been recorded?](ranges/research-ledger.md)
 - [How should macros be used as a backend primitive?](macro-composition.md) — the
   compiler architecture built on this is the value-crossing model in
-  [`../compiler/macro-reference-crossing-model.md`](../compiler/macro-reference-crossing-model.md)
+  [`../compiler/macro-reference-crossing-model.md`](../compiler/macro-reference-crossing-model.md),
+  with full specifications in
+  [`../compiler/macro-system-specification.md`](../compiler/macro-system-specification.md)
+  (every command's syntax slots, the ABI, cost/placement),
+  [`../compiler/references-design.md`](../compiler/references-design.md) (`ref`/`DataRef<T>`),
+  and [`../compiler/nbt-schema-system.md`](../compiler/nbt-schema-system.md) (the compiler-known
+  entity/item/NBT dictionary mechanism)
 - [How do we concatenate strings?](string-concatenation.md)
 - [How do we search through a string?](string-search.md)
 - [How do we append one element to a list?](list-append-one.md)

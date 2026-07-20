@@ -1,7 +1,13 @@
 # PS-11 Generic Macro Engine and Value-Crossing Substrate Checklist
 
-Status: **in progress — tree unblocked and green; 3 latent macro defects fixed; the
-generic engine and bridge wiring are the remaining substance.**
+Status: **PS-11A–C landed (commit `7654bc0`) by a separate agent — generic engine, `Operand<T>`,
+`SyntaxSlot`, `NbtPathSegment::Index(Operand<i32>)`, and `crossings.rs` all shipped. PS-11D
+("more `Java26_2*`-style hardcoded recipes") is explicitly rejected — see
+[`../entity-nbt-path-composability.md`](../entity-nbt-path-composability.md) and
+[`ps-12-entity-nbt-paths-plan.md`](ps-12-entity-nbt-paths-plan.md), which redirect this
+direction and also fix two confirmed bugs found in the landed PS-11C engine (a genuinely
+runtime index's result never reaches the caller; the macro renderer hardcodes `entity @s`
+regardless of the real selector). PS-12 owns those fixes and all further entity-NBT-path work.**
 
 Landed so far:
 - the crate's test build was red (uncommitted Stage 10 + un-linted PS-4/5 debt); it is

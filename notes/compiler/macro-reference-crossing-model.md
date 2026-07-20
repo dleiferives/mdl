@@ -320,6 +320,24 @@ Refactor guidance, not this note's work. Concrete anchors so a later stage is me
   typed `CommandTemplate` raw-command interpolation ([`stage-6-effects-plan.md`](stage-6-effects-plan.md)),
   comptime language macros, dynamic/recursive frame allocation, profile-guided selection.
 
+## Further reading
+
+This note is the conceptual overview. Three later notes work out full, implementation-grade
+specifications for the pieces sketched here:
+
+- [`macro-system-specification.md`](macro-system-specification.md) — the complete `SyntaxSlot`
+  taxonomy across every `CommandKind`/`ExecuteModifierKind`, the macro ABI's exact frame/naming
+  contract, and the placement/cost model worked through a concrete scenario.
+- [`references-design.md`](references-design.md) — the full Tier B reference design: `DataRef<T>`
+  syntax, invalidation rules per target kind, alias/effect analysis requirements, and the
+  `mut`/`ref` relationship.
+- [`nbt-schema-system.md`](nbt-schema-system.md) — the general compiler-known-dictionary
+  mechanism that gives entity-NBT paths (and any future schema-typed access) their typing,
+  designed so a new field is a data row, never a code change.
+- [`entity-nbt-path-composability.md`](entity-nbt-path-composability.md) — the first concrete
+  client of all three: replacing the hardcoded written-book-page intrinsic with a general,
+  composable path expression, including two confirmed bugs found in the shipped PS-11A–C engine.
+
 ## 11. Open questions (need server measurement, not decision)
 
 - 26.2 macro cache capacity and exact replacement/escaping rules (source inspection / server).

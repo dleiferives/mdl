@@ -145,6 +145,10 @@ pub enum FrontendEntityKind {
     Module,
     /// Nominal source struct types in canonical package order.
     Struct,
+    /// Nominal source enum types in canonical package order.
+    Enum,
+    /// Fieldless enum variants in declaration order within their enum.
+    EnumVariant,
     /// Source functions in declaration order.
     Function,
     /// Source-level external operations in canonical package order.
@@ -160,6 +164,8 @@ impl fmt::Display for FrontendEntityKind {
         match self {
             Self::Module => formatter.write_str("module"),
             Self::Struct => formatter.write_str("struct"),
+            Self::Enum => formatter.write_str("enum"),
+            Self::EnumVariant => formatter.write_str("enum variant"),
             Self::Function => formatter.write_str("function"),
             Self::ExternalOperation => formatter.write_str("external operation"),
             Self::RunScope => formatter.write_str("run scope"),
@@ -289,6 +295,16 @@ impl From<CheckError> for FrontendInfrastructureFailure {
             CheckError::IdentitySpaceExhausted(CheckedEntityKind::Struct) => {
                 Self::IdentitySpaceExhausted {
                     entity: FrontendEntityKind::Struct,
+                }
+            }
+            CheckError::IdentitySpaceExhausted(CheckedEntityKind::Enum) => {
+                Self::IdentitySpaceExhausted {
+                    entity: FrontendEntityKind::Enum,
+                }
+            }
+            CheckError::IdentitySpaceExhausted(CheckedEntityKind::Variant) => {
+                Self::IdentitySpaceExhausted {
+                    entity: FrontendEntityKind::EnumVariant,
                 }
             }
             CheckError::IdentitySpaceExhausted(CheckedEntityKind::Function) => {

@@ -14,7 +14,22 @@ use crate::source::Span;
 pub(super) struct AstModule {
     pub(super) imports: Vec<AstImport>,
     pub(super) structs: Vec<AstStruct>,
+    pub(super) enums: Vec<AstEnum>,
     pub(super) functions: Vec<AstFunction>,
+    pub(super) span: Span,
+}
+
+/// One closed fieldless nominal enum declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstEnum {
+    pub(super) name: AstName,
+    pub(super) variants: Vec<AstEnumVariant>,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstEnumVariant {
+    pub(super) name: AstName,
     pub(super) span: Span,
 }
 
@@ -50,31 +65,44 @@ pub(super) struct AstName {
 }
 
 /// Source value types accepted by the first scalar grammar.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum AstValueTypeKind {
     Bool,
     Int32,
     ListI32,
     String,
     Named(AstName),
+    Anonymous(AstAnonymousStructType),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstAnonymousStructType {
+    pub(super) kind: AstAnonymousStructTypeKind,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum AstAnonymousStructTypeKind {
+    Named(Vec<AstStructField>),
+    Positional(Vec<AstValueType>),
 }
 
 /// One explicitly written source value type.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstValueType {
     pub(super) kind: AstValueTypeKind,
     pub(super) span: Span,
 }
 
 /// One explicitly written function result contract.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum AstResultTypeKind {
     Value(AstValueTypeKind),
     Void,
 }
 
 /// Result contract introduced by a source `->`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstResultType {
     pub(super) kind: AstResultTypeKind,
     pub(super) span: Span,
@@ -129,9 +157,30 @@ pub(super) enum AstBindingKind {
 pub(super) struct AstDeclaration {
     pub(super) kind: AstBindingKind,
     pub(super) name: AstName,
-    pub(super) ty: AstValueType,
+    pub(super) ty: Option<AstValueType>,
     pub(super) initializer: Option<AstExpression>,
     pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstDestructuringStatement {
+    pub(super) targets: Vec<AstDestructureTarget>,
+    pub(super) value: AstExpression,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstDestructureTarget {
+    pub(super) kind: AstDestructureTargetKind,
+    pub(super) name: AstName,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AstDestructureTargetKind {
+    Const,
+    Var,
+    Assign,
 }
 
 /// One parsed assignment to a source name.
@@ -163,6 +212,52 @@ pub(super) struct AstIfStatement {
 pub(super) struct AstWhileStatement {
     pub(super) condition: AstExpression,
     pub(super) body: AstBlock,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct AstSignedInteger {
+    pub(super) negative: bool,
+    pub(super) digits: Span,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum AstSwitchPatternKind {
+    Integer(AstSignedInteger),
+    IntegerRange {
+        min: AstSignedInteger,
+        max: AstSignedInteger,
+    },
+    EnumVariant {
+        ty: Option<AstName>,
+        variant: AstName,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstSwitchPattern {
+    pub(super) kind: AstSwitchPatternKind,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum AstSwitchLabel {
+    Patterns(Vec<AstSwitchPattern>),
+    Else(Span),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstSwitchStatementArm {
+    pub(super) label: AstSwitchLabel,
+    pub(super) body: AstBlock,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstSwitchStatement {
+    pub(super) scrutinee: AstExpression,
+    pub(super) arms: Vec<AstSwitchStatementArm>,
     pub(super) span: Span,
 }
 
@@ -203,9 +298,11 @@ pub(super) struct AstRunStatement {
 pub(super) enum AstStatement {
     Declaration(AstDeclaration),
     Assignment(AstAssignment),
+    Destructure(AstDestructuringStatement),
     Call(AstCallStatement),
     If(AstIfStatement),
     While(AstWhileStatement),
+    Switch(AstSwitchStatement),
     Break(Span),
     Continue(Span),
     Return(AstReturnStatement),
@@ -235,6 +332,18 @@ pub(super) struct AstStructFieldInitializer {
     pub(super) name: AstName,
     pub(super) value: AstExpression,
     pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstInferredStructLiteral {
+    pub(super) entries: AstInferredStructEntries,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum AstInferredStructEntries {
+    Named(Vec<AstStructFieldInitializer>),
+    Positional(Vec<AstExpression>),
 }
 
 /// One call used as a semicolon-terminated discard statement.
@@ -268,6 +377,20 @@ pub(super) struct AstExpression {
     pub(super) span: Span,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstSwitchExpressionArm {
+    pub(super) label: AstSwitchLabel,
+    pub(super) body: AstExpression,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstSwitchExpression {
+    pub(super) scrutinee: Box<AstExpression>,
+    pub(super) arms: Vec<AstSwitchExpressionArm>,
+    pub(super) span: Span,
+}
+
 /// Expression forms accepted by the first scalar grammar.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum AstExpressionKind {
@@ -282,6 +405,8 @@ pub(super) enum AstExpressionKind {
     },
     /// Complete quoted and lexically validated literal spelling.
     StringLiteral(Span),
+    InferredEnumLiteral(AstName),
+    Switch(AstSwitchExpression),
     Name(AstName),
     Member {
         receiver: Box<AstExpression>,
@@ -290,6 +415,11 @@ pub(super) enum AstExpressionKind {
     },
     Call(AstCall),
     StructLiteral(AstStructLiteral),
+    InferredStructLiteral(AstInferredStructLiteral),
+    Index {
+        aggregate: Box<AstExpression>,
+        index: Span,
+    },
     Not(Box<AstExpression>),
     WrappingArithmetic {
         op: AstWrappingArithmeticOp,
@@ -332,6 +462,26 @@ pub(super) fn dump(module: &AstModule, sources: &SourceContext) -> String {
     }
     for struct_ in &module.structs {
         printer.struct_(struct_);
+    }
+    for enum_ in &module.enums {
+        printer.line(
+            1,
+            format_args!(
+                "enum {} {}",
+                printer.spelling(enum_.name.span),
+                location(enum_.span)
+            ),
+        );
+        for variant in &enum_.variants {
+            printer.line(
+                2,
+                format_args!(
+                    "variant {} {}",
+                    printer.spelling(variant.name.span),
+                    location(variant.span)
+                ),
+            );
+        }
     }
     for function in &module.functions {
         printer.function(function);
@@ -475,6 +625,14 @@ impl AstPrinter<'_> {
                 self.expression(&statement.condition, indent + 2);
                 self.block(&statement.body, indent + 1);
             }
+            AstStatement::Switch(switch) => {
+                self.line(indent, format_args!("switch {}", location(switch.span)));
+                self.expression(&switch.scrutinee, indent + 1);
+                for arm in &switch.arms {
+                    self.switch_label(&arm.label, indent + 1);
+                    self.block(&arm.body, indent + 2);
+                }
+            }
             AstStatement::Break(span) => {
                 self.line(indent, format_args!("break {}", location(*span)));
             }
@@ -571,6 +729,25 @@ impl AstPrinter<'_> {
                     location(expression.span)
                 ),
             ),
+            AstExpressionKind::InferredEnumLiteral(name) => self.line(
+                indent,
+                format_args!(
+                    "enum-literal .{} {}",
+                    self.spelling(name.span),
+                    location(expression.span)
+                ),
+            ),
+            AstExpressionKind::Switch(switch) => {
+                self.line(
+                    indent,
+                    format_args!("switch-expression {}", location(switch.span)),
+                );
+                self.expression(&switch.scrutinee, indent + 1);
+                for arm in &switch.arms {
+                    self.switch_label(&arm.label, indent + 1);
+                    self.expression(&arm.body, indent + 2);
+                }
+            }
             AstExpressionKind::Name(name) => self.line(
                 indent,
                 format_args!(
@@ -661,6 +838,39 @@ impl AstPrinter<'_> {
         self.expression(&call.callee, indent + 1);
         for argument in &call.arguments {
             self.expression(argument, indent + 1);
+        }
+    }
+
+    fn switch_label(&mut self, label: &AstSwitchLabel, indent: usize) {
+        match label {
+            AstSwitchLabel::Else(span) => {
+                self.line(indent, format_args!("else {}", location(*span)));
+            }
+            AstSwitchLabel::Patterns(patterns) => {
+                self.line(indent, format_args!("patterns"));
+                for pattern in patterns {
+                    let text = match &pattern.kind {
+                        AstSwitchPatternKind::Integer(value) => self.spelling(value.span),
+                        AstSwitchPatternKind::IntegerRange { min, max } => {
+                            format!("{}...{}", self.spelling(min.span), self.spelling(max.span))
+                        }
+                        AstSwitchPatternKind::EnumVariant { ty, variant } => ty.map_or_else(
+                            || format!(".{}", self.spelling(variant.span)),
+                            |ty| {
+                                format!(
+                                    "{}.{}",
+                                    self.spelling(ty.span),
+                                    self.spelling(variant.span)
+                                )
+                            },
+                        ),
+                    };
+                    self.line(
+                        indent + 1,
+                        format_args!("{text} {}", location(pattern.span)),
+                    );
+                }
+            }
         }
     }
 

@@ -2267,6 +2267,7 @@ fn verifier_scalar_result_types(operation: &CoreOp) -> Option<&'static [CoreType
     match operation {
         CoreOp::BoolConstant(_)
         | CoreOp::I32Compare(_)
+        | CoreOp::I32InClosedRange(_)
         | CoreOp::BoolNot
         | CoreOp::StringEndsWithAscii(_) => Some(BOOL),
         CoreOp::I32Constant(_)

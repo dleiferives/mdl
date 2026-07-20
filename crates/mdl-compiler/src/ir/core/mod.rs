@@ -188,6 +188,36 @@ impl I32Predicate {
     }
 }
 
+/// A validated inclusive signed `i32` interval carried as a Core attribute.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct I32ClosedRange {
+    min: i32,
+    max: i32,
+}
+
+impl I32ClosedRange {
+    #[must_use]
+    pub const fn new(min: i32, max: i32) -> Option<Self> {
+        if min <= max {
+            Some(Self { min, max })
+        } else {
+            None
+        }
+    }
+    #[must_use]
+    pub const fn min(self) -> i32 {
+        self.min
+    }
+    #[must_use]
+    pub const fn max(self) -> i32 {
+        self.max
+    }
+    #[must_use]
+    pub const fn contains(self, value: i32) -> bool {
+        value >= self.min && value <= self.max
+    }
+}
+
 /// Coarse observable-effect classification used by generic Core transforms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EffectClass {
@@ -293,6 +323,8 @@ pub enum CoreOp {
     I32AddOverflowing,
     /// Compares two signed `i32` values using an explicit predicate.
     I32Compare(I32Predicate),
+    /// Tests membership in one static closed signed interval.
+    I32InClosedRange(I32ClosedRange),
     /// Negates a Boolean value.
     BoolNot,
     /// Produces the empty immutable `i32` list.
@@ -330,6 +362,7 @@ impl CoreOp {
             Self::I32SubWrapping => "core.i32.sub.wrapping",
             Self::I32AddOverflowing => "core.i32.add.overflowing",
             Self::I32Compare(_) => "core.i32.compare",
+            Self::I32InClosedRange(_) => "core.i32.in_closed_range",
             Self::BoolNot => "core.bool.not",
             Self::ListI32Empty => "core.list.i32.empty",
             Self::ListI32Length => "core.list.i32.length",
@@ -356,6 +389,7 @@ impl CoreOp {
             | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
+            | Self::I32InClosedRange(_)
             | Self::BoolNot
             | Self::ListI32Empty
             | Self::ListI32Length
@@ -380,6 +414,7 @@ impl CoreOp {
             | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
+            | Self::I32InClosedRange(_)
             | Self::BoolNot
             | Self::ListI32Empty
             | Self::ListI32Length
@@ -404,6 +439,7 @@ impl CoreOp {
             | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
+            | Self::I32InClosedRange(_)
             | Self::BoolNot
             | Self::ListI32Empty
             | Self::ListI32Length
@@ -442,6 +478,7 @@ impl CoreOp {
                 | I32Predicate::SignedGt
                 | I32Predicate::SignedGe,
             )
+            | Self::I32InClosedRange(_)
             | Self::BoolNot
             | Self::ListI32Empty
             | Self::ListI32Length
@@ -469,6 +506,9 @@ impl CoreOp {
                 "wrapping sum and true exactly when signed i32 addition overflows"
             }
             Self::I32Compare(_) => "the selected explicit signed i32 comparison",
+            Self::I32InClosedRange(_) => {
+                "true exactly when the operand is within the inclusive signed interval"
+            }
             Self::BoolNot => "Boolean logical negation",
             Self::ListI32Empty => "the empty immutable i32 list",
             Self::ListI32Length => "the exact number of list elements",
@@ -500,6 +540,10 @@ impl CoreOp {
             )),
             Self::I32Compare(_) => Some(OperationSignature::fixed(
                 &[CoreType::I32, CoreType::I32],
+                &[CoreType::Bool],
+            )),
+            Self::I32InClosedRange(_) => Some(OperationSignature::fixed(
+                &[CoreType::I32],
                 &[CoreType::Bool],
             )),
             Self::BoolNot => Some(OperationSignature::fixed(
@@ -574,6 +618,7 @@ impl CoreOp {
             | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
+            | Self::I32InClosedRange(_)
             | Self::BoolNot
             | Self::ListI32Empty
             | Self::ListI32Length
@@ -594,6 +639,7 @@ impl CoreOp {
             | Self::I32SubWrapping
             | Self::I32AddOverflowing
             | Self::I32Compare(_)
+            | Self::I32InClosedRange(_)
             | Self::BoolNot
             | Self::ListI32Empty
             | Self::ListI32Length

@@ -11,16 +11,18 @@ use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBlock, HirCall, HirComparisonOp,
     HirEntityQuery, HirEntityQueryStep, HirExpression, HirExpressionKind, HirExternalOp,
     HirExternalSemantic, HirFunction, HirIf, HirListI32Op, HirMinecraftOperationAttributes, HirRun,
-    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirWhile, HirWrappingArithmeticOp,
+    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirSwitchExpression,
+    HirSwitchLabel, HirSwitchPatternKind, HirSwitchStatement, HirWhile, HirWrappingArithmeticOp,
     LocalId, SourceExternalOpId, SourceFunctionId, SourceRunId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
 use crate::ir::core::{
     BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
     CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityQueryDecl, EntityQueryStep,
-    ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder, FunctionId, I32Predicate,
-    InstId, MinecraftOperationAttributes, MinecraftOperationOrigins, ProgramError,
-    RunModifierInstance, TargetFragment, Terminator, TerminatorKind, ValueId, verify_program,
+    ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder, FunctionId,
+    I32ClosedRange, I32Predicate, InstId, MinecraftOperationAttributes, MinecraftOperationOrigins,
+    ProgramError, RunModifierInstance, TargetFragment, Terminator, TerminatorKind, ValueId,
+    verify_program,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -1027,6 +1029,11 @@ fn collect_run_scopes_in_block<'a>(
             HirStatementKind::While(statement) => {
                 collect_run_scopes_in_block(owner, &statement.body, scopes);
             }
+            HirStatementKind::Switch(switch) => {
+                for arm in &switch.arms {
+                    collect_run_scopes_in_block(owner, &arm.body, scopes);
+                }
+            }
             HirStatementKind::Declaration { .. }
             | HirStatementKind::Assignment { .. }
             | HirStatementKind::Call(_)
@@ -1380,10 +1387,12 @@ fn function_name(
 fn core_type(ty: ValueType) -> CoreType {
     match ty {
         ValueType::Bool => CoreType::Bool,
-        ValueType::Int32 => CoreType::I32,
+        ValueType::Int32 | ValueType::Enum(_) => CoreType::I32,
         ValueType::ListI32 => CoreType::ListI32,
         ValueType::String => CoreType::String,
-        ValueType::Struct(_) => unreachable!("aggregate types are expanded before Core"),
+        ValueType::Struct(_) | ValueType::AnonymousStruct(_) => {
+            unreachable!("aggregate types are expanded before Core")
+        }
     }
 }
 
@@ -1398,7 +1407,11 @@ fn flattened_core_types(
         output: &mut Vec<CoreType>,
     ) -> Result<(), CoreGenerationFailure> {
         match ty {
-            ValueType::Bool | ValueType::Int32 | ValueType::ListI32 | ValueType::String => {
+            ValueType::Bool
+            | ValueType::Int32
+            | ValueType::ListI32
+            | ValueType::String
+            | ValueType::Enum(_) => {
                 output.push(core_type(ty));
             }
             ValueType::Struct(struct_) => {
@@ -1418,6 +1431,27 @@ fn flattened_core_types(
                     visit(checked, field.ty, active, output)?;
                 }
                 active.pop();
+            }
+            ValueType::AnonymousStruct(struct_) => {
+                let declaration = checked.anonymous_struct(struct_).ok_or(
+                    CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateProjection {
+                            source_function: SourceFunctionId::from_index(0).expect("zero fits"),
+                        },
+                    ),
+                )?;
+                match &declaration.kind {
+                    crate::frontend::hir::HirAnonymousStructKind::Named(fields) => {
+                        for field in fields {
+                            visit(checked, field.ty, active, output)?;
+                        }
+                    }
+                    crate::frontend::hir::HirAnonymousStructKind::Positional(fields) => {
+                        for field in fields {
+                            visit(checked, *field, active, output)?;
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -1972,6 +2006,9 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 Ok(Some(block))
             }
             HirStatementKind::If(conditional) => self.lower_if(block, environment, conditional),
+            HirStatementKind::Switch(switch) => {
+                self.lower_switch_statement(block, environment, switch)
+            }
             HirStatementKind::While(statement) => self.lower_while(block, environment, statement),
             HirStatementKind::Break => {
                 self.lower_loop_control(block, environment, true, statement.origin)
@@ -2321,6 +2358,153 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             .map(Some)
     }
 
+    fn lower_switch_statement(
+        &mut self,
+        block: BlockId,
+        environment: &mut Environment,
+        switch: &HirSwitchStatement,
+    ) -> Result<Option<BlockId>, CoreGenerationFailure> {
+        if switch.arms.is_empty() {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::EmptyConditional {
+                    source_function: self.function.id,
+                },
+            ));
+        }
+        let incoming = environment.checkpoint();
+        let mut dispatch = block;
+        let scrutinee = self
+            .lower_expression(&mut dispatch, environment, &switch.scrutinee)?
+            .scalar_value(self.function.id)?;
+        let mut continuing = vec![];
+        let final_index = switch.arms.len() - 1;
+        for (index, arm) in switch.arms.iter().enumerate() {
+            let body_block = if index == final_index {
+                dispatch
+            } else {
+                let body = self.create_block(arm.origin)?;
+                self.lower_switch_tests(&mut dispatch, scrutinee, &arm.label, body, arm.origin)?;
+                body
+            };
+            if let Some(block) = self.lower_block(body_block, environment, &arm.body)? {
+                continuing.push(BranchContinuation {
+                    block,
+                    overrides: environment.overrides_since(incoming),
+                });
+            }
+            environment.rollback(incoming);
+        }
+        if continuing.is_empty() {
+            return Ok(None);
+        }
+        self.merge_paths(continuing, environment, switch.origin)
+            .map(Some)
+    }
+
+    fn lower_switch_tests(
+        &mut self,
+        dispatch: &mut BlockId,
+        scrutinee: ValueId,
+        label: &HirSwitchLabel,
+        body: BlockId,
+        origin: OriginId,
+    ) -> Result<(), CoreGenerationFailure> {
+        let HirSwitchLabel::Patterns(patterns) = label else {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::EmptyConditional {
+                    source_function: self.function.id,
+                },
+            ));
+        };
+        for pattern in patterns {
+            self.switch_to(*dispatch)?;
+            let (min, max) = match pattern.kind {
+                HirSwitchPatternKind::IntRange { min, max } => (min, max),
+                HirSwitchPatternKind::EnumVariant { variant, .. } => {
+                    let tag = i32::try_from(variant.index()).map_err(|_| {
+                        CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::EmptyConditional {
+                                source_function: self.function.id,
+                            },
+                        )
+                    })?;
+                    (tag, tag)
+                }
+            };
+            let range = I32ClosedRange::new(min, max).ok_or(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::EmptyConditional {
+                    source_function: self.function.id,
+                },
+            ))?;
+            let condition = self
+                .builder
+                .i32_in_closed_range(scrutinee, range, pattern.origin)
+                .map_err(|error| self.construction(error))?;
+            let next = self.create_block(origin)?;
+            self.terminate(
+                TerminatorKind::Branch {
+                    condition,
+                    then_target: BlockTarget::new(body, vec![]),
+                    else_target: BlockTarget::new(next, vec![]),
+                },
+                pattern.origin,
+            )?;
+            *dispatch = next;
+        }
+        Ok(())
+    }
+
+    fn lower_switch_expression(
+        &mut self,
+        block: &mut BlockId,
+        environment: &mut Environment,
+        switch: &HirSwitchExpression,
+    ) -> Result<ValueBundle, CoreGenerationFailure> {
+        if switch.arms.is_empty() {
+            return Err(CoreGenerationFailure::Invariant(
+                CoreGenerationInvariant::EmptyConditional {
+                    source_function: self.function.id,
+                },
+            ));
+        }
+        let scrutinee = self
+            .lower_expression(block, environment, &switch.scrutinee)?
+            .scalar_value(self.function.id)?;
+        let mut dispatch = *block;
+        let final_index = switch.arms.len() - 1;
+        let mut paths = vec![];
+        for (index, arm) in switch.arms.iter().enumerate() {
+            let body_block = if index == final_index {
+                dispatch
+            } else {
+                let body = self.create_block(arm.origin)?;
+                self.lower_switch_tests(&mut dispatch, scrutinee, &arm.label, body, arm.origin)?;
+                body
+            };
+            let mut body_end = body_block;
+            let value = self.lower_expression(&mut body_end, environment, &arm.body)?;
+            paths.push((body_end, value));
+        }
+        let types = flattened_core_types(self.checked, switch.arms[0].body.ty)?;
+        self.budget
+            .charge_join_edge_operands(self.function.id, types.len(), paths.len())?;
+        let join = self.create_block(switch.origin)?;
+        let mut parameters = vec![];
+        for ty in types {
+            parameters.push(self.append_block_parameter(join, ty, switch.origin)?);
+        }
+        for (path, values) in paths {
+            self.switch_to(path)?;
+            self.terminate(
+                TerminatorKind::Jump(BlockTarget::new(join, values.into_values())),
+                switch.origin,
+            )?;
+        }
+        self.switch_to(join)?;
+        *block = join;
+        Ok(ValueBundle(parameters.into_boxed_slice()))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "sparse SSA merge planning freezes aggregate leaf parameters before installing edges"
@@ -2468,6 +2652,22 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             HirExpressionKind::Int32(value) => ValueBundle::scalar(
                 self.builder
                     .i32_constant(*value, expression.origin)
+                    .map_err(|error| self.construction(error))?,
+            ),
+            HirExpressionKind::EnumVariant { variant, .. } => ValueBundle::scalar(
+                self.builder
+                    .i32_constant(
+                        i32::try_from(variant.index()).map_err(|_| {
+                            CoreGenerationFailure::Invariant(
+                                CoreGenerationInvariant::ExpressionArity {
+                                    source_function: self.function.id,
+                                    expected: 1,
+                                    actual: 0,
+                                },
+                            )
+                        })?,
+                        expression.origin,
+                    )
                     .map_err(|error| self.construction(error))?,
             ),
             HirExpressionKind::Local(local) => environment.read(self.function.id, *local)?,
@@ -2660,6 +2860,9 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                         .map_err(|error| self.construction(error))?
                 };
                 ValueBundle::scalar(result)
+            }
+            HirExpressionKind::Switch(switch) => {
+                self.lower_switch_expression(block, environment, switch)?
             }
         };
         *block = self.builder.insertion_block();

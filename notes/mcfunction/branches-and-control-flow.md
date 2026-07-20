@@ -245,13 +245,13 @@ tests.
 
 ### MDL implementation split
 
-Decision recorded 2026-07-19: implement the typed language and baseline target path
-before adding cost-directed switch selection.
+Implemented 2026-07-19: the typed language and baseline target path precede
+cost-directed switch selection.
 
-The first source slice should provide closed enums and exhaustive Zig-style
-`switch` expressions/statements. Integer switch prongs should support exact values,
+The first source slice provides closed enums and exhaustive Zig-style
+`switch` expressions/statements. Integer switch prongs support exact values,
 inclusive closed ranges, multiple patterns with one body, and `else`; enum prongs
-should support inferred enum literals such as `.running`. The checker owns duplicate,
+support inferred enum literals such as `.running`. The checker owns duplicate,
 overlap, unreachable-prong, type, result-join, and exhaustiveness diagnostics. These
 are language semantics and must not depend on a Minecraft optimization profile.
 
@@ -261,12 +261,13 @@ forms when that keeps the implementation direct and the runtime behavior credibl
 Continue recording function, line, and byte counts, but do not reject or compact a
 correct program merely because those counts are large.
 
-HIR/Core should retain the fact that a test is an exact value or integer range long
+HIR/Core retains the fact that a test is an exact value or integer range long
 enough for Minecraft lowering to emit the existing typed
-`Condition::ScoreMatches(ScoreRef, ScoreRange)` primitive. The initial backend may
-use one deterministic, source-ordered test chain with the existing safe branch
-lowering and a default target. Correct code generation is the gate; it does not need
-to choose an optimal dispatch shape yet.
+`Condition::ScoreMatches(ScoreRef, ScoreRange)` primitive. The initial backend uses
+one deterministic, source-ordered test chain with existing safe CFG branch lowering
+and a default target. `core.i32.in_closed_range` legalizes to a normalized Boolean
+score through `Condition::ScoreMatches`; an exact bound uses Minecraft's
+single-number spelling and a proper interval uses `min..max`.
 
 The implementation scope deliberately stops at syntax, name/type/flow checking,
 target-independent evaluation, and one mechanical target legalization. Do not add

@@ -801,6 +801,30 @@ impl<'a> SymbolicChecker<'a> {
                     }
                 }
             }
+            CoreOp::I32InClosedRange(_) => {
+                if let Some(output) = placement_home(results, 0) {
+                    if operands.first() == Some(&output) {
+                        self.record(SymbolicIssue::timing(
+                            function,
+                            instruction,
+                            "closed-range result aliases its late-read operand",
+                            data.origin(),
+                        ));
+                    }
+                    state.kill(output);
+                }
+                if let Some((value, home)) = operand(data, operands, 0) {
+                    self.require_value(
+                        function,
+                        Some(instruction),
+                        value,
+                        home,
+                        state,
+                        data.origin(),
+                        "closed-range operand",
+                    );
+                }
+            }
             CoreOp::BoolNot => {
                 if let Some(output) = placement_home(results, 0) {
                     if operands.first() == Some(&output) {

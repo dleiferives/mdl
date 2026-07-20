@@ -5,13 +5,17 @@ use std::fmt;
 
 use super::FrontendLimits;
 use super::ast::{
-    AstAssignment, AstBindingKind, AstBlock, AstCall, AstCallStatement, AstComparisonOp,
-    AstCoordinateSigil, AstDeclaration, AstExpression, AstExpressionKind, AstFunction,
-    AstFunctionVisibility, AstIfArm, AstIfStatement, AstImport, AstModule, AstName, AstParameter,
-    AstResultType, AstResultTypeKind, AstReturnStatement, AstRunModifier, AstRunStatement,
-    AstStatement, AstStruct, AstStructField, AstStructFieldInitializer, AstStructLiteral,
-    AstUnsafeMinecraftStatement, AstValueType, AstValueTypeKind, AstWhileStatement,
-    AstWrappingArithmeticOp,
+    AstAnonymousStructType, AstAnonymousStructTypeKind, AstAssignment, AstBindingKind, AstBlock,
+    AstCall, AstCallStatement, AstComparisonOp, AstCoordinateSigil, AstDeclaration,
+    AstDestructureTarget, AstDestructureTargetKind, AstDestructuringStatement, AstEnum,
+    AstEnumVariant, AstExpression, AstExpressionKind, AstFunction, AstFunctionVisibility, AstIfArm,
+    AstIfStatement, AstImport, AstInferredStructEntries, AstInferredStructLiteral, AstModule,
+    AstName, AstParameter, AstResultType, AstResultTypeKind, AstReturnStatement, AstRunModifier,
+    AstRunStatement, AstSignedInteger, AstStatement, AstStruct, AstStructField,
+    AstStructFieldInitializer, AstStructLiteral, AstSwitchExpression, AstSwitchExpressionArm,
+    AstSwitchLabel, AstSwitchPattern, AstSwitchPatternKind, AstSwitchStatement,
+    AstSwitchStatementArm, AstUnsafeMinecraftStatement, AstValueType, AstValueTypeKind,
+    AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::token::{Token, TokenBuffer, TokenKind};
 use crate::diagnostic::{Diagnostic, Diagnostics};
@@ -168,6 +172,7 @@ impl<'a> Parser<'a> {
         let start = self.sources.span(self.file, 0, 0)?;
         let mut imports = vec![];
         let mut structs = vec![];
+        let mut enums = vec![];
         let mut functions = vec![];
         while !self.at(TokenKind::EndOfFile) {
             let before = self.index;
@@ -176,6 +181,10 @@ impl<'a> Parser<'a> {
                     if self.nth_kind(3) == TokenKind::KeywordImport {
                         if let Some(import) = self.parse_import()? {
                             imports.push(import);
+                        }
+                    } else if self.nth_kind(3) == TokenKind::KeywordEnum {
+                        if let Some(enum_) = self.parse_enum()? {
+                            enums.push(enum_);
                         }
                     } else if let Some(struct_) = self.parse_struct()? {
                         structs.push(struct_);
@@ -201,9 +210,74 @@ impl<'a> Parser<'a> {
         Ok(AstModule {
             imports,
             structs,
+            enums,
             functions,
             span: self.cover(start, end)?,
         })
+    }
+
+    fn parse_enum(&mut self) -> Result<Option<AstEnum>, SourceError> {
+        self.item_boundary = false;
+        let start = self.bump().span();
+        let Some(name_token) = self.expect_identifier("expected an enum type name") else {
+            self.recover_item();
+            return Ok(None);
+        };
+        let name = AstName {
+            span: name_token.span(),
+        };
+        let mut clean = self
+            .expect(TokenKind::Equal, "expected `=` after the enum type name")
+            .is_some();
+        clean &= self
+            .expect(TokenKind::KeywordEnum, "expected `enum` after `=`")
+            .is_some();
+        clean &= self
+            .expect(TokenKind::LeftBrace, "expected `{` to begin enum variants")
+            .is_some();
+        let mut variants = vec![];
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
+            let Some(variant) = self.expect_identifier("expected an enum variant name") else {
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+                break;
+            };
+            variants.push(AstEnumVariant {
+                name: AstName {
+                    span: variant.span(),
+                },
+                span: variant.span(),
+            });
+            if self.eat(TokenKind::Comma).is_some() {
+                continue;
+            }
+            if !self.at(TokenKind::RightBrace) {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `}` after the enum variant",
+                    self.current().span(),
+                );
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+            }
+        }
+        let close = self.expect(TokenKind::RightBrace, "expected `}` after enum variants");
+        clean &= close.is_some();
+        let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the enum");
+        clean &= semicolon.is_some();
+        let end = semicolon
+            .or(close)
+            .map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(start, end)?;
+        if !clean {
+            self.recover_item();
+            return Ok(None);
+        }
+        Ok(Some(AstEnum {
+            name,
+            variants,
+            span,
+        }))
     }
 
     fn parse_struct(&mut self) -> Result<Option<AstStruct>, SourceError> {
@@ -238,7 +312,7 @@ impl<'a> Parser<'a> {
                 .is_some();
             let ty = self.parse_value_type();
             clean &= ty.is_some();
-            let end = ty.map_or(field_start, |ty| ty.span);
+            let end = ty.as_ref().map_or(field_start, |ty| ty.span);
             if let Some(ty) = ty {
                 fields.push(AstStructField {
                     name: AstName {
@@ -456,6 +530,7 @@ impl<'a> Parser<'a> {
     fn parse_value_type(&mut self) -> Option<AstValueType> {
         let token = self.current();
         let kind = match token.kind() {
+            TokenKind::LeftBrace => return self.parse_anonymous_struct_type(),
             TokenKind::KeywordBool => AstValueTypeKind::Bool,
             TokenKind::KeywordInt32 => AstValueTypeKind::Int32,
             TokenKind::Identifier
@@ -490,6 +565,75 @@ impl<'a> Parser<'a> {
         Some(AstValueType {
             kind,
             span: token.span(),
+        })
+    }
+
+    fn parse_anonymous_struct_type(&mut self) -> Option<AstValueType> {
+        let open = self.bump();
+        if !self.enter_depth(open.span()) {
+            return None;
+        }
+        let named = self.at(TokenKind::Identifier) && self.nth_kind(1) == TokenKind::Colon;
+        let mut fields = vec![];
+        let mut components = vec![];
+        let mut clean = true;
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
+            if named {
+                let start = self.current().span();
+                let name = self.expect_identifier("expected an anonymous struct field name");
+                clean &= name.is_some();
+                clean &= self
+                    .expect(TokenKind::Colon, "expected `:` after the field name")
+                    .is_some();
+                let ty = self.parse_value_type();
+                clean &= ty.is_some();
+                if let (Some(name), Some(ty)) = (name, ty) {
+                    let span = self.cover(start, ty.span).ok()?;
+                    fields.push(AstStructField {
+                        name: AstName { span: name.span() },
+                        ty,
+                        span,
+                    });
+                }
+            } else if let Some(ty) = self.parse_value_type() {
+                components.push(ty);
+            } else {
+                clean = false;
+            }
+            if self.eat(TokenKind::Comma).is_some() {
+                continue;
+            }
+            if !self.at(TokenKind::RightBrace) {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `}` after the anonymous struct component",
+                    self.current().span(),
+                );
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+            }
+        }
+        let close = self.expect(TokenKind::RightBrace, "expected `}` after anonymous struct type");
+        self.leave_depth();
+        clean &= close.is_some();
+        let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
+        if (named && fields.is_empty()) || (!named && components.is_empty()) {
+            self.error(EXPECTED_TYPE, "anonymous struct types require a component", open.span());
+            clean = false;
+        }
+        clean.then(|| {
+            let span = self.cover(open.span(), end).expect("ordered type delimiters");
+            AstValueType {
+                kind: AstValueTypeKind::Anonymous(AstAnonymousStructType {
+                    kind: if named {
+                        AstAnonymousStructTypeKind::Named(fields)
+                    } else {
+                        AstAnonymousStructTypeKind::Positional(components)
+                    },
+                    span,
+                }),
+                span,
+            }
         })
     }
 
@@ -557,8 +701,10 @@ impl<'a> Parser<'a> {
     fn parse_statement(&mut self) -> Result<AstStatement, SourceError> {
         match self.current().kind() {
             TokenKind::KeywordConst | TokenKind::KeywordVar => self.parse_declaration(),
+            TokenKind::Pipe => self.parse_destructuring_statement(),
             TokenKind::KeywordIf => self.parse_if_statement(),
             TokenKind::KeywordWhile => self.parse_while_statement(),
+            TokenKind::KeywordSwitch => self.parse_switch_statement(),
             TokenKind::KeywordBreak => self.parse_loop_control_statement(true),
             TokenKind::KeywordContinue => self.parse_loop_control_statement(false),
             TokenKind::KeywordReturn => self.parse_return_statement(),
@@ -581,6 +727,174 @@ impl<'a> Parser<'a> {
                 Ok(AstStatement::Error(span))
             }
         }
+    }
+
+    fn parse_switch_statement(&mut self) -> Result<AstStatement, SourceError> {
+        let start = self.bump().span();
+        let mut clean = self
+            .expect(TokenKind::LeftParenthesis, "expected `(` after `switch`")
+            .is_some();
+        let scrutinee = self.parse_expression()?;
+        clean &= !expression_has_error(&scrutinee);
+        clean &= self
+            .expect(
+                TokenKind::RightParenthesis,
+                "expected `)` after switch scrutinee",
+            )
+            .is_some();
+        let Some(open) = self.expect(TokenKind::LeftBrace, "expected `{` to begin switch arms")
+        else {
+            return self.error_statement(start);
+        };
+        if !self.enter_depth(open.span()) {
+            return self.error_statement(start);
+        }
+        let mut arms = vec![];
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
+            let arm_start = self.current().span();
+            let label = self.parse_switch_label()?;
+            clean &= label.is_some();
+            clean &= self
+                .expect(TokenKind::FatArrow, "expected `=>` after switch patterns")
+                .is_some();
+            let body = self.parse_block()?;
+            clean &= body.is_some();
+            let body_end = body.as_ref().map_or(arm_start, |body| body.span);
+            if let (Some(label), Some(body)) = (label, body) {
+                arms.push(AstSwitchStatementArm {
+                    label,
+                    body,
+                    span: self.cover(arm_start, body_end)?,
+                });
+            }
+            if self.eat(TokenKind::Comma).is_none() && !self.at(TokenKind::RightBrace) {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `}` after the switch arm",
+                    self.current().span(),
+                );
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+            }
+        }
+        let close = self.expect(TokenKind::RightBrace, "expected `}` after switch arms");
+        self.leave_depth();
+        clean &= close.is_some();
+        let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(start, end)?;
+        Ok(if clean {
+            AstStatement::Switch(AstSwitchStatement {
+                scrutinee,
+                arms,
+                span,
+            })
+        } else {
+            AstStatement::Error(span)
+        })
+    }
+
+    fn parse_switch_label(&mut self) -> Result<Option<AstSwitchLabel>, SourceError> {
+        if let Some(else_token) = self.eat(TokenKind::KeywordElse) {
+            return Ok(Some(AstSwitchLabel::Else(else_token.span())));
+        }
+        let mut patterns = vec![];
+        loop {
+            let Some(pattern) = self.parse_switch_pattern()? else {
+                return Ok(None);
+            };
+            patterns.push(pattern);
+            if self.at(TokenKind::FatArrow) {
+                break;
+            }
+            if self.eat(TokenKind::Comma).is_none() {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `=>` after switch pattern",
+                    self.current().span(),
+                );
+                return Ok(None);
+            }
+        }
+        Ok(Some(AstSwitchLabel::Patterns(patterns)))
+    }
+
+    fn parse_switch_pattern(&mut self) -> Result<Option<AstSwitchPattern>, SourceError> {
+        let start = self.current().span();
+        if self.at(TokenKind::Dot) {
+            self.bump();
+            let Some(variant) = self.expect_identifier("expected enum variant after `.`") else {
+                return Ok(None);
+            };
+            let variant = AstName {
+                span: variant.span(),
+            };
+            return Ok(Some(AstSwitchPattern {
+                kind: AstSwitchPatternKind::EnumVariant { ty: None, variant },
+                span: self.cover(start, variant.span)?,
+            }));
+        }
+        if is_identifier_like(self.current().kind()) && self.nth_kind(1) == TokenKind::Dot {
+            let ty = AstName {
+                span: self.bump().span(),
+            };
+            self.bump();
+            let Some(variant) = self.expect_identifier("expected enum variant after `.`") else {
+                return Ok(None);
+            };
+            let variant = AstName {
+                span: variant.span(),
+            };
+            return Ok(Some(AstSwitchPattern {
+                kind: AstSwitchPatternKind::EnumVariant {
+                    ty: Some(ty),
+                    variant,
+                },
+                span: self.cover(start, variant.span)?,
+            }));
+        }
+        let Some(min) = self.parse_signed_integer() else {
+            self.error(
+                EXPECTED_EXPRESSION,
+                "expected an integer or enum switch pattern",
+                self.current().span(),
+            );
+            return Ok(None);
+        };
+        if self.eat(TokenKind::Ellipsis).is_some() {
+            let Some(max) = self.parse_signed_integer() else {
+                self.error(
+                    EXPECTED_EXPRESSION,
+                    "expected an integer after `...`",
+                    self.current().span(),
+                );
+                return Ok(None);
+            };
+            Ok(Some(AstSwitchPattern {
+                span: self.cover(start, max.span)?,
+                kind: AstSwitchPatternKind::IntegerRange { min, max },
+            }))
+        } else {
+            Ok(Some(AstSwitchPattern {
+                span: min.span,
+                kind: AstSwitchPatternKind::Integer(min),
+            }))
+        }
+    }
+
+    fn parse_signed_integer(&mut self) -> Option<AstSignedInteger> {
+        let minus = self.eat(TokenKind::Minus);
+        if !self.at(TokenKind::DecimalInteger) {
+            return None;
+        }
+        let digits = self.bump().span();
+        let span = minus.map_or(digits, |minus| {
+            self.cover(minus.span(), digits).unwrap_or(digits)
+        });
+        Some(AstSignedInteger {
+            negative: minus.is_some(),
+            digits,
+            span,
+        })
     }
 
     fn parse_while_statement(&mut self) -> Result<AstStatement, SourceError> {
@@ -650,13 +964,22 @@ impl<'a> Parser<'a> {
         let name = AstName {
             span: name_token.span(),
         };
-        let mut clean = self
-            .expect(TokenKind::Colon, "expected `:` after the binding name")
-            .is_some();
-        let ty = self.parse_value_type();
-        clean &= ty.is_some();
+        let inferred = self.eat(TokenKind::ColonEqual).is_some();
+        let mut clean = true;
+        let ty = if inferred {
+            None
+        } else {
+            clean &= self
+                .expect(TokenKind::Colon, "expected `:` or `:=` after the binding name")
+                .is_some();
+            let ty = self.parse_value_type();
+            clean &= ty.is_some();
+            ty
+        };
 
-        let initializer = if self.eat(TokenKind::Equal).is_some() {
+        let initializer = if inferred {
+            Some(self.parse_expression()?)
+        } else if self.eat(TokenKind::Equal).is_some() {
             Some(self.parse_expression()?)
         } else if kind == AstBindingKind::Const {
             clean = false;
@@ -676,9 +999,9 @@ impl<'a> Parser<'a> {
         clean &= semicolon.is_some();
         let end = semicolon.map_or_else(|| self.previous_or_current_span(), Token::span);
         let span = self.cover(keyword.span(), end)?;
-        let Some(ty) = ty else {
+        if !inferred && ty.is_none() {
             return Ok(AstStatement::Error(span));
-        };
+        }
         Ok(if clean {
             AstStatement::Declaration(AstDeclaration {
                 kind,
@@ -687,6 +1010,57 @@ impl<'a> Parser<'a> {
                 initializer,
                 span,
             })
+        } else {
+            AstStatement::Error(span)
+        })
+    }
+
+    fn parse_destructuring_statement(&mut self) -> Result<AstStatement, SourceError> {
+        let start = self.bump().span();
+        let mut targets = vec![];
+        let mut clean = true;
+        while !self.at(TokenKind::Pipe) && !self.at(TokenKind::EndOfFile) {
+            let target_start = self.current().span();
+            let kind = match self.current().kind() {
+                TokenKind::KeywordConst => {
+                    self.bump();
+                    AstDestructureTargetKind::Const
+                }
+                TokenKind::KeywordVar => {
+                    self.bump();
+                    AstDestructureTargetKind::Var
+                }
+                _ => AstDestructureTargetKind::Assign,
+            };
+            let name = self.expect_identifier("expected a destructuring target name");
+            clean &= name.is_some();
+            if let Some(name) = name {
+                targets.push(AstDestructureTarget {
+                    kind,
+                    name: AstName { span: name.span() },
+                    span: self.cover(target_start, name.span())?,
+                });
+            }
+            if self.eat(TokenKind::Comma).is_some() {
+                continue;
+            }
+            if !self.at(TokenKind::Pipe) {
+                self.error(EXPECTED_TOKEN, "expected `,` or `|` after destructuring target", self.current().span());
+                clean = false;
+                self.recover_list(TokenKind::Pipe);
+            }
+        }
+        clean &= !targets.is_empty();
+        clean &= self.expect(TokenKind::Pipe, "expected `|` after destructuring targets").is_some();
+        clean &= self.expect(TokenKind::LessEqual, "expected `<=` after destructuring targets").is_some();
+        let value = self.parse_expression()?;
+        clean &= !expression_has_error(&value);
+        let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after destructuring");
+        clean &= semicolon.is_some();
+        let end = semicolon.map_or(value.span, Token::span);
+        let span = self.cover(start, end)?;
+        Ok(if clean {
+            AstStatement::Destructure(AstDestructuringStatement { targets, value, span })
         } else {
             AstStatement::Error(span)
         })
@@ -1050,6 +1424,36 @@ impl<'a> Parser<'a> {
                     };
                     continue;
                 }
+                if let Some(open) = self.eat(TokenKind::LeftBracket) {
+                    if !self.enter_depth(open.span()) {
+                        expression.kind = AstExpressionKind::Error;
+                        break;
+                    }
+                    let index = self.expect(
+                        TokenKind::DecimalInteger,
+                        "expected a decimal component index",
+                    );
+                    let close = self.expect(TokenKind::RightBracket, "expected `]` after index");
+                    self.leave_depth();
+                    let Some(index) = index else {
+                        expression.kind = AstExpressionKind::Error;
+                        break;
+                    };
+                    let end = close.map_or(index.span(), Token::span);
+                    let span = self.cover(expression.span, end)?;
+                    expression = AstExpression {
+                        kind: if close.is_some() {
+                            AstExpressionKind::Index {
+                                aggregate: Box::new(expression),
+                                index: index.span(),
+                            }
+                        } else {
+                            AstExpressionKind::Error
+                        },
+                        span,
+                    };
+                    continue;
+                }
                 if self.at(TokenKind::LeftBrace) {
                     let AstExpressionKind::Name(ty) = &expression.kind else {
                         break;
@@ -1136,6 +1540,24 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<AstExpression, SourceError> {
         let token = self.current();
         match token.kind() {
+            TokenKind::KeywordSwitch => self.parse_switch_expression(),
+            TokenKind::Dot => {
+                let dot = self.bump();
+                if self.at(TokenKind::LeftBrace) {
+                    return self.parse_inferred_struct_literal(dot.span());
+                }
+                let Some(variant) = self.expect_identifier("expected enum variant after `.`")
+                else {
+                    return Ok(Self::error_expression(dot.span()));
+                };
+                let name = AstName {
+                    span: variant.span(),
+                };
+                Ok(AstExpression {
+                    span: self.cover(dot.span(), variant.span())?,
+                    kind: AstExpressionKind::InferredEnumLiteral(name),
+                })
+            }
             TokenKind::KeywordTrue | TokenKind::KeywordFalse => {
                 self.bump();
                 Ok(AstExpression {
@@ -1265,6 +1687,140 @@ impl<'a> Parser<'a> {
                 Ok(Self::error_expression(token.span()))
             }
         }
+    }
+
+    fn parse_inferred_struct_literal(&mut self, dot: Span) -> Result<AstExpression, SourceError> {
+        let open = self.bump();
+        if !self.enter_depth(open.span()) {
+            return Ok(Self::error_expression(dot));
+        }
+        let named = self.at(TokenKind::Dot)
+            && self.nth_kind(1) == TokenKind::Identifier
+            && self.nth_kind(2) == TokenKind::Equal;
+        let mut fields = vec![];
+        let mut values = vec![];
+        let mut clean = true;
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
+            if named {
+                let start = self.current().span();
+                clean &= self.expect(TokenKind::Dot, "expected `.` before field name").is_some();
+                let name = self.expect_identifier("expected an inferred struct field name");
+                clean &= name.is_some();
+                clean &= self.expect(TokenKind::Equal, "expected `=` after field name").is_some();
+                let value = self.parse_expression()?;
+                clean &= !expression_has_error(&value);
+                if let Some(name) = name {
+                    fields.push(AstStructFieldInitializer {
+                        name: AstName { span: name.span() },
+                        span: self.cover(start, value.span)?,
+                        value,
+                    });
+                }
+            } else {
+                let value = self.parse_expression()?;
+                clean &= !expression_has_error(&value);
+                values.push(value);
+            }
+            if self.eat(TokenKind::Comma).is_some() {
+                continue;
+            }
+            if !self.at(TokenKind::RightBrace) {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `}` after inferred struct entry",
+                    self.current().span(),
+                );
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+            }
+        }
+        let close = self.expect(TokenKind::RightBrace, "expected `}` after inferred struct literal");
+        self.leave_depth();
+        clean &= close.is_some();
+        let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(dot, end)?;
+        Ok(AstExpression {
+            kind: if clean {
+                AstExpressionKind::InferredStructLiteral(AstInferredStructLiteral {
+                    entries: if named {
+                        AstInferredStructEntries::Named(fields)
+                    } else {
+                        AstInferredStructEntries::Positional(values)
+                    },
+                    span,
+                })
+            } else {
+                AstExpressionKind::Error
+            },
+            span,
+        })
+    }
+
+    fn parse_switch_expression(&mut self) -> Result<AstExpression, SourceError> {
+        let start = self.bump().span();
+        let mut clean = self
+            .expect(TokenKind::LeftParenthesis, "expected `(` after `switch`")
+            .is_some();
+        let scrutinee = self.parse_expression()?;
+        clean &= !expression_has_error(&scrutinee);
+        clean &= self
+            .expect(
+                TokenKind::RightParenthesis,
+                "expected `)` after switch scrutinee",
+            )
+            .is_some();
+        let Some(open) = self.expect(TokenKind::LeftBrace, "expected `{` to begin switch arms")
+        else {
+            return Ok(Self::error_expression(self.cover(start, scrutinee.span)?));
+        };
+        if !self.enter_depth(open.span()) {
+            return Ok(Self::error_expression(self.cover(start, open.span())?));
+        }
+        let mut arms = vec![];
+        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
+            let arm_start = self.current().span();
+            let label = self.parse_switch_label()?;
+            clean &= label.is_some();
+            clean &= self
+                .expect(TokenKind::FatArrow, "expected `=>` after switch patterns")
+                .is_some();
+            let body = self.parse_expression()?;
+            clean &= !expression_has_error(&body);
+            let arm_end = body.span;
+            if let Some(label) = label {
+                arms.push(AstSwitchExpressionArm {
+                    label,
+                    body,
+                    span: self.cover(arm_start, arm_end)?,
+                });
+            }
+            if self.eat(TokenKind::Comma).is_none() && !self.at(TokenKind::RightBrace) {
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `}` after the switch arm",
+                    self.current().span(),
+                );
+                clean = false;
+                self.recover_list(TokenKind::RightBrace);
+            }
+        }
+        let close = self.expect(TokenKind::RightBrace, "expected `}` after switch arms");
+        self.leave_depth();
+        clean &= close.is_some();
+        let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(start, end)?;
+        Ok(AstExpression {
+            kind: if clean {
+                AstExpressionKind::Switch(AstSwitchExpression {
+                    scrutinee: Box::new(scrutinee),
+                    arms,
+                    span,
+                })
+            } else {
+                AstExpressionKind::Error
+            },
+            span,
+        })
     }
 
     fn parse_call_after_callee(
@@ -1410,6 +1966,8 @@ impl<'a> Parser<'a> {
                 | TokenKind::StringLiteral
                 | TokenKind::Identifier
                 | TokenKind::KeywordRun
+                | TokenKind::KeywordSwitch
+                | TokenKind::Dot
         )
     }
 
@@ -1659,10 +2217,18 @@ fn expression_has_error(expression: &AstExpression) -> bool {
         | AstExpressionKind::Compare { left, right, .. } => {
             expression_has_error(left) || expression_has_error(right)
         }
+        AstExpressionKind::Switch(switch) => {
+            expression_has_error(&switch.scrutinee)
+                || switch
+                    .arms
+                    .iter()
+                    .any(|arm| expression_has_error(&arm.body))
+        }
         AstExpressionKind::Bool(_)
         | AstExpressionKind::DecimalInteger(_)
         | AstExpressionKind::StaticDecimal { .. }
         | AstExpressionKind::StringLiteral(_)
+        | AstExpressionKind::InferredEnumLiteral(_)
         | AstExpressionKind::Name(_) => false,
     }
 }
@@ -2157,5 +2723,45 @@ export fn run(value: Int32) -> Int32 {
         let (_, _, first) = parse_text(text);
         let (_, _, second) = parse_text(text);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn parses_ps4_enum_and_both_switch_forms_with_exact_patterns() {
+        let text = r"
+            const State = enum { low, middle, high, };
+            fn classify(value: Int32) -> State {
+                const state: State = switch (value) {
+                    -2147483648...-1 => .low,
+                    0...20, 40 => State.middle,
+                    else => .high,
+                };
+                switch (state) {
+                    .low => { return .low; },
+                    State.middle, .high => { return state; },
+                }
+            }
+        ";
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        assert_eq!(output.module().enums.len(), 1);
+        let dump = super::super::ast::dump(output.module(), &sources);
+        assert!(dump.contains("enum State"));
+        assert!(dump.contains("switch-expression"));
+        assert!(dump.contains("-2147483648...-1"));
+        assert!(dump.contains("State.middle"));
+    }
+
+    #[test]
+    fn malformed_ps4_switch_recovers_before_the_next_function() {
+        let (_, _, output) =
+            parse_text("fn bad(x: Int32) { switch (x) { 0 1, else => {} } } fn good() {}");
+        assert!(output.diagnostics().is_some());
+        assert!(
+            output
+                .module()
+                .functions
+                .iter()
+                .any(|function| function.body.statements.is_empty())
+        );
     }
 }

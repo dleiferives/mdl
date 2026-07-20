@@ -1,6 +1,6 @@
 # Stage 8.5 Roadmap
 
-Status: **PS-1 through PS-3 complete; PS-4 and PS-5 planned before Stage 9 resumes**
+Status: **PS-1 through PS-4 complete; PS-5 planned before Stage 9 resumes**
 
 ## Why the roadmap changes here
 
@@ -62,7 +62,7 @@ PS-5 anonymous structs, multiple results, and destructuring
 Stage 9 persistent continuations and scheduling
 ```
 
-## Accepted PS-4 language slice
+## Completed PS-4 language slice
 
 PS-4 adds closed fieldless enums, Zig-style exhaustive `switch`, and inclusive
 integer range patterns through a complete source/HIR/Core/evaluator/Minecraft test
@@ -71,6 +71,7 @@ depends on enums. Its plan and checklist are:
 
 - [`ps-4-enums-switch-ranges-plan.md`](ps-4-enums-switch-ranges-plan.md)
 - [`ps-4-enums-switch-ranges-todo.md`](ps-4-enums-switch-ranges-todo.md)
+- [`ps-4-handoff.md`](ps-4-handoff.md)
 
 PS-4 deliberately uses one mechanical range/switch lowering, permits large
 generated datapacks, and records rather than optimizes footprint. Dispatch trees,

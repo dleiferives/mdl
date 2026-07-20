@@ -3,7 +3,7 @@
   =================================
 
   Authority: syntax accepted by crates/mdl-compiler on trunk.
-  Updated: 2026-07-19, before PS-4 implementation.
+  Updated: 2026-07-19, with PS-4 enums, switch, and range patterns.
 
   This grammar describes successful parses, not recovery productions or semantic
   restrictions. The lexer/parser tests remain executable conformance evidence.
@@ -25,6 +25,7 @@ CompilationUnit = { ModuleItem }, EOF ;
 
 ModuleItem = ImportDeclaration
            | StructDeclaration
+           | EnumDeclaration
            | FunctionDeclaration
            ;
 
@@ -35,6 +36,12 @@ StructDeclaration = "const", Name, "=", "struct", "{",
                     "}", ";" ;
 
 StructField = Name, ":", ValueType ;
+
+EnumDeclaration = "const", Name, "=", "enum", "{",
+                  [ EnumVariant, { ",", EnumVariant }, [ "," ] ],
+                  "}", ";" ;
+
+EnumVariant = Name ;
 
 FunctionDeclaration = [ Visibility ], "fn", Name, "(",
                       [ Parameter, { ",", Parameter }, [ "," ] ],
@@ -58,6 +65,7 @@ Statement = DeclarationStatement
           | CallStatement
           | IfStatement
           | WhileStatement
+          | SwitchStatement
           | BreakStatement
           | ContinueStatement
           | ReturnStatement
@@ -92,6 +100,11 @@ IfStatement = "if", "(", Expression, ")", Block,
               [ "else", Block ] ;
 
 WhileStatement    = "while", "(", Expression, ")", Block ;
+SwitchStatement = "switch", "(", Expression, ")", "{",
+                  [ SwitchStatementArm, { ",", SwitchStatementArm }, [ "," ] ],
+                  "}" ;
+SwitchStatementArm = PatternList, "=>", Block
+                   | "else", "=>", Block ;
 BreakStatement    = "break", ";" ;
 ContinueStatement = "continue", ";" ;
 ReturnStatement   = "return", [ Expression ], ";" ;
@@ -127,6 +140,8 @@ PrimaryExpression = BooleanLiteral
                   | DecimalNumber
                   | StaticDecimal
                   | StringLiteral
+                  | InferredEnumLiteral
+                  | SwitchExpression
                   | Name, [ StructLiteralBody ]
                   | "(", Expression, ")"
                   ;
@@ -137,6 +152,24 @@ StructLiteralBody = "{",
                     "}" ;
 
 StructFieldValue = ".", Name, "=", Expression ;
+
+InferredEnumLiteral = ".", Name ;
+
+SwitchExpression = "switch", "(", Expression, ")", "{",
+                   [ SwitchExpressionArm, { ",", SwitchExpressionArm }, [ "," ] ],
+                   "}" ;
+SwitchExpressionArm = PatternList, "=>", Expression
+                    | "else", "=>", Expression ;
+
+PatternList = Pattern, { ",", Pattern } ;
+Pattern = SignedInteger
+        | ClosedIntegerRange
+        | InferredEnumLiteral
+        | QualifiedEnumVariant
+        ;
+ClosedIntegerRange = SignedInteger, "...", SignedInteger ;
+SignedInteger = [ "-" ], IntegerLiteral ;
+QualifiedEnumVariant = Name, ".", Name ;
 
 BooleanLiteral = "true" | "false" ;
 IntegerLiteral = Digit, { Digit } ;
@@ -175,9 +208,9 @@ ASCIILower = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i"
 Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 
 (* Tokens with identifier spellings that are not Identifier tokens. *)
-Keyword = "fn" | "pub" | "export" | "import" | "struct"
+Keyword = "fn" | "pub" | "export" | "import" | "struct" | "enum"
         | "unsafe" | "minecraft" | "run" | "const" | "var"
-        | "if" | "else" | "while" | "break" | "continue" | "return"
+        | "if" | "else" | "while" | "switch" | "break" | "continue" | "return"
         | "true" | "false" | "Bool" | "Int32" | "Void"
         ;
 

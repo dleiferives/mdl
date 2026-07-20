@@ -503,6 +503,17 @@ fn analyze_instruction(
                 None
             }
         }
+        CoreOp::I32InClosedRange(range) => {
+            let operand = only_operand(data.operands())?;
+            let effective = replacements.resolve(operand)?;
+            known_constant(body, effective).and_then(|constant| match constant {
+                TypedCoreConstant::I32(value) => Some(vec![(
+                    only_result(data.results()).ok()?,
+                    VirtualValue::Constant(TypedCoreConstant::Bool(range.contains(value))),
+                )]),
+                TypedCoreConstant::Bool(_) => None,
+            })
+        }
         CoreOp::BoolConstant(_)
         | CoreOp::I32Constant(_)
         | CoreOp::ListI32Empty
@@ -636,6 +647,7 @@ fn constant_definition(body: &FunctionBody, value: ValueId) -> Option<TypedCoreC
         | CoreOp::I32SubWrapping
         | CoreOp::I32AddOverflowing
         | CoreOp::I32Compare(_)
+        | CoreOp::I32InClosedRange(_)
         | CoreOp::BoolNot
         | CoreOp::ListI32Empty
         | CoreOp::ListI32Length

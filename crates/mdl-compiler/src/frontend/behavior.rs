@@ -245,6 +245,13 @@ fn collect_statement_calls(
         }
         HirStatementKind::External(_) => true,
         HirStatementKind::If(conditional) => collect_if_calls(conditional, calls),
+        HirStatementKind::Switch(switch) => {
+            collect_expression_calls(&switch.scrutinee, calls);
+            switch
+                .arms
+                .iter()
+                .any(|arm| collect_block_calls(&arm.body, calls))
+        }
         HirStatementKind::While(statement) => {
             collect_expression_calls(&statement.condition, calls);
             collect_block_calls(&statement.body, calls);
@@ -286,12 +293,20 @@ fn collect_call_calls(call: &HirCall, calls: &mut BTreeSet<SourceFunctionId>) {
 fn collect_expression_calls(expression: &HirExpression, calls: &mut BTreeSet<SourceFunctionId>) {
     match &expression.kind {
         HirExpressionKind::Call(call) => collect_call_calls(call, calls),
-        HirExpressionKind::StructConstruct { fields, .. } => {
+        HirExpressionKind::Switch(switch) => {
+            collect_expression_calls(&switch.scrutinee, calls);
+            for arm in &switch.arms {
+                collect_expression_calls(&arm.body, calls);
+            }
+        }
+        HirExpressionKind::StructConstruct { fields, .. }
+        | HirExpressionKind::AnonymousStructConstruct { fields, .. } => {
             for field in fields {
                 collect_expression_calls(&field.value, calls);
             }
         }
-        HirExpressionKind::StructProject { aggregate, .. } => {
+        HirExpressionKind::StructProject { aggregate, .. }
+        | HirExpressionKind::AnonymousStructProject { aggregate, .. } => {
             collect_expression_calls(aggregate, calls);
         }
         HirExpressionKind::ListI32 { operands, .. }
@@ -309,6 +324,7 @@ fn collect_expression_calls(expression: &HirExpression, calls: &mut BTreeSet<Sou
         HirExpressionKind::External(_)
         | HirExpressionKind::Bool(_)
         | HirExpressionKind::Int32(_)
+        | HirExpressionKind::EnumVariant { .. }
         | HirExpressionKind::Local(_) => {}
     }
 }
@@ -427,6 +443,16 @@ impl BehaviorEvaluator<'_> {
             HirStatementKind::Call(call) => (self.call(call)?, true),
             HirStatementKind::External(operation) => (self.external(*operation)?, true),
             HirStatementKind::If(conditional) => self.conditional(conditional)?,
+            HirStatementKind::Switch(switch) => {
+                let mut behavior = self.expression(&switch.scrutinee)?.join(FINITE_WORK);
+                let mut continues = false;
+                for arm in &switch.arms {
+                    let (arm_behavior, arm_continues) = self.block(&arm.body)?;
+                    behavior = behavior.join(arm_behavior);
+                    continues |= arm_continues;
+                }
+                (behavior, continues)
+            }
             HirStatementKind::While(statement) => {
                 let condition = self.expression(&statement.condition)?;
                 let (body, _) = self.block(&statement.body)?;
@@ -584,18 +610,22 @@ impl BehaviorEvaluator<'_> {
         expression: &HirExpression,
     ) -> Result<FunctionBehavior, BehaviorInferenceError> {
         match &expression.kind {
-            HirExpressionKind::Bool(_) | HirExpressionKind::Int32(_) => Ok(FINITE_WORK),
+            HirExpressionKind::Bool(_)
+            | HirExpressionKind::Int32(_)
+            | HirExpressionKind::EnumVariant { .. } => Ok(FINITE_WORK),
             HirExpressionKind::Local(_) => Ok(FunctionBehavior::NONE),
             HirExpressionKind::Call(call) => self.call(call),
             HirExpressionKind::External(operation) => self.external(*operation),
-            HirExpressionKind::StructConstruct { fields, .. } => {
+            HirExpressionKind::StructConstruct { fields, .. }
+            | HirExpressionKind::AnonymousStructConstruct { fields, .. } => {
                 let mut behavior = FINITE_WORK;
                 for field in fields {
                     behavior = behavior.join(self.expression(&field.value)?);
                 }
                 Ok(behavior)
             }
-            HirExpressionKind::StructProject { aggregate, .. } => {
+            HirExpressionKind::StructProject { aggregate, .. }
+            | HirExpressionKind::AnonymousStructProject { aggregate, .. } => {
                 Ok(self.expression(aggregate)?.join(FINITE_WORK))
             }
             HirExpressionKind::ListI32 { operands, .. }
@@ -612,6 +642,13 @@ impl BehaviorEvaluator<'_> {
                 .expression(left)?
                 .join(self.expression(right)?)
                 .join(FINITE_WORK)),
+            HirExpressionKind::Switch(switch) => {
+                let mut behavior = self.expression(&switch.scrutinee)?.join(FINITE_WORK);
+                for arm in &switch.arms {
+                    behavior = behavior.join(self.expression(&arm.body)?);
+                }
+                Ok(behavior)
+            }
         }
     }
 

@@ -353,6 +353,20 @@ impl<'a> FunctionBuilder<'a> {
         self.one_result(CoreOp::I32Compare(predicate), vec![left, right], origin)
     }
 
+    /// Inserts membership in one validated inclusive signed interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error.
+    pub fn i32_in_closed_range(
+        &mut self,
+        value: ValueId,
+        range: super::I32ClosedRange,
+        origin: OriginId,
+    ) -> Result<ValueId, BuildError> {
+        self.one_result(CoreOp::I32InClosedRange(range), vec![value], origin)
+    }
+
     /// Inserts Boolean negation.
     ///
     /// # Errors

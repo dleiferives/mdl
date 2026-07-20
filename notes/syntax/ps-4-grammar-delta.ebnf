@@ -1,11 +1,11 @@
 (*
-  Proposed PS-4 grammar delta
+  PS-4 grammar delta (implemented archive)
   ===========================
 
-  Status: planned, not accepted by trunk.
+  Status: implemented and merged into grammar.ebnf on 2026-07-19.
 
-  Apply these replacements/additions to grammar.ebnf only when the PS-4 parser,
-  recovery, AST goldens, and grammar-conformance tests land together.
+  This file records the reviewed delta. grammar.ebnf is the sole current grammar
+  authority; do not apply this archive a second time.
 *)
 
 ModuleItem = ImportDeclaration

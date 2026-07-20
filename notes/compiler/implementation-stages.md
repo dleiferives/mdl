@@ -504,8 +504,8 @@ Exit criteria:
 
 ## Stage 8.5: Pre-scheduler capability validation
 
-Status: **PS-1 through PS-3 complete; PS-4 enums/switch/ranges and PS-5 anonymous
-structs/destructuring planned.** See the
+Status: **PS-1 through PS-4 complete; PS-5 anonymous structs/destructuring
+planned.** See the
 [`Stage 8.5 documentation index`](pre-scheduler/README.md) and
 [`roadmap`](pre-scheduler/roadmap.md).
 
@@ -560,6 +560,8 @@ inclusive integer range patterns with one mechanical Minecraft lowering. It does
 not add dispatch optimization, a datapack-size constraint, generic enum collections,
 or scheduling. See
 [`pre-scheduler/ps-4-enums-switch-ranges-plan.md`](pre-scheduler/ps-4-enums-switch-ranges-plan.md).
+Its completed evidence is recorded in
+[`pre-scheduler/ps-4-handoff.md`](pre-scheduler/ps-4-handoff.md).
 
 PS-5 is accepted after PS-4. It adds structural anonymous struct types for multiple
 results, context-inferred `.{}` literals, compile-time positional indexing, pipe

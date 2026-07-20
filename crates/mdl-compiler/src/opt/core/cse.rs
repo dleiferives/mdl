@@ -8,8 +8,9 @@ use std::hash::{BuildHasher, Hash, RandomState};
 use crate::entity::EntityId;
 use crate::ir::core::{
     BlockId, ControlFlowGraph, CoreOp, CoreProgram, CoreType, DominatorTree, EffectClass,
-    FunctionBody, FunctionEditor, FunctionId, I32Predicate, InstData, InstId, OperandSymmetry,
-    PlacementIndex, ResultEquivalence, Speculation, UseIndex, ValueId, ValueReplacement,
+    FunctionBody, FunctionEditor, FunctionId, I32ClosedRange, I32Predicate, InstData, InstId,
+    OperandSymmetry, PlacementIndex, ResultEquivalence, Speculation, UseIndex, ValueId,
+    ValueReplacement,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -330,6 +331,7 @@ enum CseOpKey {
     I32SubWrapping,
     I32AddOverflowing,
     I32Compare(I32Predicate),
+    I32InClosedRange(I32ClosedRange),
     BoolNot,
     ListI32Empty,
     ListI32Length,
@@ -771,6 +773,7 @@ fn build_expression_key(
         CoreOp::I32SubWrapping => CseOpKey::I32SubWrapping,
         CoreOp::I32AddOverflowing => CseOpKey::I32AddOverflowing,
         CoreOp::I32Compare(predicate) => CseOpKey::I32Compare(*predicate),
+        CoreOp::I32InClosedRange(range) => CseOpKey::I32InClosedRange(*range),
         CoreOp::BoolNot => CseOpKey::BoolNot,
         CoreOp::ListI32Empty => CseOpKey::ListI32Empty,
         CoreOp::ListI32Length => CseOpKey::ListI32Length,

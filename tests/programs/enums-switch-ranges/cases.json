@@ -1,0 +1,10 @@
+[
+  { "input": -2147483648, "expected": 11 },
+  { "input": -1, "expected": 11 },
+  { "input": 0, "expected": 22 },
+  { "input": 1, "expected": 22 },
+  { "input": 20, "expected": 22 },
+  { "input": 21, "expected": 33 },
+  { "input": 40, "expected": 22 },
+  { "input": 2147483647, "expected": 33 }
+]

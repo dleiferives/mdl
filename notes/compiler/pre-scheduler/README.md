@@ -1,7 +1,6 @@
 # Stage 8.5: Pre-Scheduler Capability Validation
 
-Status: **PS-1 through PS-3 complete; PS-4 enums/switch/ranges and PS-5 anonymous
-structs/destructuring planned**
+Status: **PS-1 through PS-4 complete; PS-5 anonymous structs/destructuring planned**
 
 Stage 8.5 sits between the completed scalar synchronous Stage 8 and Stage 9's
 persistent, multi-tick scheduler. Its purpose is to make MDL capable of expressing,
@@ -21,7 +20,7 @@ public surface.
 | PS-1 | Semantic and vanilla-server test oracles | [plan](ps-1-testing-plan.md) | [complete handoff](ps-1-handoff.md) |
 | PS-2 | General synchronous capabilities required by Brainfuck | [plan](ps-2-capability-expansion-plan.md) | [complete handoff](ps-2-handoff.md) |
 | PS-3 | Complete Brainfuck capstone compiled and run on vanilla | [plan](ps-3-brainfuck-capstone-plan.md) | [complete handoff](ps-3-handoff.md) |
-| PS-4 | Closed enums, exhaustive switch, and inclusive range patterns | [plan](ps-4-enums-switch-ranges-plan.md) | [checklist](ps-4-enums-switch-ranges-todo.md) |
+| PS-4 | Closed enums, exhaustive switch, and inclusive range patterns | [plan](ps-4-enums-switch-ranges-plan.md) | [complete handoff](ps-4-handoff.md) |
 | PS-5 | Anonymous structs, multiple results, and destructuring | [plan](ps-5-anon-structs-destructuring-plan.md) | [checklist](ps-5-anon-structs-destructuring-todo.md) |
 
 The exact implemented PS-2 boundary and remaining nonblocking breadth are frozen in

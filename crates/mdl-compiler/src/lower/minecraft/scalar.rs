@@ -69,9 +69,11 @@ const WRAPPING_SUB_REUSE: &[Option<usize>] = &[Some(0)];
 
 pub(super) const fn scalar_access_contract(operation: &CoreOp) -> Option<ScalarAccessContract> {
     let (result_types, reusable_operands) = match operation {
-        CoreOp::BoolConstant(_) | CoreOp::I32Compare(_) | CoreOp::BoolNot => {
-            (BOOL_OUTPUT, ONE_NO_REUSE)
-        }
+        CoreOp::BoolConstant(_)
+        | CoreOp::I32Compare(_)
+        | CoreOp::I32InClosedRange(_)
+        | CoreOp::BoolNot
+        | CoreOp::StringEndsWithAscii(_) => (BOOL_OUTPUT, ONE_NO_REUSE),
         CoreOp::I32Constant(_)
         | CoreOp::ListI32Length
         | CoreOp::ListI32LastOrZero
@@ -83,7 +85,6 @@ pub(super) const fn scalar_access_contract(operation: &CoreOp) -> Option<ScalarA
             (LIST_I32_OUTPUT, ONE_NO_REUSE)
         }
         CoreOp::StringConstant(_) | CoreOp::StringWithoutLastUnit => (STRING_OUTPUT, ONE_NO_REUSE),
-        CoreOp::StringEndsWithAscii(_) => (BOOL_OUTPUT, ONE_NO_REUSE),
         CoreOp::Call(_) | CoreOp::External(_) => return None,
     };
     Some(ScalarAccessContract {
@@ -142,6 +143,12 @@ pub(crate) fn lower_scalar_operation(
                 return Err(invalid_scalar_shape(operation, origin));
             };
             lower_i32_compare(context, *result, *predicate, *left, *right, origin)?;
+        }
+        CoreOp::I32InClosedRange(range) => {
+            let ([value], [result]) = (operands, results) else {
+                return Err(invalid_scalar_shape(operation, origin));
+            };
+            lower_i32_in_closed_range(context, *result, *value, *range, origin)?;
         }
         CoreOp::BoolNot => {
             let ([operand], [result]) = (operands, results) else {
@@ -648,6 +655,31 @@ pub(crate) fn lower_i32_compare(
         [(
             positive,
             Condition::ScoreCompare(context.score(left)?, comparison, context.score(right)?),
+        )],
+        destination,
+        1,
+        origin,
+    )
+}
+
+pub(crate) fn lower_i32_in_closed_range(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    destination: HomeId,
+    value: HomeId,
+    range: crate::ir::core::I32ClosedRange,
+    origin: OriginId,
+) -> Result<(), Diagnostics> {
+    context.require_type(destination, CoreType::Bool)?;
+    context.require_type(value, CoreType::I32)?;
+    set_literal(context, destination, 0, origin)?;
+    let score_range = ScoreRange::between(range.min(), range.max()).map_err(|_| {
+        invariant_diagnostics("validated Core closed range became backwards", origin)
+    })?;
+    conditional_set(
+        context,
+        [(
+            true,
+            Condition::ScoreMatches(context.score(value)?, score_range),
         )],
         destination,
         1,

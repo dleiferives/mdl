@@ -455,6 +455,9 @@ fn render_operation(output: &mut String, op: &CoreOp) {
         CoreOp::I32Compare(predicate) => {
             let _ = write!(output, " {}", predicate.mnemonic());
         }
+        CoreOp::I32InClosedRange(range) => {
+            let _ = write!(output, " {}...{}", (*range).min(), (*range).max());
+        }
         CoreOp::StringConstant(value) => {
             let _ = write!(output, " {value:?}");
         }

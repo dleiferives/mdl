@@ -12,9 +12,9 @@ therefore may be ahead of the parser; they do not enter the implemented grammar 
 the parser, recovery behavior, AST tests, and EBNF update land together.
 
 Planned syntax is written as an explicit delta rather than silently mixed into the
-implemented grammar. The first such document is the
-[`PS-4 grammar delta`](ps-4-grammar-delta.ebnf); the second is the
-[`PS-5 grammar delta`](ps-5-grammar-delta.ebnf). Every future syntax-changing stage
+implemented grammar. The [`PS-4 grammar delta`](ps-4-grammar-delta.ebnf) is now an
+implemented historical delta merged into `grammar.ebnf`; the
+[`PS-5 grammar delta`](ps-5-grammar-delta.ebnf) remains planned. Every future syntax-changing stage
 must update `grammar.ebnf` in the same change and add positive/negative parser tests
 for the changed productions.
 
@@ -245,9 +245,11 @@ S-023 selects explicit C-style return statements and the fallthrough rules for
 
 ## S-007 — Switch arms
 
-**Status:** selected.
+**Status:** superseded and refined by S-040.
 
-Switches use fat-arrow arms:
+This early sketch selected fat-arrow arms. S-040 now owns the implemented switch
+grammar and narrows statement arms to blocks while adding expression arms, enum
+patterns, exact integers, and inclusive integer ranges:
 
 ```mdl
 switch (op) {
@@ -262,7 +264,7 @@ switch (op) {
 }
 ```
 
-The source semantics are:
+The original direction was:
 
 - require parentheses around the switch subject;
 - evaluate the switch subject exactly once;
@@ -279,10 +281,10 @@ The two arrows intentionally have different working roles:
 - `->` introduces a callable's output **type**;
 - `=>` maps a selected **value/branch** to its behavior.
 
-This distinction is provisional in the sense that the language may eventually find
-more uses for either arrow, but switch arms remain `=>` unless explicitly changed.
+This distinction remains: switch arms use `=>`, while `->` introduces a callable's
+output type. See [S-040](enum-switch-range-patterns.md) for current semantics.
 
-### Lowering opportunity
+### Historical lowering opportunity
 
 The compiler must preserve a source switch as a switch long enough to choose an
 appropriate lowering. One candidate is macro-based dynamic function dispatch: encode

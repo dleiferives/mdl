@@ -317,6 +317,7 @@ fn include_operation(
         | CoreOp::I32SubWrapping
         | CoreOp::I32AddOverflowing
         | CoreOp::I32Compare(_)
+        | CoreOp::I32InClosedRange(_)
         | CoreOp::BoolNot
         | CoreOp::ListI32Empty
         | CoreOp::ListI32Length

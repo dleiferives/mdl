@@ -1,0 +1,36 @@
+const State = enum {
+    low,
+    middle,
+    high,
+};
+
+const Boxed = struct {
+    state: State,
+};
+
+fn classify(value: Int32) -> State {
+    return switch (value) {
+        -2147483648...-1 => .low,
+        0...20, 40 => State.middle,
+        else => .high,
+    };
+}
+
+fn weight(state: State) -> Int32 {
+    return switch (state) {
+        .low => 10,
+        State.middle => 20,
+        .high => 30,
+    };
+}
+
+export fn checksum(value: Int32) -> Int32 {
+    const boxed: Boxed = Boxed{ .state = classify(value) };
+    var result: Int32 = 0;
+    switch (boxed.state) {
+        .low => { result = 1; },
+        .middle => { result = 2; },
+        .high => { result = 3; },
+    }
+    return result +% weight(boxed.state);
+}

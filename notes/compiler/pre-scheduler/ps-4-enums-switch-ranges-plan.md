@@ -1,6 +1,6 @@
 # PS-4: Enums, Switch, and Inclusive Range Patterns
 
-Status: **planned; implementation not started**
+Status: **complete on 2026-07-19**
 
 ## Identity
 
@@ -42,11 +42,9 @@ without solving the later dispatch-optimization problem.
 ## Frozen source surface
 
 The implemented grammar authority is [`../../syntax/grammar.ebnf`](../../syntax/grammar.ebnf).
-PS-4's exact proposed productions are isolated in
+PS-4's implemented productions are in that authority. The original accepted delta
+is retained as the historical
 [`../../syntax/ps-4-grammar-delta.ebnf`](../../syntax/ps-4-grammar-delta.ebnf).
-Implementation must merge that delta into the authoritative grammar in the same
-change as the lexer/parser and grammar-conformance tests; planned syntax must not be
-presented as already accepted.
 
 ### Closed fieldless enums
 

@@ -588,6 +588,18 @@ impl<'a> Solver<'a> {
                 let result = only_result(data.results(), instruction)?;
                 self.join_value(result, fact)?;
             }
+            CoreOp::I32InClosedRange(range) => {
+                let operand = only_operand(data.operands(), instruction)?;
+                let fact = match self.value_fact(operand)? {
+                    LatticeValue::I32Constant(value) => {
+                        LatticeValue::BoolConstant(range.contains(value))
+                    }
+                    LatticeValue::Unknown => LatticeValue::Unknown,
+                    _ => LatticeValue::Overdefined,
+                };
+                let result = only_result(data.results(), instruction)?;
+                self.join_value(result, fact)?;
+            }
             CoreOp::BoolNot => {
                 let operand = only_operand(data.operands(), instruction)?;
                 let fact = bool_not(self.value_fact(operand)?)?;

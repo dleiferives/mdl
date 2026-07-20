@@ -23,6 +23,8 @@ pub enum ValueType {
     ListI32,
     String,
     Struct(SourceStructId),
+    Enum(SourceEnumId),
+    AnonymousStruct(SourceAnonymousStructId),
 }
 
 impl fmt::Display for ValueType {
@@ -33,7 +35,60 @@ impl fmt::Display for ValueType {
             Self::ListI32 => formatter.write_str("List<Int32>"),
             Self::String => formatter.write_str("String"),
             Self::Struct(id) => write!(formatter, "Struct@{}", id.index()),
+            Self::Enum(id) => write!(formatter, "Enum@{}", id.index()),
+            Self::AnonymousStruct(id) => write!(formatter, "AnonStruct@{}", id.index()),
         }
+    }
+}
+
+/// Dense canonical identity of one structural anonymous struct type.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceAnonymousStructId(u32);
+
+impl SourceAnonymousStructId {
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        u32::try_from(index).ok().map(Self)
+    }
+    pub(super) fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+/// Dense identity of one nominal enum in canonical package order.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceEnumId(u32);
+
+impl SourceEnumId {
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        u32::try_from(index).ok().map(Self)
+    }
+    pub(super) fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+/// Dense identity of one variant within its owning enum.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceVariantId(u32);
+
+impl SourceVariantId {
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        u32::try_from(index).ok().map(Self)
+    }
+    pub(super) fn as_usize(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
     }
 }
 
@@ -220,6 +275,21 @@ impl CheckedFrontendOutput {
         self.module.structs.iter().map(|struct_| struct_.id)
     }
 
+    #[must_use]
+    pub fn enum_count(&self) -> usize {
+        self.module.enums.len()
+    }
+
+    #[must_use]
+    pub fn enum_ids(&self) -> impl ExactSizeIterator<Item = SourceEnumId> + '_ {
+        self.module.enums.iter().map(|enum_| enum_.id)
+    }
+
+    #[must_use]
+    pub fn anonymous_struct_count(&self) -> usize {
+        self.module.anonymous_structs.len()
+    }
+
     /// Returns whether the checked module contains no functions.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -353,6 +423,19 @@ impl CheckedFrontendOutput {
         &self.module.structs
     }
 
+    pub(super) fn enums(&self) -> &[HirEnum] {
+        &self.module.enums
+    }
+    pub(super) fn enum_(&self, id: SourceEnumId) -> Option<&HirEnum> {
+        self.module.enums.get(id.as_usize()?)
+    }
+    pub(super) fn anonymous_struct(
+        &self,
+        id: SourceAnonymousStructId,
+    ) -> Option<&HirAnonymousStruct> {
+        self.module.anonymous_structs.get(id.as_usize()?)
+    }
+
     pub(super) fn struct_(&self, id: SourceStructId) -> Option<&HirStruct> {
         self.module.structs.get(id.as_usize()?)
     }
@@ -375,10 +458,48 @@ pub(super) struct HirModule {
     pub(super) root: SourceModuleId,
     pub(super) modules: Box<[HirModuleInfo]>,
     pub(super) structs: Box<[HirStruct]>,
+    pub(super) enums: Box<[HirEnum]>,
+    pub(super) anonymous_structs: Box<[HirAnonymousStruct]>,
     pub(super) external_ops: Box<[HirExternalOp]>,
     pub(super) run_scope_count: usize,
     pub(super) functions: Box<[HirFunction]>,
     pub(super) behaviors: Box<[FunctionBehavior]>,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirAnonymousStruct {
+    pub(super) id: SourceAnonymousStructId,
+    pub(super) kind: HirAnonymousStructKind,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirAnonymousStructKind {
+    Named(Box<[HirAnonymousStructField]>),
+    Positional(Box<[ValueType]>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirAnonymousStructField {
+    pub(super) name: Box<str>,
+    pub(super) ty: ValueType,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirEnum {
+    pub(super) id: SourceEnumId,
+    pub(super) module: SourceModuleId,
+    pub(super) name_origin: OriginId,
+    pub(super) variants: Box<[HirEnumVariant]>,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirEnumVariant {
+    pub(super) id: SourceVariantId,
+    pub(super) name_origin: OriginId,
     pub(super) origin: OriginId,
 }
 
@@ -536,11 +657,50 @@ pub(super) enum HirStatementKind {
     Call(HirCall),
     External(SourceExternalOpId),
     If(HirIf),
+    Switch(HirSwitchStatement),
     While(HirWhile),
     Break,
     Continue,
     Run(HirRun),
     Return(Option<HirExpression>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirSwitchStatement {
+    pub(super) scrutinee: HirExpression,
+    pub(super) arms: Box<[HirSwitchStatementArm]>,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirSwitchStatementArm {
+    pub(super) label: HirSwitchLabel,
+    pub(super) body: HirBlock,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirSwitchLabel {
+    Patterns(Box<[HirSwitchPattern]>),
+    Else,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirSwitchPattern {
+    pub(super) kind: HirSwitchPatternKind,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HirSwitchPatternKind {
+    IntRange {
+        min: i32,
+        max: i32,
+    },
+    EnumVariant {
+        enum_: SourceEnumId,
+        variant: SourceVariantId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -677,9 +837,27 @@ pub(super) struct HirExpression {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirSwitchExpression {
+    pub(super) scrutinee: Box<HirExpression>,
+    pub(super) arms: Box<[HirSwitchExpressionArm]>,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirSwitchExpressionArm {
+    pub(super) label: HirSwitchLabel,
+    pub(super) body: HirExpression,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum HirExpressionKind {
     Bool(bool),
     Int32(i32),
+    EnumVariant {
+        enum_: SourceEnumId,
+        variant: SourceVariantId,
+    },
     Local(LocalId),
     Call(HirCall),
     External(SourceExternalOpId),
@@ -688,6 +866,14 @@ pub(super) enum HirExpressionKind {
         fields: Box<[HirStructFieldValue]>,
     },
     StructProject {
+        aggregate: Box<HirExpression>,
+        field: u32,
+    },
+    AnonymousStructConstruct {
+        struct_: SourceAnonymousStructId,
+        fields: Box<[HirStructFieldValue]>,
+    },
+    AnonymousStructProject {
         aggregate: Box<HirExpression>,
         field: u32,
     },
@@ -710,6 +896,7 @@ pub(super) enum HirExpressionKind {
         left: Box<HirExpression>,
         right: Box<HirExpression>,
     },
+    Switch(HirSwitchExpression),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -867,6 +1054,29 @@ impl<'a> Dumper<'a> {
                 );
             }
         }
+        for enum_ in self.output.enums() {
+            self.line(
+                1,
+                &format!(
+                    "enum @{} {} module=@{} {}",
+                    enum_.id.index(),
+                    self.spelling(enum_.name_origin),
+                    enum_.module.index(),
+                    self.location(enum_.origin)
+                ),
+            );
+            for variant in &enum_.variants {
+                self.line(
+                    2,
+                    &format!(
+                        "variant @{} {} {}",
+                        variant.id.index(),
+                        self.spelling(variant.name_origin),
+                        self.location(variant.origin)
+                    ),
+                );
+            }
+        }
         for external in self.output.external_ops() {
             match &external.semantic {
                 HirExternalSemantic::UnsafeMinecraftCommand {
@@ -984,6 +1194,10 @@ impl<'a> Dumper<'a> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the test-facing dump exhaustively renders the closed HIR statement vocabulary"
+    )]
     fn dump_statement(&mut self, statement: &HirStatement, indent: usize) {
         match &statement.kind {
             HirStatementKind::Declaration { local, initializer } => {
@@ -1041,6 +1255,23 @@ impl<'a> Dumper<'a> {
                 if let Some(else_body) = &conditional.else_body {
                     self.line(indent + 1, "else");
                     self.dump_block(else_body, indent + 2);
+                }
+            }
+            HirStatementKind::Switch(switch) => {
+                self.line(
+                    indent,
+                    &format!(
+                        "switch {} {}",
+                        self.expression(&switch.scrutinee),
+                        self.location(switch.origin)
+                    ),
+                );
+                for arm in &switch.arms {
+                    self.line(
+                        indent + 1,
+                        &format!("case {:?} {}", arm.label, self.location(arm.origin)),
+                    );
+                    self.dump_block(&arm.body, indent + 2);
                 }
             }
             HirStatementKind::While(statement) => {
@@ -1172,6 +1403,9 @@ impl<'a> Dumper<'a> {
         let value = match &expression.kind {
             HirExpressionKind::Bool(value) => value.to_string(),
             HirExpressionKind::Int32(value) => value.to_string(),
+            HirExpressionKind::EnumVariant { enum_, variant } => {
+                format!("enum@{}.{}", enum_.index(), variant.index())
+            }
             HirExpressionKind::Local(local) => format!("%{}", local.index()),
             HirExpressionKind::Call(call) => self.call(call),
             HirExpressionKind::External(operation) => format!("external@{}", operation.index()),
@@ -1185,6 +1419,17 @@ impl<'a> Dumper<'a> {
             }
             HirExpressionKind::StructProject { aggregate, field } => {
                 format!("({}).field{field}", self.expression(aggregate))
+            }
+            HirExpressionKind::AnonymousStructConstruct { struct_, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| format!("{}={}", field.field, self.expression(&field.value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("anon.struct@{}{{{fields}}}", struct_.index())
+            }
+            HirExpressionKind::AnonymousStructProject { aggregate, field } => {
+                format!("({})[{field}]", self.expression(aggregate))
             }
             HirExpressionKind::ListI32 { op, operands } => {
                 let operands = operands
@@ -1220,6 +1465,11 @@ impl<'a> Dumper<'a> {
                 self.expression(left),
                 op.as_str(),
                 self.expression(right)
+            ),
+            HirExpressionKind::Switch(switch) => format!(
+                "switch({}; {} arms)",
+                self.expression(&switch.scrutinee),
+                switch.arms.len()
             ),
         };
         format!("{value}:{}", expression.ty)
@@ -1365,6 +1615,37 @@ impl Verifier<'_> {
                 self.origin(field.name_origin, "struct field name")?;
                 self.origin(field.type_origin, "struct field type")?;
                 self.verify_value_type(field.ty, &mut vec![struct_.id], 1)?;
+            }
+        }
+        for (index, enum_) in self.output.enums().iter().enumerate() {
+            let expected = SourceEnumId::from_index(index)
+                .ok_or_else(|| HirVerificationError::new("enum identity space exhausted"))?;
+            if enum_.id != expected || enum_.variants.is_empty() {
+                return Err(HirVerificationError::new(
+                    "enum inventory is non-dense or empty",
+                ));
+            }
+            if enum_
+                .module
+                .as_usize()
+                .is_none_or(|module| module >= self.output.module.modules.len())
+            {
+                return Err(HirVerificationError::new("enum has invalid owner module"));
+            }
+            self.origin(enum_.origin, "enum")?;
+            self.origin(enum_.name_origin, "enum name")?;
+            for (variant_index, variant) in enum_.variants.iter().enumerate() {
+                if variant.id
+                    != SourceVariantId::from_index(variant_index).ok_or_else(|| {
+                        HirVerificationError::new("variant identity space exhausted")
+                    })?
+                {
+                    return Err(HirVerificationError::new(
+                        "enum variant inventory is non-dense",
+                    ));
+                }
+                self.origin(variant.origin, "enum variant")?;
+                self.origin(variant.name_origin, "enum variant name")?;
             }
         }
         for (index, external) in self.output.external_ops().iter().enumerate() {
@@ -1514,6 +1795,11 @@ impl Verifier<'_> {
         active: &mut Vec<SourceStructId>,
         depth: usize,
     ) -> Result<(), HirVerificationError> {
+        if let ValueType::Enum(enum_id) = ty {
+            return self.output.enum_(enum_id).map(|_| ()).ok_or_else(|| {
+                HirVerificationError::new(format!("value type names missing enum {enum_id:?}"))
+            });
+        }
         let ValueType::Struct(struct_id) = ty else {
             return Ok(());
         };
@@ -1615,6 +1901,17 @@ impl Verifier<'_> {
             self.origin(binding.origin, "binding")?;
             self.origin(binding.name_origin, "binding name")?;
             self.origin(binding.type_origin, "binding type")?;
+            self.verify_value_type(binding.ty, &mut vec![], 0)?;
+        }
+        if function.visibility == FunctionVisibility::DatapackExport
+            && (function.bindings[..function.parameter_count]
+                .iter()
+                .any(|binding| self.value_type_contains_enum(binding.ty, &mut vec![]))
+                || matches!(function.result, FunctionResult::Value(ty) if self.value_type_contains_enum(ty, &mut vec![])))
+        {
+            return Err(HirVerificationError::new(
+                "datapack export exposes an enum-containing ABI type",
+            ));
         }
 
         let mut state = VerifyState::new(function.bindings.len());
@@ -1646,6 +1943,27 @@ impl Verifier<'_> {
             )));
         }
         Ok(())
+    }
+
+    fn value_type_contains_enum(&self, ty: ValueType, active: &mut Vec<SourceStructId>) -> bool {
+        match ty {
+            ValueType::Enum(_) => true,
+            ValueType::Struct(id) => {
+                if active.contains(&id) {
+                    return false;
+                }
+                active.push(id);
+                let result = self.output.struct_(id).is_some_and(|struct_| {
+                    struct_
+                        .fields
+                        .iter()
+                        .any(|field| self.value_type_contains_enum(field.ty, active))
+                });
+                active.pop();
+                result
+            }
+            _ => false,
+        }
     }
 
     fn verify_block(
@@ -1765,6 +2083,14 @@ impl Verifier<'_> {
             HirStatementKind::If(conditional) => self.verify_if(
                 function,
                 conditional,
+                state,
+                next_declaration,
+                context,
+                loop_depth,
+            ),
+            HirStatementKind::Switch(switch) => self.verify_switch_statement(
+                function,
+                switch,
                 state,
                 next_declaration,
                 context,
@@ -2103,6 +2429,123 @@ impl Verifier<'_> {
         }
     }
 
+    fn verify_switch_statement(
+        &self,
+        function: &HirFunction,
+        switch: &HirSwitchStatement,
+        state: &mut VerifyState,
+        next_declaration: &mut usize,
+        context: &HirExecutionContext,
+        loop_depth: usize,
+    ) -> Result<bool, HirVerificationError> {
+        self.origin(switch.origin, "switch statement")?;
+        self.expression(function, &switch.scrutinee, state)?;
+        let mut coverage = HirSwitchCoverage::new(
+            switch.scrutinee.ty,
+            self.enum_variant_count(switch.scrutinee.ty)?,
+        );
+        let checkpoint = state.checkpoint();
+        let mut continuing = None;
+        for (index, arm) in switch.arms.iter().enumerate() {
+            self.origin(arm.origin, "switch arm")?;
+            self.verify_switch_label(
+                &arm.label,
+                switch.scrutinee.ty,
+                &mut coverage,
+                index + 1 == switch.arms.len(),
+            )?;
+            if self.verify_block(
+                function,
+                &arm.body,
+                state,
+                next_declaration,
+                context,
+                loop_depth,
+            )? {
+                let delta = state.newly_assigned_since(checkpoint);
+                VerifyState::merge_delta_intersection(&mut continuing, &delta);
+            }
+            state.rollback(checkpoint);
+        }
+        if !coverage.complete() {
+            return Err(HirVerificationError::new(
+                "switch statement is not exhaustive",
+            ));
+        }
+        if let Some(delta) = continuing {
+            for index in delta {
+                state.set_assigned(index, true);
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn enum_variant_count(&self, ty: ValueType) -> Result<usize, HirVerificationError> {
+        match ty {
+            ValueType::Enum(id) => self
+                .output
+                .enum_(id)
+                .map(|enum_| enum_.variants.len())
+                .ok_or_else(|| HirVerificationError::new("switch names invalid enum")),
+            ValueType::Int32 => Ok(0),
+            _ => Err(HirVerificationError::new(
+                "switch scrutinee has unsupported type",
+            )),
+        }
+    }
+
+    fn verify_switch_label(
+        &self,
+        label: &HirSwitchLabel,
+        ty: ValueType,
+        coverage: &mut HirSwitchCoverage,
+        is_last: bool,
+    ) -> Result<(), HirVerificationError> {
+        match label {
+            HirSwitchLabel::Else => {
+                if coverage.has_else || !is_last || coverage.complete() {
+                    return Err(HirVerificationError::new(
+                        "invalid or unreachable switch else arm",
+                    ));
+                }
+                coverage.has_else = true;
+            }
+            HirSwitchLabel::Patterns(patterns) => {
+                if patterns.is_empty() || coverage.has_else {
+                    return Err(HirVerificationError::new(
+                        "empty patterns or patterns after else",
+                    ));
+                }
+                for pattern in patterns {
+                    self.origin(pattern.origin, "switch pattern")?;
+                    match (pattern.kind, ty) {
+                        (HirSwitchPatternKind::IntRange { min, max }, ValueType::Int32)
+                            if min <= max =>
+                        {
+                            coverage.insert_interval(min, max)?;
+                        }
+                        (
+                            HirSwitchPatternKind::EnumVariant { enum_, variant },
+                            ValueType::Enum(expected),
+                        ) if enum_ == expected => {
+                            coverage.insert_variant(variant.as_usize().ok_or_else(|| {
+                                HirVerificationError::new("variant ID does not fit usize")
+                            })?)?;
+                        }
+                        _ => {
+                            return Err(HirVerificationError::new(
+                                "switch pattern type or range invariant is invalid",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "HIR verification keeps the closed expression vocabulary in one exhaustive boundary"
@@ -2117,6 +2560,21 @@ impl Verifier<'_> {
         let inferred = match &expression.kind {
             HirExpressionKind::Bool(_) => ValueType::Bool,
             HirExpressionKind::Int32(_) => ValueType::Int32,
+            HirExpressionKind::EnumVariant { enum_, variant } => {
+                let declaration = self
+                    .output
+                    .enum_(*enum_)
+                    .ok_or_else(|| HirVerificationError::new("enum literal names invalid enum"))?;
+                if variant
+                    .as_usize()
+                    .is_none_or(|index| index >= declaration.variants.len())
+                {
+                    return Err(HirVerificationError::new(
+                        "enum literal names invalid variant",
+                    ));
+                }
+                ValueType::Enum(*enum_)
+            }
             HirExpressionKind::Local(local) => {
                 let index = Self::active_local_index(function, *local, state)?;
                 if !state.assigned[index] {
@@ -2205,6 +2663,45 @@ impl Verifier<'_> {
                     .map(|field| field.ty)
                     .ok_or_else(|| HirVerificationError::new("invalid struct projection field"))?
             }
+            HirExpressionKind::AnonymousStructConstruct { struct_, fields } => {
+                let declaration = self.output.anonymous_struct(*struct_).ok_or_else(|| {
+                    HirVerificationError::new("anonymous struct construction names invalid type")
+                })?;
+                let expected: Vec<ValueType> = match &declaration.kind {
+                    HirAnonymousStructKind::Named(fields) => fields.iter().map(|field| field.ty).collect(),
+                    HirAnonymousStructKind::Positional(fields) => fields.to_vec(),
+                };
+                if fields.len() != expected.len() {
+                    return Err(HirVerificationError::new("anonymous struct construction has wrong arity"));
+                }
+                let mut seen = vec![false; expected.len()];
+                for field in fields {
+                    let index = usize::try_from(field.field).unwrap_or(usize::MAX);
+                    if index >= expected.len() || std::mem::replace(&mut seen[index], true) {
+                        return Err(HirVerificationError::new("anonymous struct construction has invalid field"));
+                    }
+                    self.expression(function, &field.value, state)?;
+                    if field.value.ty != expected[index] {
+                        return Err(HirVerificationError::new("anonymous struct field initializer type differs"));
+                    }
+                }
+                ValueType::AnonymousStruct(*struct_)
+            }
+            HirExpressionKind::AnonymousStructProject { aggregate, field } => {
+                self.expression(function, aggregate, state)?;
+                let ValueType::AnonymousStruct(struct_) = aggregate.ty else {
+                    return Err(HirVerificationError::new("anonymous projection receiver is not structural"));
+                };
+                let declaration = self.output.anonymous_struct(struct_).ok_or_else(|| {
+                    HirVerificationError::new("anonymous projection names invalid type")
+                })?;
+                let index = usize::try_from(*field).unwrap_or(usize::MAX);
+                match &declaration.kind {
+                    HirAnonymousStructKind::Named(fields) => fields.get(index).map(|field| field.ty),
+                    HirAnonymousStructKind::Positional(fields) => fields.get(index).copied(),
+                }
+                .ok_or_else(|| HirVerificationError::new("invalid anonymous struct projection field"))?
+            }
             HirExpressionKind::ListI32 { op, operands } => {
                 for operand in operands {
                     self.expression(function, operand, state)?;
@@ -2285,6 +2782,35 @@ impl Verifier<'_> {
                     ));
                 }
                 ValueType::Bool
+            }
+            HirExpressionKind::Switch(switch) => {
+                self.origin(switch.origin, "switch expression")?;
+                self.expression(function, &switch.scrutinee, state)?;
+                let mut coverage = HirSwitchCoverage::new(
+                    switch.scrutinee.ty,
+                    self.enum_variant_count(switch.scrutinee.ty)?,
+                );
+                for (index, arm) in switch.arms.iter().enumerate() {
+                    self.origin(arm.origin, "switch expression arm")?;
+                    self.verify_switch_label(
+                        &arm.label,
+                        switch.scrutinee.ty,
+                        &mut coverage,
+                        index + 1 == switch.arms.len(),
+                    )?;
+                    self.expression(function, &arm.body, state)?;
+                    if arm.body.ty != expression.ty {
+                        return Err(HirVerificationError::new(
+                            "switch expression arm result types differ",
+                        ));
+                    }
+                }
+                if !coverage.complete() {
+                    return Err(HirVerificationError::new(
+                        "switch expression is not exhaustive",
+                    ));
+                }
+                expression.ty
             }
         };
         if expression.ty != inferred {
@@ -2389,6 +2915,10 @@ fn block_contains_return(block: &HirBlock) -> bool {
             }
             HirStatementKind::Run(run) => block_contains_return(&run.body),
             HirStatementKind::While(statement) => block_contains_return(&statement.body),
+            HirStatementKind::Switch(switch) => switch
+                .arms
+                .iter()
+                .any(|arm| block_contains_return(&arm.body)),
             HirStatementKind::Declaration { .. }
             | HirStatementKind::Assignment { .. }
             | HirStatementKind::Call(_)
@@ -2424,6 +2954,11 @@ fn verify_run_scope_ids(block: &HirBlock, next: &mut usize) -> Result<(), HirVer
             }
             HirStatementKind::While(statement) => {
                 verify_run_scope_ids(&statement.body, next)?;
+            }
+            HirStatementKind::Switch(switch) => {
+                for arm in &switch.arms {
+                    verify_run_scope_ids(&arm.body, next)?;
+                }
             }
             HirStatementKind::Declaration { .. }
             | HirStatementKind::Assignment { .. }
@@ -2479,6 +3014,12 @@ fn record_external_operation_occurrences(
                 record_expression_externals(&statement.condition, seen)?;
                 record_external_operation_occurrences(&statement.body, seen)?;
             }
+            HirStatementKind::Switch(switch) => {
+                record_expression_externals(&switch.scrutinee, seen)?;
+                for arm in &switch.arms {
+                    record_external_operation_occurrences(&arm.body, seen)?;
+                }
+            }
             HirStatementKind::Declaration { initializer, .. } => {
                 if let Some(value) = initializer {
                     record_expression_externals(value, seen)?;
@@ -2533,13 +3074,23 @@ fn record_expression_externals(
             }
             Ok(())
         }
-        HirExpressionKind::StructConstruct { fields, .. } => {
+        HirExpressionKind::Switch(switch) => {
+            record_expression_externals(&switch.scrutinee, seen)?;
+            for arm in &switch.arms {
+                record_expression_externals(&arm.body, seen)?;
+            }
+            Ok(())
+        }
+        HirExpressionKind::StructConstruct { fields, .. }
+        | HirExpressionKind::AnonymousStructConstruct { fields, .. } => {
             for field in fields {
                 record_expression_externals(&field.value, seen)?;
             }
             Ok(())
         }
-        HirExpressionKind::StructProject { aggregate, .. } | HirExpressionKind::Not(aggregate) => {
+        HirExpressionKind::StructProject { aggregate, .. }
+        | HirExpressionKind::AnonymousStructProject { aggregate, .. }
+        | HirExpressionKind::Not(aggregate) => {
             record_expression_externals(aggregate, seen)
         }
         HirExpressionKind::ListI32 { operands, .. }
@@ -2554,9 +3105,10 @@ fn record_expression_externals(
             record_expression_externals(left, seen)?;
             record_expression_externals(right, seen)
         }
-        HirExpressionKind::Bool(_) | HirExpressionKind::Int32(_) | HirExpressionKind::Local(_) => {
-            Ok(())
-        }
+        HirExpressionKind::Bool(_)
+        | HirExpressionKind::Int32(_)
+        | HirExpressionKind::EnumVariant { .. }
+        | HirExpressionKind::Local(_) => Ok(()),
     }
 }
 
@@ -2564,6 +3116,72 @@ struct VerifyState {
     active: Vec<bool>,
     assigned: Vec<bool>,
     changes: Vec<VerifyStateChange>,
+}
+
+struct HirSwitchCoverage {
+    ty: ValueType,
+    variants: Vec<bool>,
+    intervals: BTreeMap<i32, i32>,
+    has_else: bool,
+}
+
+impl HirSwitchCoverage {
+    fn new(ty: ValueType, variants: usize) -> Self {
+        Self {
+            ty,
+            variants: vec![false; variants],
+            intervals: BTreeMap::new(),
+            has_else: false,
+        }
+    }
+    fn insert_variant(&mut self, index: usize) -> Result<(), HirVerificationError> {
+        let slot = self
+            .variants
+            .get_mut(index)
+            .ok_or_else(|| HirVerificationError::new("switch pattern has invalid variant"))?;
+        if std::mem::replace(slot, true) {
+            return Err(HirVerificationError::new("switch enum patterns overlap"));
+        }
+        Ok(())
+    }
+    fn insert_interval(&mut self, min: i32, max: i32) -> Result<(), HirVerificationError> {
+        if self
+            .intervals
+            .range(..=min)
+            .next_back()
+            .is_some_and(|(_, old_max)| *old_max >= min)
+            || self
+                .intervals
+                .range(min..)
+                .next()
+                .is_some_and(|(next_min, _)| *next_min <= max)
+        {
+            return Err(HirVerificationError::new("switch integer patterns overlap"));
+        }
+        self.intervals.insert(min, max);
+        Ok(())
+    }
+    fn complete(&self) -> bool {
+        if self.has_else {
+            return true;
+        }
+        match self.ty {
+            ValueType::Enum(_) => {
+                !self.variants.is_empty() && self.variants.iter().all(|seen| *seen)
+            }
+            ValueType::Int32 => {
+                let mut expected = i64::from(i32::MIN);
+                for (min, max) in &self.intervals {
+                    if i64::from(*min) != expected {
+                        return false;
+                    }
+                    expected = i64::from(*max) + 1;
+                }
+                expected == i64::from(i32::MAX) + 1
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2650,8 +3268,8 @@ impl VerifyState {
 mod tests {
     use super::{
         HirBindingKind, HirEntityQueryStep, HirExpressionKind, HirExternalSemantic, HirRun,
-        HirRunModifier, HirStatementKind, LocalId, SourceExternalOpId, SourceFunctionId,
-        SourceRunId, verify,
+        HirRunModifier, HirStatementKind, HirSwitchLabel, HirSwitchPatternKind, LocalId,
+        SourceEnumId, SourceExternalOpId, SourceFunctionId, SourceRunId, SourceVariantId, verify,
     };
     use crate::frontend::FrontendLimits;
     use crate::frontend::check::{CheckOutput, check};
@@ -2699,6 +3317,58 @@ mod tests {
 
         let error = verify(&checked, &sources).unwrap_err();
         assert!(error.to_string().contains("non-dense identity"));
+    }
+
+    #[test]
+    fn verifier_rejects_corrupted_enum_and_variant_identities() {
+        let source =
+            "const State = enum { ready, done }; fn valid() { const state: State = .ready; }";
+
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut enum_identity = checked.unwrap();
+        enum_identity.module.enums[0].id = SourceEnumId(7);
+        assert!(
+            verify(&enum_identity, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("non-dense or empty")
+        );
+
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut variant_identity = checked.unwrap();
+        variant_identity.module.enums[0].variants[1].id = SourceVariantId(7);
+        assert!(
+            verify(&variant_identity, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("variant inventory is non-dense")
+        );
+    }
+
+    #[test]
+    fn verifier_recomputes_switch_pattern_coverage() {
+        let source = "fn valid(value: Int32) { switch (value) { 0...10 => {}, 11...20 => {}, else => {}, } }";
+        let (sources, output) = checked_text(source);
+        let (checked, _) = output.into_parts();
+        let mut checked = checked.unwrap();
+        let HirStatementKind::Switch(switch) =
+            &mut checked.module.functions[0].body.statements[0].kind
+        else {
+            unreachable!("fixture has one switch statement")
+        };
+        let HirSwitchLabel::Patterns(patterns) = &mut switch.arms[1].label else {
+            unreachable!("second arm has an integer pattern")
+        };
+        patterns[0].kind = HirSwitchPatternKind::IntRange { min: 5, max: 20 };
+
+        assert!(
+            verify(&checked, &sources)
+                .unwrap_err()
+                .to_string()
+                .contains("patterns overlap")
+        );
     }
 
     #[test]

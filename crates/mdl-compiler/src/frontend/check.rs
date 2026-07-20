@@ -1,6 +1,7 @@
 //! Signature collection, semantic checking, and structured flow analysis.
 
 use std::collections::{BTreeMap, HashMap};
+use std::cell::RefCell;
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU32;
@@ -12,18 +13,23 @@ use super::ast::{
     AstCoordinateSigil, AstDeclaration, AstExpression, AstExpressionKind, AstFunction,
     AstFunctionVisibility, AstIfStatement, AstModule, AstName, AstResultTypeKind,
     AstReturnStatement, AstRunModifier, AstRunStatement, AstStatement, AstStructLiteral,
-    AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
+    AstSwitchExpression, AstSwitchLabel, AstSwitchPattern, AstSwitchPatternKind,
+    AstSwitchStatement, AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::context::{apply_run_modifiers, function_entry_context};
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBinding, HirBindingKind,
     HirBlock, HirCall, HirComparisonOp, HirContextStep, HirEntityQuery, HirEntityQueryStep,
-    HirExecutionContext, HirExecutorCapture, HirExpression, HirExpressionKind, HirExternalOp,
-    HirExternalSemantic, HirFunction, HirIf, HirIfArm, HirListI32Op,
-    HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun, HirRunModifier,
-    HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField, HirStructFieldValue,
-    HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId, SourceExternalOpId,
-    SourceFunctionId, SourceModuleId, SourceRunId, SourceStructId, ValueType, verify,
+    HirEnum, HirEnumVariant, HirExecutionContext, HirExecutorCapture, HirExpression,
+    HirExpressionKind, HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirIfArm,
+    HirListI32Op, HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun,
+    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField,
+    HirStructFieldValue, HirSwitchExpression, HirSwitchExpressionArm, HirSwitchLabel,
+    HirSwitchPattern, HirSwitchPatternKind, HirSwitchStatement, HirSwitchStatementArm,
+    HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId, SourceEnumId,
+    HirAnonymousStruct, HirAnonymousStructField, HirAnonymousStructKind, SourceAnonymousStructId,
+    SourceExternalOpId, SourceFunctionId, SourceModuleId, SourceRunId, SourceStructId,
+    SourceVariantId, ValueType, verify,
 };
 use super::input::{ModuleDependency, ModuleKey};
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
@@ -39,6 +45,16 @@ use crate::source::{Origin, OriginError, SourceContext, SourceError, Span};
 
 const DUPLICATE_FUNCTION: &str = "frontend.check.duplicate-function";
 const DUPLICATE_STRUCT: &str = "frontend.check.duplicate-struct";
+const DUPLICATE_TYPE: &str = "frontend.check.duplicate-type";
+const EMPTY_ENUM: &str = "frontend.check.empty-enum";
+const DUPLICATE_ENUM_VARIANT: &str = "frontend.check.duplicate-enum-variant";
+const UNKNOWN_ENUM_VARIANT: &str = "frontend.check.unknown-enum-variant";
+const ENUM_CONTEXT_REQUIRED: &str = "frontend.check.enum-context-required";
+const INVALID_SWITCH_PATTERN: &str = "frontend.check.invalid-switch-pattern";
+const OVERLAPPING_SWITCH_PATTERN: &str = "frontend.check.overlapping-switch-pattern";
+const NON_EXHAUSTIVE_SWITCH: &str = "frontend.check.non-exhaustive-switch";
+const INVALID_SWITCH_ELSE: &str = "frontend.check.invalid-switch-else";
+const ENUM_EXPORT_ABI: &str = "frontend.check.enum-export-abi";
 const DUPLICATE_STRUCT_FIELD: &str = "frontend.check.duplicate-struct-field";
 const UNKNOWN_TYPE: &str = "frontend.check.unknown-type";
 const UNKNOWN_STRUCT_FIELD: &str = "frontend.check.unknown-struct-field";
@@ -129,6 +145,8 @@ impl CheckOutput {
 pub(super) enum CheckedEntityKind {
     Module,
     Struct,
+    Enum,
+    Variant,
     Function,
     ExternalOperation,
     RunScope,
@@ -140,6 +158,8 @@ impl fmt::Display for CheckedEntityKind {
         match self {
             Self::Module => formatter.write_str("module"),
             Self::Struct => formatter.write_str("struct"),
+            Self::Enum => formatter.write_str("enum"),
+            Self::Variant => formatter.write_str("variant"),
             Self::Function => formatter.write_str("function"),
             Self::ExternalOperation => formatter.write_str("external operation"),
             Self::RunScope => formatter.write_str("run scope"),
@@ -232,6 +252,10 @@ pub(super) fn check(
 }
 
 /// Checks a complete canonical package after every module parsed successfully.
+#[allow(
+    clippy::too_many_lines,
+    reason = "package checking materializes every closed HIR inventory in source order"
+)]
 pub(super) fn check_package(
     sources: &mut SourceContext,
     modules: &[PackageAstModule<'_>],
@@ -269,6 +293,28 @@ pub(super) fn check_package(
         });
     }
 
+    let mut hir_enums = Vec::with_capacity(signatures.enums.len());
+    for enum_ in &signatures.enums {
+        let variants = enum_
+            .variants
+            .iter()
+            .map(|variant| {
+                Ok(HirEnumVariant {
+                    id: variant.id,
+                    name_origin: sources.add_origin(Origin::Source(variant.name_span))?,
+                    origin: sources.add_origin(Origin::Source(variant.span))?,
+                })
+            })
+            .collect::<Result<Vec<_>, OriginError>>()?;
+        hir_enums.push(HirEnum {
+            id: enum_.id,
+            module: enum_.module,
+            name_origin: sources.add_origin(Origin::Source(enum_.name_span))?,
+            variants: variants.into_boxed_slice(),
+            origin: sources.add_origin(Origin::Source(enum_.span))?,
+        });
+    }
+
     for signature in &signatures.functions {
         let module_index =
             signature
@@ -289,6 +335,39 @@ pub(super) fn check_package(
         );
         functions.push(checker.check_function(ast)?);
     }
+
+    let hir_anonymous_structs = signatures
+        .anonymous
+        .borrow()
+        .entries
+        .iter()
+        .map(|anonymous| {
+            let origin = sources.add_origin(Origin::Source(anonymous.span))?;
+            let kind = match &anonymous.key {
+                AnonymousTypeKey::Named(fields) => HirAnonymousStructKind::Named(
+                    fields
+                        .iter()
+                        .map(|(name, ty)| {
+                            Ok(HirAnonymousStructField {
+                                name: name.clone(),
+                                ty: *ty,
+                                origin,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, OriginError>>()?
+                        .into_boxed_slice(),
+                ),
+                AnonymousTypeKey::Positional(fields) => {
+                    HirAnonymousStructKind::Positional(fields.clone())
+                }
+            };
+            Ok(HirAnonymousStruct {
+                id: anonymous.id,
+                kind,
+                origin,
+            })
+        })
+        .collect::<Result<Vec<_>, OriginError>>()?;
 
     let mut hir_modules = Vec::with_capacity(modules.len());
     for module in modules {
@@ -317,6 +396,8 @@ pub(super) fn check_package(
         root,
         modules: hir_modules.into_boxed_slice(),
         structs: hir_structs.into_boxed_slice(),
+        enums: hir_enums.into_boxed_slice(),
+        anonymous_structs: hir_anonymous_structs.into_boxed_slice(),
         external_ops,
         run_scope_count: next_run_scope,
         functions,
@@ -370,7 +451,46 @@ struct StructFieldSignature {
     span: Span,
 }
 
-type StructsByModule = Vec<HashMap<Box<str>, SourceStructId>>;
+struct EnumSignature {
+    id: SourceEnumId,
+    module: SourceModuleId,
+    name_span: Span,
+    variants: Box<[EnumVariantSignature]>,
+    span: Span,
+}
+
+struct EnumVariantSignature {
+    id: SourceVariantId,
+    name: Box<str>,
+    name_span: Span,
+    span: Span,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum AnonymousTypeKey {
+    Named(Box<[(Box<str>, ValueType)]>),
+    Positional(Box<[ValueType]>),
+}
+
+struct AnonymousSignature {
+    id: SourceAnonymousStructId,
+    key: AnonymousTypeKey,
+    span: Span,
+}
+
+#[derive(Default)]
+struct AnonymousInterner {
+    entries: Vec<AnonymousSignature>,
+    by_key: HashMap<AnonymousTypeKey, SourceAnonymousStructId>,
+}
+
+#[derive(Clone, Copy)]
+enum TypeLookup {
+    Struct { id: SourceStructId, span: Span },
+    Enum { id: SourceEnumId, span: Span },
+}
+
+type TypesByModule = Vec<HashMap<Box<str>, TypeLookup>>;
 
 #[derive(Clone, Copy)]
 struct ParameterSignature {
@@ -380,7 +500,9 @@ struct ParameterSignature {
 
 struct SignatureIndex {
     structs: Vec<StructSignature>,
-    structs_by_module: Vec<HashMap<Box<str>, SourceStructId>>,
+    enums: Vec<EnumSignature>,
+    anonymous: RefCell<AnonymousInterner>,
+    types_by_module: TypesByModule,
     functions: Vec<FunctionSignature>,
     by_module: Vec<HashMap<Box<str>, FunctionLookup>>,
     namespaces: Vec<HashMap<Box<str>, NamespaceLookup>>,
@@ -418,11 +540,14 @@ fn collect_signatures(
         .iter()
         .map(|module| (module.key.clone(), module.id))
         .collect::<BTreeMap<_, _>>();
-    let (mut structs, structs_by_module) = collect_struct_headers(sources, modules, diagnostics)?;
+    let (mut structs, mut types_by_module) = collect_struct_headers(sources, modules, diagnostics)?;
+    let anonymous = RefCell::new(AnonymousInterner::default());
+    let enums = collect_enum_headers(sources, modules, &mut types_by_module, diagnostics)?;
     resolve_struct_fields(
         sources,
         modules,
-        &structs_by_module,
+        &types_by_module,
+        &anonymous,
         &mut structs,
         diagnostics,
     )?;
@@ -441,27 +566,88 @@ fn collect_signatures(
             module,
             &imports.first_spans,
             &mut functions,
-            &structs_by_module,
+            &types_by_module,
+            &anonymous,
             diagnostics,
         )?;
         namespaces.push(imports.namespaces);
         by_module.push(functions_by_name);
     }
 
+    for function in &functions {
+        if function.visibility != FunctionVisibility::DatapackExport {
+            continue;
+        }
+        for parameter in &function.parameters {
+            if type_contains_enum(parameter.ty, &structs, &mut vec![]) {
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        ENUM_EXPORT_ABI,
+                        "datapack exports cannot expose enum-containing parameter types",
+                        parameter.type_span,
+                    )
+                    .primary("unvalidated closed enum ABI"),
+                );
+            }
+        }
+        if let FunctionResult::Value(ty) = function.result {
+            if type_contains_enum(ty, &structs, &mut vec![]) {
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        ENUM_EXPORT_ABI,
+                        "datapack exports cannot expose enum-containing result types",
+                        function.result_span.unwrap_or(function.name_span),
+                    )
+                    .primary("unvalidated closed enum ABI"),
+                );
+            }
+        }
+    }
+
     Ok(SignatureIndex {
         structs,
-        structs_by_module,
+        enums,
+        anonymous,
+        types_by_module,
         functions,
         by_module,
         namespaces,
     })
 }
 
+fn type_contains_enum(
+    ty: ValueType,
+    structs: &[StructSignature],
+    visiting: &mut Vec<SourceStructId>,
+) -> bool {
+    match ty {
+        ValueType::Enum(_) => true,
+        ValueType::Struct(id) => {
+            if visiting.contains(&id) {
+                return false;
+            }
+            visiting.push(id);
+            let result = id
+                .as_usize()
+                .and_then(|index| structs.get(index))
+                .is_some_and(|struct_| {
+                    struct_
+                        .fields
+                        .iter()
+                        .any(|field| type_contains_enum(field.ty, structs, visiting))
+                });
+            visiting.pop();
+            result
+        }
+        _ => false,
+    }
+}
+
 fn collect_struct_headers(
     sources: &SourceContext,
     modules: &[PackageAstModule<'_>],
     diagnostics: &mut DiagnosticSink,
-) -> Result<(Vec<StructSignature>, StructsByModule), CheckError> {
+) -> Result<(Vec<StructSignature>, TypesByModule), CheckError> {
     let mut structs = Vec::new();
     let mut by_module = Vec::with_capacity(modules.len());
     for module in modules {
@@ -484,7 +670,13 @@ fn collect_struct_headers(
                 );
             } else {
                 first_spans.insert(name.clone(), struct_.name.span);
-                names.insert(name.clone(), id);
+                names.insert(
+                    name.clone(),
+                    TypeLookup::Struct {
+                        id,
+                        span: struct_.name.span,
+                    },
+                );
             }
             structs.push(StructSignature {
                 id,
@@ -500,10 +692,107 @@ fn collect_struct_headers(
     Ok((structs, by_module))
 }
 
+fn collect_enum_headers(
+    sources: &SourceContext,
+    modules: &[PackageAstModule<'_>],
+    by_module: &mut [HashMap<Box<str>, TypeLookup>],
+    diagnostics: &mut DiagnosticSink,
+) -> Result<Vec<EnumSignature>, CheckError> {
+    let mut enums = vec![];
+    for module in modules {
+        let module_index = module
+            .id
+            .as_usize()
+            .ok_or(CheckError::IdentitySpaceExhausted(
+                CheckedEntityKind::Module,
+            ))?;
+        for enum_ in &module.ast.enums {
+            let id = SourceEnumId::from_index(enums.len())
+                .ok_or(CheckError::IdentitySpaceExhausted(CheckedEntityKind::Enum))?;
+            let name: Box<str> = sources.files().slice(enum_.name.span)?.into();
+            if is_reserved_compiler_name(&name) {
+                diagnostics.push(reserved_compiler_name_diagnostic(&name, enum_.name.span));
+            }
+            if let Some(previous) = by_module[module_index].get(name.as_ref()) {
+                let previous_span = match previous {
+                    TypeLookup::Struct { span, .. } | TypeLookup::Enum { span, .. } => *span,
+                };
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        DUPLICATE_TYPE,
+                        format!("type `{name}` is declared more than once"),
+                        enum_.name.span,
+                    )
+                    .primary("duplicate nominal type declaration")
+                    .support(previous_span, "first declaration is here"),
+                );
+            } else {
+                by_module[module_index].insert(
+                    name.clone(),
+                    TypeLookup::Enum {
+                        id,
+                        span: enum_.name.span,
+                    },
+                );
+            }
+            if enum_.variants.is_empty() {
+                diagnostics.push(
+                    PendingDiagnostic::new(
+                        EMPTY_ENUM,
+                        "enum must declare at least one variant",
+                        enum_.span,
+                    )
+                    .primary("empty enum"),
+                );
+            }
+            let mut first = HashMap::<Box<str>, Span>::new();
+            let mut variants = vec![];
+            for (index, variant) in enum_.variants.iter().enumerate() {
+                let variant_id = SourceVariantId::from_index(index).ok_or(
+                    CheckError::IdentitySpaceExhausted(CheckedEntityKind::Variant),
+                )?;
+                let variant_name: Box<str> = sources.files().slice(variant.name.span)?.into();
+                if is_reserved_compiler_name(&variant_name) {
+                    diagnostics.push(reserved_compiler_name_diagnostic(
+                        &variant_name,
+                        variant.name.span,
+                    ));
+                }
+                if let Some(original) = first.insert(variant_name.clone(), variant.name.span) {
+                    diagnostics.push(
+                        PendingDiagnostic::new(
+                            DUPLICATE_ENUM_VARIANT,
+                            format!("variant `{variant_name}` is declared more than once"),
+                            variant.name.span,
+                        )
+                        .primary("duplicate enum variant")
+                        .support(original, "first variant is here"),
+                    );
+                }
+                variants.push(EnumVariantSignature {
+                    id: variant_id,
+                    name: variant_name,
+                    name_span: variant.name.span,
+                    span: variant.span,
+                });
+            }
+            enums.push(EnumSignature {
+                id,
+                module: module.id,
+                name_span: enum_.name.span,
+                variants: variants.into_boxed_slice(),
+                span: enum_.span,
+            });
+        }
+    }
+    Ok(enums)
+}
+
 fn resolve_struct_fields(
     sources: &SourceContext,
     modules: &[PackageAstModule<'_>],
-    by_module: &[HashMap<Box<str>, SourceStructId>],
+    by_module: &[HashMap<Box<str>, TypeLookup>],
+    anonymous: &RefCell<AnonymousInterner>,
     structs: &mut [StructSignature],
     diagnostics: &mut DiagnosticSink,
 ) -> Result<(), CheckError> {
@@ -546,8 +835,9 @@ fn resolve_struct_fields(
             let ty = resolve_value_type(
                 sources,
                 struct_.module,
-                field.ty.kind,
+                field.ty.kind.clone(),
                 by_module,
+                anonymous,
                 diagnostics,
             )
             .unwrap_or(ValueType::Int32);
@@ -609,7 +899,8 @@ fn resolve_value_type(
     sources: &SourceContext,
     module: SourceModuleId,
     kind: AstValueTypeKind,
-    by_module: &[HashMap<Box<str>, SourceStructId>],
+    by_module: &[HashMap<Box<str>, TypeLookup>],
+    anonymous: &RefCell<AnonymousInterner>,
     diagnostics: &mut DiagnosticSink,
 ) -> Option<ValueType> {
     match kind {
@@ -634,7 +925,68 @@ fn resolve_value_type(
                     .primary("no nominal type with this name exists in the module"),
                 );
             }
-            resolved.map(ValueType::Struct)
+            resolved.map(|resolved| match resolved {
+                TypeLookup::Struct { id, .. } => ValueType::Struct(id),
+                TypeLookup::Enum { id, .. } => ValueType::Enum(id),
+            })
+        }
+        AstValueTypeKind::Anonymous(anonymous_ast) => {
+            use super::ast::AstAnonymousStructTypeKind;
+            let key = match anonymous_ast.kind {
+                AstAnonymousStructTypeKind::Named(fields) => {
+                    let mut resolved = Vec::with_capacity(fields.len());
+                    let mut names = HashMap::<Box<str>, Span>::new();
+                    for field in fields {
+                        let name: Box<str> = sources.files().slice(field.name.span).ok()?.into();
+                        if let Some(original) = names.insert(name.clone(), field.name.span) {
+                            diagnostics.push(
+                                PendingDiagnostic::new(
+                                    DUPLICATE_STRUCT_FIELD,
+                                    format!("anonymous struct field `{name}` is declared more than once"),
+                                    field.name.span,
+                                )
+                                .support(original, "first field is here"),
+                            );
+                        }
+                        let ty = resolve_value_type(
+                            sources,
+                            module,
+                            field.ty.kind,
+                            by_module,
+                            anonymous,
+                            diagnostics,
+                        )?;
+                        resolved.push((name, ty));
+                    }
+                    AnonymousTypeKey::Named(resolved.into_boxed_slice())
+                }
+                AstAnonymousStructTypeKind::Positional(components) => {
+                    let mut resolved = Vec::with_capacity(components.len());
+                    for component in components {
+                        resolved.push(resolve_value_type(
+                            sources,
+                            module,
+                            component.kind,
+                            by_module,
+                            anonymous,
+                            diagnostics,
+                        )?);
+                    }
+                    AnonymousTypeKey::Positional(resolved.into_boxed_slice())
+                }
+            };
+            let mut interner = anonymous.borrow_mut();
+            if let Some(id) = interner.by_key.get(&key).copied() {
+                return Some(ValueType::AnonymousStruct(id));
+            }
+            let id = SourceAnonymousStructId::from_index(interner.entries.len())?;
+            interner.entries.push(AnonymousSignature {
+                id,
+                key: key.clone(),
+                span: anonymous_ast.span,
+            });
+            interner.by_key.insert(key, id);
+            Some(ValueType::AnonymousStruct(id))
         }
     }
 }
@@ -722,7 +1074,8 @@ fn collect_module_signatures(
     module: &PackageAstModule<'_>,
     import_spans: &HashMap<Box<str>, Span>,
     functions: &mut Vec<FunctionSignature>,
-    structs_by_module: &[HashMap<Box<str>, SourceStructId>],
+    types_by_module: &[HashMap<Box<str>, TypeLookup>],
+    anonymous: &RefCell<AnonymousInterner>,
     diagnostics: &mut DiagnosticSink,
 ) -> Result<HashMap<Box<str>, FunctionLookup>, CheckError> {
     let mut by_name = HashMap::with_capacity(module.ast.functions.len());
@@ -746,14 +1099,14 @@ fn collect_module_signatures(
                 .support(import_span, "import binding is here"),
             );
             by_name.insert(name.clone(), FunctionLookup::Poisoned);
-        } else if structs_by_module
+        } else if types_by_module
             .get(module.id.as_usize().unwrap_or(usize::MAX))
             .is_some_and(|types| types.contains_key(name.as_ref()))
         {
             diagnostics.push(
                 PendingDiagnostic::new(
                     TOP_LEVEL_NAME_CONFLICT,
-                    format!("function `{name}` conflicts with a struct type"),
+                    format!("function `{name}` conflicts with a nominal type"),
                     function.name.span,
                 )
                 .primary("top-level names share one namespace"),
@@ -779,8 +1132,9 @@ fn collect_module_signatures(
             let ty = resolve_value_type(
                 sources,
                 module.id,
-                parameter.ty.kind,
-                structs_by_module,
+                parameter.ty.kind.clone(),
+                types_by_module,
+                anonymous,
                 diagnostics,
             )
             .unwrap_or(ValueType::Int32);
@@ -789,11 +1143,18 @@ fn collect_module_signatures(
                 type_span: parameter.ty.span,
             });
         }
-        let (result, result_span) = if let Some(result_ast) = function.result {
-            let result = match result_ast.kind {
+        let (result, result_span) = if let Some(result_ast) = &function.result {
+            let result = match &result_ast.kind {
                 AstResultTypeKind::Void => FunctionResult::Void,
                 AstResultTypeKind::Value(kind) => FunctionResult::Value(
-                    resolve_value_type(sources, module.id, kind, structs_by_module, diagnostics)
+                    resolve_value_type(
+                        sources,
+                        module.id,
+                        kind.clone(),
+                        types_by_module,
+                        anonymous,
+                        diagnostics,
+                    )
                         .unwrap_or(ValueType::Int32),
                 ),
             };
@@ -1045,6 +1406,7 @@ impl<'a> BodyChecker<'a> {
             AstStatement::Call(statement) => self.check_call_statement(statement, assigned),
             AstStatement::If(conditional) => self.check_if(conditional, assigned),
             AstStatement::While(statement) => self.check_while(statement, assigned),
+            AstStatement::Switch(statement) => self.check_switch_statement(statement, assigned),
             AstStatement::Break(span) => self.check_loop_control(*span, true),
             AstStatement::Continue(span) => self.check_loop_control(*span, false),
             AstStatement::Return(statement) => self.check_return(statement, assigned),
@@ -2005,21 +2367,38 @@ impl<'a> BodyChecker<'a> {
             AstBindingKind::Const => HirBindingKind::Const,
             AstBindingKind::Var => HirBindingKind::Var,
         };
-        let declared_type = self
-            .resolve_type(declaration.ty.kind)
-            .unwrap_or(ValueType::Int32);
+        let declared_type = if let Some(ty) = &declaration.ty {
+            self.resolve_type(ty.kind.clone()).unwrap_or(ValueType::Int32)
+        } else {
+            let Some(initializer) = declaration.initializer.as_ref() else {
+                self.diagnostics.push(PendingDiagnostic::new(
+                    DIRTY_AST,
+                    "inferred declaration without an initializer reached semantic checking",
+                    declaration.span,
+                ));
+                return Ok(CheckedStatement::invalid());
+            };
+            let checked = self.check_expression(initializer, assigned)?;
+            let Some(ty) = checked.ty else {
+                return Ok(CheckedStatement::invalid());
+            };
+            ty
+        };
+        let type_span = declaration.ty.as_ref().map_or(declaration.name.span, |ty| ty.span);
         let local = self.allocate_binding(
             binding_kind,
             declared_type,
             declaration.name.span,
-            declaration.ty.span,
+            type_span,
             declaration.span,
         )?;
 
         let initializer = declaration
             .initializer
             .as_ref()
-            .map(|initializer| self.check_expression(initializer, assigned))
+            .map(|initializer| {
+                self.check_expression_expected(initializer, assigned, Some(declared_type))
+            })
             .transpose()?;
         let mut valid = duplicate_span.is_none() && !reserved;
         if declaration.kind == AstBindingKind::Const && declaration.initializer.is_none() {
@@ -2037,7 +2416,7 @@ impl<'a> BodyChecker<'a> {
                         initializer.span,
                         actual,
                         declared_type,
-                        declaration.ty.span,
+                        type_span,
                         "declared type is here",
                     );
                     valid = false;
@@ -2054,7 +2433,7 @@ impl<'a> BodyChecker<'a> {
             kind: binding_kind,
             ty: declared_type,
             name_span: declaration.name.span,
-            type_span: declaration.ty.span,
+            type_span,
         };
         let state = if reserved {
             ActiveBinding::Poisoned(binding)
@@ -2075,7 +2454,8 @@ impl<'a> BodyChecker<'a> {
             self.sources,
             self.signature.module,
             kind,
-            &self.signatures.structs_by_module,
+            &self.signatures.types_by_module,
+            &self.signatures.anonymous,
             self.diagnostics,
         )
     }
@@ -2119,7 +2499,8 @@ impl<'a> BodyChecker<'a> {
             );
         }
 
-        let value = self.check_expression(&assignment.value, assigned)?;
+        let expected = target.map(|target| target.original().ty);
+        let value = self.check_expression_expected(&assignment.value, assigned, expected)?;
         let target = match (target, implicit_run_capture) {
             (Some(ActiveBinding::Unique(target)), false) => Some(target),
             (_, true) | (Some(ActiveBinding::Poisoned(_)) | None, false) => None,
@@ -2287,6 +2668,437 @@ impl<'a> BodyChecker<'a> {
         self.finish_statement(kind, conditional.span, continues)
     }
 
+    fn check_switch_statement(
+        &mut self,
+        switch: &AstSwitchStatement,
+        assigned: &mut Assigned,
+    ) -> Result<CheckedStatement, CheckError> {
+        let scrutinee = self.check_expression(&switch.scrutinee, assigned)?;
+        let Some(scrutinee_ty) = scrutinee.ty else {
+            return Ok(CheckedStatement::invalid());
+        };
+        if !matches!(scrutinee_ty, ValueType::Int32 | ValueType::Enum(_)) {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INVALID_SWITCH_PATTERN,
+                    "switch scrutinee must be Int32 or an enum",
+                    switch.scrutinee.span,
+                )
+                .primary("unsupported switch type"),
+            );
+        }
+        let mut coverage = SwitchCoverage::new(scrutinee_ty, self.enum_variant_count(scrutinee_ty));
+        let checkpoint = assigned.checkpoint();
+        let mut continuing_delta = None;
+        let mut arms = vec![];
+        let mut valid = scrutinee.expression.is_some()
+            && matches!(scrutinee_ty, ValueType::Int32 | ValueType::Enum(_));
+        for (index, arm) in switch.arms.iter().enumerate() {
+            let label = self.check_switch_label(
+                &arm.label,
+                scrutinee_ty,
+                &mut coverage,
+                index + 1 == switch.arms.len(),
+            )?;
+            let body = self.check_block(&arm.body, assigned)?;
+            if body.continues {
+                let delta = assigned.newly_assigned_since(checkpoint);
+                Assigned::merge_delta_intersection(&mut continuing_delta, &delta);
+            }
+            assigned.rollback(checkpoint);
+            valid &= label.is_some() && body.valid;
+            if let Some(label) = label {
+                arms.push(HirSwitchStatementArm {
+                    label,
+                    body: body.block,
+                    origin: self.origin(arm.span)?,
+                });
+            }
+        }
+        valid &= self.finish_switch_coverage(&coverage, switch.span);
+        if let Some(delta) = continuing_delta.as_ref() {
+            for index in delta {
+                assigned.set_index(*index, true);
+            }
+        }
+        let continues = continuing_delta.is_some();
+        let kind = match (valid, scrutinee.expression) {
+            (true, Some(scrutinee)) => Some(HirStatementKind::Switch(HirSwitchStatement {
+                scrutinee,
+                arms: arms.into_boxed_slice(),
+                origin: self.origin(switch.span)?,
+            })),
+            _ => None,
+        };
+        self.finish_statement(kind, switch.span, continues)
+    }
+
+    fn check_switch_expression(
+        &mut self,
+        switch: &AstSwitchExpression,
+        assigned: &Assigned,
+        expected: Option<ValueType>,
+    ) -> Result<CheckedExpression, CheckError> {
+        let scrutinee = self.check_expression(&switch.scrutinee, assigned)?;
+        let Some(scrutinee_ty) = scrutinee.ty else {
+            return Ok(CheckedExpression::invalid(switch.span));
+        };
+        let mut valid = scrutinee.expression.is_some()
+            && matches!(scrutinee_ty, ValueType::Int32 | ValueType::Enum(_));
+        if !matches!(scrutinee_ty, ValueType::Int32 | ValueType::Enum(_)) {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INVALID_SWITCH_PATTERN,
+                    "switch scrutinee must be Int32 or an enum",
+                    switch.scrutinee.span,
+                )
+                .primary("unsupported switch type"),
+            );
+        }
+        let mut coverage = SwitchCoverage::new(scrutinee_ty, self.enum_variant_count(scrutinee_ty));
+        let mut result_ty = expected;
+        let mut arms = vec![];
+        for (index, arm) in switch.arms.iter().enumerate() {
+            let label = self.check_switch_label(
+                &arm.label,
+                scrutinee_ty,
+                &mut coverage,
+                index + 1 == switch.arms.len(),
+            )?;
+            let body = self.check_expression_expected(&arm.body, assigned, result_ty)?;
+            if result_ty.is_none() {
+                result_ty = body.ty;
+            }
+            if let (Some(actual), Some(expected)) = (body.ty, result_ty) {
+                if actual != expected {
+                    self.type_mismatch_without_support(
+                        body.span,
+                        actual,
+                        expected,
+                        "all switch expression arms must have the same type",
+                    );
+                    valid = false;
+                }
+            }
+            valid &= label.is_some() && body.expression.is_some();
+            if let (Some(label), Some(body)) = (label, body.expression) {
+                arms.push(HirSwitchExpressionArm {
+                    label,
+                    body,
+                    origin: self.origin(arm.span)?,
+                });
+            }
+        }
+        valid &= self.finish_switch_coverage(&coverage, switch.span);
+        let Some(result_ty) = result_ty else {
+            self.diagnostics.push(PendingDiagnostic::new(
+                NON_EXHAUSTIVE_SWITCH,
+                "switch expression has no typed arms",
+                switch.span,
+            ));
+            return Ok(CheckedExpression::invalid(switch.span));
+        };
+        let Some(scrutinee) = scrutinee.expression else {
+            return Ok(CheckedExpression::invalid(switch.span));
+        };
+        if !valid {
+            return Ok(CheckedExpression::invalid(switch.span));
+        }
+        Ok(CheckedExpression::valid(
+            HirExpressionKind::Switch(HirSwitchExpression {
+                scrutinee: Box::new(scrutinee),
+                arms: arms.into_boxed_slice(),
+                origin: self.origin(switch.span)?,
+            }),
+            result_ty,
+            self.origin(switch.span)?,
+            switch.span,
+        ))
+    }
+
+    fn enum_variant_count(&self, ty: ValueType) -> usize {
+        let ValueType::Enum(id) = ty else {
+            return 0;
+        };
+        id.as_usize()
+            .and_then(|index| self.signatures.enums.get(index))
+            .map_or(0, |enum_| enum_.variants.len())
+    }
+
+    fn check_switch_label(
+        &mut self,
+        label: &AstSwitchLabel,
+        scrutinee_ty: ValueType,
+        coverage: &mut SwitchCoverage,
+        is_last: bool,
+    ) -> Result<Option<HirSwitchLabel>, CheckError> {
+        match label {
+            AstSwitchLabel::Else(span) => {
+                if coverage.else_span.is_some() || !is_last || coverage.is_complete() {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            INVALID_SWITCH_ELSE,
+                            "`else` must appear once, last, and only when coverage is incomplete",
+                            *span,
+                        )
+                        .primary("invalid switch else arm"),
+                    );
+                    return Ok(None);
+                }
+                coverage.else_span = Some(*span);
+                Ok(Some(HirSwitchLabel::Else))
+            }
+            AstSwitchLabel::Patterns(patterns) => {
+                if coverage.else_span.is_some() {
+                    if let Some(pattern) = patterns.first() {
+                        self.diagnostics.push(PendingDiagnostic::new(
+                            INVALID_SWITCH_ELSE,
+                            "patterns cannot follow `else`",
+                            pattern.span,
+                        ));
+                    }
+                    return Ok(None);
+                }
+                let mut hir = vec![];
+                let mut valid = !patterns.is_empty();
+                for pattern in patterns {
+                    if let Some(pattern) =
+                        self.check_switch_pattern(pattern, scrutinee_ty, coverage)?
+                    {
+                        hir.push(pattern);
+                    } else {
+                        valid = false;
+                    }
+                }
+                Ok(valid.then(|| HirSwitchLabel::Patterns(hir.into_boxed_slice())))
+            }
+        }
+    }
+
+    fn check_switch_pattern(
+        &mut self,
+        pattern: &AstSwitchPattern,
+        scrutinee_ty: ValueType,
+        coverage: &mut SwitchCoverage,
+    ) -> Result<Option<HirSwitchPattern>, CheckError> {
+        let kind = match (&pattern.kind, scrutinee_ty) {
+            (AstSwitchPatternKind::Integer(value), ValueType::Int32) => {
+                let Some(value) = self.parse_signed_integer(value) else {
+                    return Ok(None);
+                };
+                if let Some(previous) = coverage.insert_interval(value, value, pattern.span) {
+                    self.overlap_diagnostic(pattern.span, previous);
+                    return Ok(None);
+                }
+                HirSwitchPatternKind::IntRange {
+                    min: value,
+                    max: value,
+                }
+            }
+            (AstSwitchPatternKind::IntegerRange { min, max }, ValueType::Int32) => {
+                let (Some(min), Some(max)) = (
+                    self.parse_signed_integer(min),
+                    self.parse_signed_integer(max),
+                ) else {
+                    return Ok(None);
+                };
+                if min > max {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            INVALID_SWITCH_PATTERN,
+                            "switch range lower bound exceeds its upper bound",
+                            pattern.span,
+                        )
+                        .primary("backwards inclusive range"),
+                    );
+                    return Ok(None);
+                }
+                if let Some(previous) = coverage.insert_interval(min, max, pattern.span) {
+                    self.overlap_diagnostic(pattern.span, previous);
+                    return Ok(None);
+                }
+                HirSwitchPatternKind::IntRange { min, max }
+            }
+            (AstSwitchPatternKind::EnumVariant { ty, variant }, ValueType::Enum(enum_id)) => {
+                if let Some(ty) = ty {
+                    let resolved = self.resolve_type(AstValueTypeKind::Named(*ty));
+                    if resolved != Some(ValueType::Enum(enum_id)) {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                INVALID_SWITCH_PATTERN,
+                                "qualified enum pattern has the wrong nominal type",
+                                ty.span,
+                            )
+                            .primary("expected the scrutinee enum type"),
+                        );
+                        return Ok(None);
+                    }
+                }
+                let Some(variant_id) = self.resolve_enum_variant(enum_id, variant.span)? else {
+                    return Ok(None);
+                };
+                let index = variant_id.as_usize().unwrap_or(usize::MAX);
+                if let Some(previous) = coverage.insert_variant(index, pattern.span) {
+                    self.overlap_diagnostic(pattern.span, previous);
+                    return Ok(None);
+                }
+                HirSwitchPatternKind::EnumVariant {
+                    enum_: enum_id,
+                    variant: variant_id,
+                }
+            }
+            _ => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        INVALID_SWITCH_PATTERN,
+                        format!("pattern does not match switch type {scrutinee_ty}"),
+                        pattern.span,
+                    )
+                    .primary("wrong pattern kind"),
+                );
+                return Ok(None);
+            }
+        };
+        Ok(Some(HirSwitchPattern {
+            kind,
+            origin: self.origin(pattern.span)?,
+        }))
+    }
+
+    fn parse_signed_integer(&mut self, literal: &super::ast::AstSignedInteger) -> Option<i32> {
+        let digits = self.sources.files().slice(literal.digits).ok()?;
+        let spelling = if literal.negative {
+            format!("-{digits}")
+        } else {
+            digits.to_owned()
+        };
+        if let Ok(value) = spelling.parse::<i32>() {
+            Some(value)
+        } else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INTEGER_OUT_OF_RANGE,
+                    "switch pattern integer is outside the Int32 range",
+                    literal.span,
+                )
+                .primary("expected a signed 32-bit integer"),
+            );
+            None
+        }
+    }
+
+    fn overlap_diagnostic(&mut self, span: Span, previous: Span) {
+        self.diagnostics.push(
+            PendingDiagnostic::new(OVERLAPPING_SWITCH_PATTERN, "switch patterns overlap", span)
+                .primary("overlapping pattern")
+                .support(previous, "earlier covering pattern is here"),
+        );
+    }
+
+    fn finish_switch_coverage(&mut self, coverage: &SwitchCoverage, span: Span) -> bool {
+        if coverage.else_span.is_some() || coverage.is_complete() {
+            return true;
+        }
+        let message = match coverage.ty {
+            ValueType::Enum(enum_id) => {
+                let missing = enum_id
+                    .as_usize()
+                    .and_then(|index| self.signatures.enums.get(index))
+                    .map(|enum_| {
+                        enum_
+                            .variants
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| {
+                                coverage.enum_seen.get(*index).is_some_and(Option::is_none)
+                            })
+                            .map(|(_, variant)| variant.name.as_ref())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                format!("non-exhaustive enum switch; missing: {missing}")
+            }
+            _ => "non-exhaustive Int32 switch; add `else` or cover the full domain".to_owned(),
+        };
+        self.diagnostics.push(
+            PendingDiagnostic::new(NON_EXHAUSTIVE_SWITCH, message, span)
+                .primary("switch is not exhaustive"),
+        );
+        false
+    }
+
+    fn resolve_enum_variant(
+        &mut self,
+        enum_id: SourceEnumId,
+        variant_span: Span,
+    ) -> Result<Option<SourceVariantId>, CheckError> {
+        let spelling = self.spelling(variant_span)?;
+        let resolved = enum_id
+            .as_usize()
+            .and_then(|index| self.signatures.enums.get(index))
+            .and_then(|enum_| {
+                enum_
+                    .variants
+                    .iter()
+                    .find(|variant| variant.name.as_ref() == spelling.as_ref())
+            })
+            .map(|variant| variant.id);
+        if resolved.is_none() {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    UNKNOWN_ENUM_VARIANT,
+                    format!("enum has no variant `{spelling}`"),
+                    variant_span,
+                )
+                .primary("unknown enum variant"),
+            );
+        }
+        Ok(resolved)
+    }
+
+    fn check_enum_literal(
+        &mut self,
+        qualified: Option<AstName>,
+        variant: AstName,
+        expected: Option<ValueType>,
+        span: Span,
+    ) -> Result<CheckedExpression, CheckError> {
+        let enum_id = if let Some(ty) = qualified {
+            match self.resolve_type(AstValueTypeKind::Named(ty)) {
+                Some(ValueType::Enum(id)) => Some(id),
+                _ => None,
+            }
+        } else if let Some(ValueType::Enum(id)) = expected {
+            Some(id)
+        } else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    ENUM_CONTEXT_REQUIRED,
+                    "inferred enum literal requires an exact expected enum type",
+                    span,
+                )
+                .primary("write a qualified variant or provide a typed context"),
+            );
+            None
+        };
+        let Some(enum_id) = enum_id else {
+            return Ok(CheckedExpression::invalid(span));
+        };
+        let Some(variant) = self.resolve_enum_variant(enum_id, variant.span)? else {
+            return Ok(CheckedExpression::invalid(span));
+        };
+        Ok(CheckedExpression::valid(
+            HirExpressionKind::EnumVariant {
+                enum_: enum_id,
+                variant,
+            },
+            ValueType::Enum(enum_id),
+            self.origin(span)?,
+            span,
+        ))
+    }
+
     fn check_return(
         &mut self,
         statement: &AstReturnStatement,
@@ -2306,7 +3118,16 @@ impl<'a> BodyChecker<'a> {
         let value = statement
             .value
             .as_ref()
-            .map(|value| self.check_expression(value, assigned))
+            .map(|value| {
+                self.check_expression_expected(
+                    value,
+                    assigned,
+                    match self.signature.result {
+                        FunctionResult::Value(ty) => Some(ty),
+                        FunctionResult::Void => None,
+                    },
+                )
+            })
             .transpose()?;
         let mut valid = true;
         match (self.signature.result, &value) {
@@ -2379,6 +3200,19 @@ impl<'a> BodyChecker<'a> {
         expression: &AstExpression,
         assigned: &Assigned,
     ) -> Result<CheckedExpression, CheckError> {
+        self.check_expression_expected(expression, assigned, None)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive typed expression boundary keeps contextual enum inference explicit"
+    )]
+    fn check_expression_expected(
+        &mut self,
+        expression: &AstExpression,
+        assigned: &Assigned,
+        expected: Option<ValueType>,
+    ) -> Result<CheckedExpression, CheckError> {
         match &expression.kind {
             AstExpressionKind::Bool(value) => Ok(CheckedExpression::valid(
                 HirExpressionKind::Bool(*value),
@@ -2416,6 +3250,12 @@ impl<'a> BodyChecker<'a> {
             }
             AstExpressionKind::Name(name) => {
                 self.check_name_expression(*name, expression.span, assigned)
+            }
+            AstExpressionKind::InferredEnumLiteral(variant) => {
+                self.check_enum_literal(None, *variant, expected, expression.span)
+            }
+            AstExpressionKind::Switch(switch) => {
+                self.check_switch_expression(switch, assigned, expected)
             }
             AstExpressionKind::Member {
                 receiver, member, ..
@@ -2742,6 +3582,10 @@ impl<'a> BodyChecker<'a> {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "nominal field checking retains exact duplicate, missing, and type diagnostics"
+    )]
     fn check_struct_literal(
         &mut self,
         literal: &AstStructLiteral,
@@ -2774,7 +3618,11 @@ impl<'a> BodyChecker<'a> {
             let index = field_specs
                 .iter()
                 .position(|(name, _, _)| name.as_ref() == spelling.as_ref());
-            let checked = self.check_expression(&initializer.value, assigned)?;
+            let checked = self.check_expression_expected(
+                &initializer.value,
+                assigned,
+                index.map(|index| field_specs[index].1),
+            )?;
             let Some(index) = index else {
                 self.diagnostics.push(
                     PendingDiagnostic::new(
@@ -2856,6 +3704,24 @@ impl<'a> BodyChecker<'a> {
         expression_span: Span,
         assigned: &Assigned,
     ) -> Result<CheckedExpression, CheckError> {
+        if let AstExpressionKind::Name(type_name) = receiver.kind {
+            let module_index = self.signature.module.as_usize().unwrap_or(usize::MAX);
+            let spelling = self.spelling(type_name.span)?;
+            if let Some(TypeLookup::Enum { id: enum_id, .. }) = self
+                .signatures
+                .types_by_module
+                .get(module_index)
+                .and_then(|types| types.get(spelling.as_ref()))
+                .copied()
+            {
+                return self.check_enum_literal(
+                    Some(type_name),
+                    AstName { span: member_span },
+                    Some(ValueType::Enum(enum_id)),
+                    expression_span,
+                );
+            }
+        }
         let receiver = self.check_expression(receiver, assigned)?;
         let Some(ValueType::Struct(struct_id)) = receiver.ty else {
             let member = self.spelling(member_span)?;
@@ -3107,8 +3973,15 @@ impl<'a> BodyChecker<'a> {
         span: Span,
         assigned: &Assigned,
     ) -> Result<CheckedExpression, CheckError> {
-        let left = self.check_expression(left, assigned)?;
-        let right = self.check_expression(right, assigned)?;
+        let (left, right) = if matches!(left.kind, AstExpressionKind::InferredEnumLiteral(_)) {
+            let right = self.check_expression(right, assigned)?;
+            let left = self.check_expression_expected(left, assigned, right.ty)?;
+            (left, right)
+        } else {
+            let left = self.check_expression(left, assigned)?;
+            let right = self.check_expression_expected(right, assigned, left.ty)?;
+            (left, right)
+        };
         let mut valid = left.expression.is_some() && right.expression.is_some();
         let hir_op = comparison_op(op);
         if hir_op.is_ordered() {
@@ -3228,7 +4101,11 @@ impl<'a> BodyChecker<'a> {
                 .and_then(|signature| self.signatures.functions.get(signature))
                 .and_then(|signature| signature.parameters.get(index))
                 .copied();
-            let checked = self.check_expression(argument, assigned)?;
+            let checked = self.check_expression_expected(
+                argument,
+                assigned,
+                expected.map(|expected| expected.ty),
+            )?;
             if let (Some(actual), Some(expected)) = (checked.ty, expected) {
                 if actual != expected.ty {
                     self.type_mismatch(
@@ -3976,6 +4853,68 @@ struct CheckedCall {
     result: Option<FunctionResult>,
 }
 
+struct SwitchCoverage {
+    ty: ValueType,
+    enum_seen: Vec<Option<Span>>,
+    intervals: BTreeMap<i32, (i32, Span)>,
+    else_span: Option<Span>,
+}
+
+impl SwitchCoverage {
+    fn new(ty: ValueType, variant_count: usize) -> Self {
+        Self {
+            ty,
+            enum_seen: vec![None; variant_count],
+            intervals: BTreeMap::new(),
+            else_span: None,
+        }
+    }
+
+    fn insert_variant(&mut self, index: usize, span: Span) -> Option<Span> {
+        let slot = self.enum_seen.get_mut(index)?;
+        if let Some(previous) = *slot {
+            Some(previous)
+        } else {
+            *slot = Some(span);
+            None
+        }
+    }
+
+    fn insert_interval(&mut self, min: i32, max: i32, span: Span) -> Option<Span> {
+        if let Some((_, (previous_max, previous_span))) = self.intervals.range(..=min).next_back() {
+            if *previous_max >= min {
+                return Some(*previous_span);
+            }
+        }
+        if let Some((next_min, (_, next_span))) = self.intervals.range(min..).next() {
+            if *next_min <= max {
+                return Some(*next_span);
+            }
+        }
+        self.intervals.insert(min, (max, span));
+        None
+    }
+
+    fn is_complete(&self) -> bool {
+        match self.ty {
+            ValueType::Enum(_) => {
+                !self.enum_seen.is_empty() && self.enum_seen.iter().all(Option::is_some)
+            }
+            ValueType::Int32 => {
+                let mut expected = i64::from(i32::MIN);
+                for (min, (max, _)) in &self.intervals {
+                    if i64::from(*min) != expected {
+                        return false;
+                    }
+                    expected = i64::from(*max) + 1;
+                }
+                expected == i64::from(i32::MAX) + 1
+            }
+            _ => false,
+        }
+    }
+}
+
 enum CheckedCallTarget {
     Function(HirCall),
     External(SourceExternalOpId),
@@ -4186,9 +5125,11 @@ const fn comparison_op(op: AstComparisonOp) -> HirComparisonOp {
 mod tests {
     use super::{
         ARGUMENT_COUNT, CheckOutput, DIRTY_AST, DUPLICATE_BINDING, DUPLICATE_FUNCTION,
-        IMMUTABLE_ASSIGNMENT, INTEGER_OUT_OF_RANGE, INVALID_ENTITY_TAG, INVALID_EXECUTOR_CAPTURE,
-        INVALID_MESSAGE_LITERAL, INVALID_MINECRAFT_METHOD_RECEIVER, INVALID_UNSAFE_COMMAND,
-        MESSAGE_LITERAL_REQUIRED, MISSING_RETURN, RESERVED_COMPILER_NAME, RETURN_IN_RUN_SCOPE,
+        ENUM_CONTEXT_REQUIRED, ENUM_EXPORT_ABI, IMMUTABLE_ASSIGNMENT, INTEGER_OUT_OF_RANGE,
+        INVALID_ENTITY_TAG, INVALID_EXECUTOR_CAPTURE, INVALID_MESSAGE_LITERAL,
+        INVALID_MINECRAFT_METHOD_RECEIVER, INVALID_SWITCH_ELSE, INVALID_SWITCH_PATTERN,
+        INVALID_UNSAFE_COMMAND, MESSAGE_LITERAL_REQUIRED, MISSING_RETURN, NON_EXHAUSTIVE_SWITCH,
+        OVERLAPPING_SWITCH_PATTERN, RESERVED_COMPILER_NAME, RETURN_IN_RUN_SCOPE,
         RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED, SCOPED_CAPABILITY_VALUE, TRUNCATED,
         TYPE_MISMATCH, UNINITIALIZED_READ, UNKNOWN_MEMBER, UNKNOWN_NAME, UNRESOLVED_MEMBER,
         UNSUPPORTED_RUN_SCALAR_CAPTURE, VOID_VALUE, check,
@@ -4753,6 +5694,102 @@ fn returning(condition: Bool) -> Int32 {
         }
         text.push('}');
 
+        let (_, _, output) = check_text(&text);
+        assert_eq!(output.diagnostics(), None);
+        assert!(output.checked().is_some());
+    }
+
+    #[test]
+    fn enums_are_nominal_contextual_and_usable_in_structs_calls_and_returns() {
+        let text = r"
+            const A = enum { one, two };
+            const B = enum { one, two };
+            const Boxed = struct { value: A };
+            fn id(value: A) -> A { return value; }
+            fn okay() -> Bool {
+                const value: A = .one;
+                const boxed: Boxed = Boxed{ .value = id(value) };
+                return boxed.value == A.one;
+            }
+            fn wrong() { const value: A = B.one; }
+            fn context_free() { const value: Bool = .one == .one; }
+        ";
+        let (_, _, output) = check_text(text);
+        assert!(codes(&output).contains(&TYPE_MISMATCH));
+        assert!(codes(&output).contains(&ENUM_CONTEXT_REQUIRED));
+    }
+
+    #[test]
+    fn enum_values_flow_through_branches_loops_and_private_recursion() {
+        let text = r"
+            const State = enum { first, second };
+            fn flip(state: State) -> State {
+                return switch (state) { .first => .second, .second => .first };
+            }
+            fn recurse(state: State, fuel: Int32) -> State {
+                if (fuel == 0) { return state; }
+                return recurse(flip(state), fuel -% 1);
+            }
+            fn iterate(state: State) -> State {
+                var current: State = state;
+                var index: Int32 = 0;
+                while (index < 2) {
+                    current = flip(current);
+                    index = index +% 1;
+                }
+                return current;
+            }
+            fn valid() -> Bool { return recurse(.first, 2) == iterate(.first); }
+        ";
+        let (_, _, output) = check_text(text);
+        assert_eq!(output.diagnostics(), None);
+        assert!(output.checked().is_some());
+    }
+
+    #[test]
+    fn switch_coverage_rejects_overlap_holes_bad_ranges_and_unreachable_else() {
+        let text = r"
+            const State = enum { a, b, c };
+            fn overlap(value: Int32) -> Int32 { return switch (value) { 0...10 => 1, 10...20 => 2, else => 3 }; }
+            fn hole(state: State) -> Int32 { return switch (state) { .a => 1, .b => 2 }; }
+            fn backwards(value: Int32) -> Int32 { return switch (value) { 3...1 => 1, else => 2 }; }
+            fn unreachable(state: State) -> Int32 { return switch (state) { .a => 1, .b => 2, .c => 3, else => 4 }; }
+        ";
+        let (_, _, output) = check_text(text);
+        let codes = codes(&output);
+        assert!(codes.contains(&OVERLAPPING_SWITCH_PATTERN));
+        assert!(codes.contains(&NON_EXHAUSTIVE_SWITCH));
+        assert!(codes.contains(&INVALID_SWITCH_PATTERN));
+        assert!(codes.contains(&INVALID_SWITCH_ELSE));
+    }
+
+    #[test]
+    fn datapack_exports_reject_enum_abi_directly_and_through_structs() {
+        let text = r"
+            const State = enum { ready };
+            const Boxed = struct { state: State };
+            export fn direct(value: State) -> Int32 { return 0; }
+            export fn nested(value: Boxed) -> Boxed { return value; }
+        ";
+        let (_, _, output) = check_text(text);
+        assert_eq!(
+            codes(&output)
+                .iter()
+                .filter(|code| **code == ENUM_EXPORT_ABI)
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn hundreds_of_descending_switch_intervals_use_ordered_coverage_state() {
+        use std::fmt::Write as _;
+
+        let mut text = String::from("fn classify(value: Int32) -> Int32 { return switch (value) {");
+        for value in (0..512).rev() {
+            write!(text, "{value} => {value},").unwrap();
+        }
+        text.push_str("else => 0, }; }");
         let (_, _, output) = check_text(&text);
         assert_eq!(output.diagnostics(), None);
         assert!(output.checked().is_some());

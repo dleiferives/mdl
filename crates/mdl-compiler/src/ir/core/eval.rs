@@ -893,6 +893,9 @@ fn evaluate_scalar(op: &CoreOp, operands: &[CoreValue]) -> Option<Vec<CoreValue>
                 I32Predicate::SignedGe => left >= right,
             })])
         }
+        (CoreOp::I32InClosedRange(range), [CoreValue::I32(value)]) => {
+            Some(vec![CoreValue::Bool(range.contains(*value))])
+        }
         (CoreOp::BoolNot, [CoreValue::Bool(value)]) => Some(vec![CoreValue::Bool(!value)]),
         (CoreOp::ListI32Empty, []) => Some(vec![CoreValue::list_i32(Vec::<i32>::new())]),
         (CoreOp::ListI32Length, [CoreValue::ListI32(values)]) => i32::try_from(values.len())

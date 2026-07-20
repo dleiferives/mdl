@@ -471,11 +471,17 @@ fn materialize_diagnostics(
 fn punctuation(bytes: &[u8], index: usize) -> (Option<TokenKind>, usize) {
     let byte = bytes[index];
     let next = bytes.get(index + 1).copied();
+    let third = bytes.get(index + 2).copied();
+    if (byte, next, third) == (b'.', Some(b'.'), Some(b'.')) {
+        return (Some(TokenKind::Ellipsis), 3);
+    }
     match (byte, next) {
+        (b':', Some(b'=')) => (Some(TokenKind::ColonEqual), 2),
         (b'-', Some(b'>')) => (Some(TokenKind::Arrow), 2),
         (b'+', Some(b'%')) => (Some(TokenKind::PlusPercent), 2),
         (b'-', Some(b'%')) => (Some(TokenKind::MinusPercent), 2),
         (b'=', Some(b'=')) => (Some(TokenKind::EqualEqual), 2),
+        (b'=', Some(b'>')) => (Some(TokenKind::FatArrow), 2),
         (b'!', Some(b'=')) => (Some(TokenKind::BangEqual), 2),
         (b'<', Some(b'=')) => (Some(TokenKind::LessEqual), 2),
         (b'>', Some(b'=')) => (Some(TokenKind::GreaterEqual), 2),
@@ -483,6 +489,8 @@ fn punctuation(bytes: &[u8], index: usize) -> (Option<TokenKind>, usize) {
         (b')', _) => (Some(TokenKind::RightParenthesis), 1),
         (b'{', _) => (Some(TokenKind::LeftBrace), 1),
         (b'}', _) => (Some(TokenKind::RightBrace), 1),
+        (b'[', _) => (Some(TokenKind::LeftBracket), 1),
+        (b']', _) => (Some(TokenKind::RightBracket), 1),
         (b':', _) => (Some(TokenKind::Colon), 1),
         (b';', _) => (Some(TokenKind::Semicolon), 1),
         (b',', _) => (Some(TokenKind::Comma), 1),
@@ -514,6 +522,7 @@ fn identifier_kind(identifier: &str) -> TokenKind {
         "export" => TokenKind::KeywordExport,
         "import" => TokenKind::KeywordImport,
         "struct" => TokenKind::KeywordStruct,
+        "enum" => TokenKind::KeywordEnum,
         "unsafe" => TokenKind::KeywordUnsafe,
         "minecraft" => TokenKind::KeywordMinecraft,
         "run" => TokenKind::KeywordRun,
@@ -522,6 +531,7 @@ fn identifier_kind(identifier: &str) -> TokenKind {
         "if" => TokenKind::KeywordIf,
         "else" => TokenKind::KeywordElse,
         "while" => TokenKind::KeywordWhile,
+        "switch" => TokenKind::KeywordSwitch,
         "break" => TokenKind::KeywordBreak,
         "continue" => TokenKind::KeywordContinue,
         "return" => TokenKind::KeywordReturn,
@@ -607,23 +617,29 @@ mod tests {
 
     #[test]
     fn recognizes_every_keyword_and_identifier_boundaries() {
-        let text = "fn pub export import const var if else return true false Bool Int32 Void fn_ _if bool int32 void x X1 _";
+        let text = "fn pub export import struct enum const var if else while switch return true false Bool Int32 Void fn_ enum_ switch_ _if bool int32 void x X1 _";
         let (_, _, output) = default_lex(text);
         let expected_kinds = [
             TokenKind::KeywordFn,
             TokenKind::KeywordPub,
             TokenKind::KeywordExport,
             TokenKind::KeywordImport,
+            TokenKind::KeywordStruct,
+            TokenKind::KeywordEnum,
             TokenKind::KeywordConst,
             TokenKind::KeywordVar,
             TokenKind::KeywordIf,
             TokenKind::KeywordElse,
+            TokenKind::KeywordWhile,
+            TokenKind::KeywordSwitch,
             TokenKind::KeywordReturn,
             TokenKind::KeywordTrue,
             TokenKind::KeywordFalse,
             TokenKind::KeywordBool,
             TokenKind::KeywordInt32,
             TokenKind::KeywordVoid,
+            TokenKind::Identifier,
+            TokenKind::Identifier,
             TokenKind::Identifier,
             TokenKind::Identifier,
             TokenKind::Identifier,
@@ -674,7 +690,7 @@ mod tests {
 
     #[test]
     fn recognizes_all_punctuation_with_maximal_munch_and_exact_ranges() {
-        let text = "(){}:;,.=->! == != < <= > >=";
+        let text = "(){}:;,.=->=>...! == != < <= > >=";
         let (_, _, output) = default_lex(text);
         assert_eq!(
             token_table(&output),
@@ -689,14 +705,16 @@ mod tests {
                 (TokenKind::Dot, 7, 8),
                 (TokenKind::Equal, 8, 9),
                 (TokenKind::Arrow, 9, 11),
-                (TokenKind::Bang, 11, 12),
-                (TokenKind::EqualEqual, 13, 15),
-                (TokenKind::BangEqual, 16, 18),
-                (TokenKind::Less, 19, 20),
-                (TokenKind::LessEqual, 21, 23),
-                (TokenKind::Greater, 24, 25),
-                (TokenKind::GreaterEqual, 26, 28),
-                (TokenKind::EndOfFile, 28, 28),
+                (TokenKind::FatArrow, 11, 13),
+                (TokenKind::Ellipsis, 13, 16),
+                (TokenKind::Bang, 16, 17),
+                (TokenKind::EqualEqual, 18, 20),
+                (TokenKind::BangEqual, 21, 23),
+                (TokenKind::Less, 24, 25),
+                (TokenKind::LessEqual, 26, 28),
+                (TokenKind::Greater, 29, 30),
+                (TokenKind::GreaterEqual, 31, 33),
+                (TokenKind::EndOfFile, 33, 33),
             ]
         );
         assert!(output.diagnostics().is_none());
@@ -783,8 +801,7 @@ mod tests {
             [
                 (TokenKind::Minus, 0, 1),
                 (TokenKind::Pipe, 8, 9),
-                (TokenKind::Equal, 12, 13),
-                (TokenKind::Greater, 13, 14),
+                (TokenKind::FatArrow, 12, 14),
                 (TokenKind::Pipe, 18, 19),
                 (TokenKind::Pipe, 19, 20),
                 (TokenKind::EndOfFile, 20, 20),

@@ -566,6 +566,10 @@ pub(super) enum HirMinecraftOperationAttributes {
         page_origin: OriginId,
     },
     BookPageRuntime {
+        /// The runtime Int32 expression selecting the page. Lowered to a Core
+        /// value that becomes the external op's operand and, ultimately, the
+        /// macro `$(index)` substitution.
+        page_index: Box<HirExpression>,
         page_origin: OriginId,
     },
 }
@@ -1798,12 +1802,18 @@ impl Verifier<'_> {
                             }
                         }
                         HirMinecraftOperationAttributes::BookPageRuntime {
-                            page_origin, ..
+                            page_index,
+                            page_origin,
                         } => {
                             self.origin(
                                 *page_origin,
                                 "Minecraft written-book page index (runtime)",
                             )?;
+                            if page_index.ty != ValueType::Int32 {
+                                return Err(HirVerificationError::new(
+                                    "runtime written-book page index must be an Int32",
+                                ));
+                            }
                         }
                     }
                 }

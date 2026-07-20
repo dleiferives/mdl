@@ -5087,10 +5087,30 @@ impl<'a> BodyChecker<'a> {
                             }
                         }
                         _ => {
-                            let _ = self.check_expression(argument, assigned)?;
-                            attributes = Some(HirMinecraftOperationAttributes::BookPageRuntime {
-                                page_origin: self.origin(argument.span)?,
-                            });
+                            let checked = self.check_expression(argument, assigned)?;
+                            match (checked.expression, checked.ty) {
+                                (Some(page_index), Some(ValueType::Int32)) => {
+                                    attributes =
+                                        Some(HirMinecraftOperationAttributes::BookPageRuntime {
+                                            page_index: Box::new(page_index),
+                                            page_origin: self.origin(argument.span)?,
+                                        });
+                                }
+                                (_, Some(_)) => {
+                                    self.diagnostics.push(
+                                        PendingDiagnostic::new(
+                                            TYPE_MISMATCH,
+                                            "written-book page index must be an Int32",
+                                            argument.span,
+                                        )
+                                        .primary("this page-index expression is not an Int32"),
+                                    );
+                                    valid = false;
+                                }
+                                (_, None) => {
+                                    valid = false;
+                                }
+                            }
                         }
                     }
                 }

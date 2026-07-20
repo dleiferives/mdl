@@ -11,7 +11,9 @@ Status: **planned; implementation started**
   those share;
 - **Substage:** PS-11 (Tier A of the value-crossing model);
 - **Owner documents:** this plan, [`ps-11-macro-reference-crossing-todo.md`](ps-11-macro-reference-crossing-todo.md),
-  and the architecture of record [`../macro-reference-crossing-model.md`](../macro-reference-crossing-model.md);
+  the implementer handoff [`ps-11-implementation-handoff.md`](ps-11-implementation-handoff.md)
+  (verified PS-11A wiring + open decisions), and the architecture of record
+  [`../macro-reference-crossing-model.md`](../macro-reference-crossing-model.md);
 - **Depends on:** Stage 10 (`stage-10-handoff.md`); and
 - **Optimization posture:** PS-11 lands the *mechanism*, not the cost-directed
   optimizer. Encoding selection uses the structural rule (indirectable → `Ref`, else

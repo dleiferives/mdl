@@ -20,6 +20,11 @@ Landed so far:
 Authoritative design: [`ps-11-macro-reference-crossing-plan.md`](ps-11-macro-reference-crossing-plan.md)
 and the architecture of record [`../macro-reference-crossing-model.md`](../macro-reference-crossing-model.md).
 
+**Implementer handoff (read first): [`ps-11-implementation-handoff.md`](ps-11-implementation-handoff.md)**
+— records the current WIP state, the verified PS-11A wiring (with file:line anchors and the
+immutable-program constraint), the one open design decision (walker coverage), and blueprints
+for PS-11B/C. PS-11A is mid-flight: frontend threading is partially done in the working tree.
+
 Implement the tranches in order. Each tranche reaches its build/test gate before the
 next one starts. A rename without the derived-engine payoff, or an
 anonymous-macro-as-per-intrinsic shortcut, does not complete a tranche.

@@ -11,8 +11,8 @@ mod builder;
 mod edit;
 mod eval;
 mod external;
-mod macro_or_static;
 mod minecraft;
+mod operand;
 mod print;
 mod query;
 mod run_scope;
@@ -41,10 +41,10 @@ pub use external::{
     ExternalOpDecl, ExternalSemanticBinding, TargetFragment, UnsafeCommandFragmentError,
     UnsafeMinecraftCommandFragment,
 };
-pub use macro_or_static::MacroOrStatic;
 pub use minecraft::{
     MinecraftOperationAttributes, MinecraftOperationDecl, MinecraftOperationOrigins,
 };
+pub use operand::Operand;
 pub use print::{CanonicalPrinter, DebugDumper, PrintError};
 pub use query::{EntityQueryDecl, EntityQueryStep};
 pub use run_scope::{CoreContextStep, CoreExecutionContext, RunModifierInstance, RunScopeDecl};

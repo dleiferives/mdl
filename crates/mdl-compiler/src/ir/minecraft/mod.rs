@@ -34,8 +34,8 @@ pub use execute::{
     ScoreComparison, StorageNumericType, StoreChannel, StoreDestination,
 };
 pub use macro_command::{
-    MacroArguments, MacroArgumentsError, MacroArgumentsErrorReason, MacroCommand, MacroKeyError,
-    MacroLine, MacroSegment, MacroSlot, MacroVariable, MacroVariableId,
+    IndirectRecipe, MacroArguments, MacroArgumentsError, MacroArgumentsErrorReason, MacroCommand,
+    MacroKeyError, MacroLine, MacroSegment, MacroVariable, MacroVariableId, SyntaxSlot,
 };
 pub use names::{
     DimensionId, FunctionResourceId, FunctionTagResourceId, NameError, NameErrorReason, NameKind,

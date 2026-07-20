@@ -290,7 +290,18 @@ impl<'a> SymbolicChecker<'a> {
             return Ok(());
         };
         match plan {
-            InstructionPlan::OmittedPure | InstructionPlan::External { .. } => Ok(()),
+            InstructionPlan::OmittedPure => Ok(()),
+            InstructionPlan::External { .. } => {
+                let mut definitions =
+                    fallible_vec(function, SymbolicTable::Definitions, data.results().len())?;
+                for value in data.results().iter().copied() {
+                    if let Some(home) = self.plan.value_home(function, value) {
+                        definitions.push(Definition { value, home });
+                    }
+                }
+                state.define_simultaneously(function, &definitions)?;
+                Ok(())
+            }
             InstructionPlan::Minecraft { results, .. }
             | InstructionPlan::Scalar { results, .. } => {
                 self.finish_scalar_outputs(function, data, results, state, false)
@@ -585,10 +596,7 @@ impl<'a> SymbolicChecker<'a> {
                 Ok(())
             }
             InstructionPlan::External { .. } => {
-                if !matches!(data.op(), CoreOp::External(_))
-                    || !data.operands().is_empty()
-                    || !data.results().is_empty()
-                {
+                if !matches!(data.op(), CoreOp::External(_)) {
                     self.record(SymbolicIssue::shape(
                         Some(function),
                         None,
@@ -596,6 +604,17 @@ impl<'a> SymbolicChecker<'a> {
                         data.origin(),
                     ));
                 }
+                // Macro externals produce results. Kill old contents and
+                // register homes as defined so the return-value checker sees them.
+                let mut definitions =
+                    fallible_vec(function, SymbolicTable::Definitions, data.results().len())?;
+                for value in data.results().iter().copied() {
+                    if let Some(home) = self.plan.value_home(function, value) {
+                        state.kill(home);
+                        definitions.push(Definition { value, home });
+                    }
+                }
+                state.define_simultaneously(function, &definitions)?;
                 Ok(())
             }
             InstructionPlan::Minecraft { results, .. } => {

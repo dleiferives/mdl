@@ -753,19 +753,31 @@ impl<'a> PlanVerifier<'a> {
             }
             InstructionPlan::External { helper } => {
                 if let CoreOp::External(external) = data.op() {
-                    if self.plan.preflight().selected_recipe(*external).is_some() {
-                        self.report(
-                            "lower.plan.typed-external-placement",
-                            format!(
-                                "typed Minecraft operation {function:?} {instruction:?} must use its direct selected recipe"
-                            ),
-                            data.origin(),
-                        );
+                    if let Some(recipe) = self.plan.preflight().selected_recipe(*external) {
+                        if !recipe.is_unusable_inline() {
+                            self.report(
+                                "lower.plan.typed-external-placement",
+                                format!(
+                                    "typed Minecraft operation {function:?} {instruction:?} must use its direct selected recipe"
+                                ),
+                                data.origin(),
+                            );
+                        }
                     }
                 }
+                let is_macro_external = match data.op() {
+                    CoreOp::External(external) => self
+                        .plan
+                        .preflight()
+                        .selected_recipe(*external)
+                        .is_some_and(
+                            super::super::preflight::SelectedSemanticRecipe::is_unusable_inline,
+                        ),
+                    _ => false,
+                };
                 if !matches!(data.op(), CoreOp::External(_))
-                    || !data.operands().is_empty()
-                    || !data.results().is_empty()
+                    || (!is_macro_external && !data.operands().is_empty())
+                    || (!is_macro_external && !data.results().is_empty())
                 {
                     self.report(
                         "lower.plan.instruction-kind",

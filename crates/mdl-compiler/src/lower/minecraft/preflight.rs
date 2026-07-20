@@ -6,18 +6,17 @@ use crate::analysis::minecraft::{
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
 use crate::entity::{EntityLimitError, EntityVec};
 use crate::ir::core::{
-    CoreOp, CoreProgram, ExternalOpId, ExternalSemanticBinding, MacroOrStatic,
-    MinecraftOperationAttributes, MinecraftOperationDecl, MinecraftOperationId,
-    RunModifierInstance, RunScopeId, ValueId,
+    CoreOp, CoreProgram, ExternalOpId, ExternalSemanticBinding, MinecraftOperationAttributes,
+    MinecraftOperationDecl, MinecraftOperationId, Operand, RunModifierInstance, RunScopeId,
+    ValueId,
 };
 use crate::ir::minecraft::{
     CommandContract, CommandKind, ContextMask, ContextSummary, DataCommand, DataModifyMode,
     DataSource, EffectCategories, EffectSummary, ExecuteCommand, ExecuteModifier,
-    ExecuteModifierKind, ExecuteModifiers, ForkClass, JavaDecimal, MacroCommand, MacroLine,
-    MacroSegment, MacroVariableId, NativeCommandOutcome, NbtPath, NbtPathKey, NbtPathSegment,
-    SayCommand, SayMessage, Selector, StorageId, StoragePath, TargetAnchor, TargetAxes,
-    TargetLocalPosition, TargetPosition, TargetRotation, TargetRotationAxis, TargetWorldAxis,
-    TargetWorldPosition, TeleportCommand,
+    ExecuteModifierKind, ExecuteModifiers, ForkClass, JavaDecimal, NativeCommandOutcome, NbtPath,
+    NbtPathKey, NbtPathSegment, SayCommand, SayMessage, Selector, StorageId, StoragePath,
+    TargetAnchor, TargetAxes, TargetLocalPosition, TargetPosition, TargetRotation,
+    TargetRotationAxis, TargetWorldAxis, TargetWorldPosition, TeleportCommand,
 };
 use crate::ir::semantic::{
     AmbientContextRequirements, ContextRequirement, EntityKind, ForkBound, FunctionBehavior,
@@ -268,11 +267,7 @@ pub(crate) enum SelectedSemanticRecipe {
     },
     Java26_2BookPage {
         operation: MinecraftOperationId,
-        page_index: u8,
-    },
-    Java26_2MacroBookPage {
-        operation: MinecraftOperationId,
-        index_value: ValueId,
+        page_index: Operand<u8>,
     },
 }
 
@@ -365,7 +360,7 @@ impl SelectedSemanticRecipe {
             Self::Java26_2Say { .. } => MinecraftRecipeId::Java26_2Say,
             Self::Java26_2Teleport { .. } => MinecraftRecipeId::Java26_2TeleportCurrentExecutor,
             Self::Java26_2MoveBy { .. } => MinecraftRecipeId::Java26_2MoveCurrentExecutorBy,
-            Self::Java26_2BookPage { .. } | Self::Java26_2MacroBookPage { .. } => {
+            Self::Java26_2BookPage { .. } => {
                 MinecraftRecipeId::Java26_2ReadMainHandWrittenBookLiteralPage
             }
         }
@@ -376,7 +371,6 @@ impl SelectedSemanticRecipe {
         match self {
             Self::Java26_2Say { operation, .. }
             | Self::Java26_2BookPage { operation, .. }
-            | Self::Java26_2MacroBookPage { operation, .. }
             | Self::Java26_2Teleport { operation, .. }
             | Self::Java26_2MoveBy { operation, .. } => *operation,
         }
@@ -388,7 +382,7 @@ impl SelectedSemanticRecipe {
             Self::Java26_2Say { .. } => MinecraftSemanticKey::Say,
             Self::Java26_2Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
             Self::Java26_2MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
-            Self::Java26_2BookPage { .. } | Self::Java26_2MacroBookPage { .. } => {
+            Self::Java26_2BookPage { .. } => {
                 MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage
             }
         }
@@ -400,8 +394,7 @@ impl SelectedSemanticRecipe {
             Self::Java26_2Say { message, .. } => Some(message),
             Self::Java26_2Teleport { .. }
             | Self::Java26_2MoveBy { .. }
-            | Self::Java26_2BookPage { .. }
-            | Self::Java26_2MacroBookPage { .. } => None,
+            | Self::Java26_2BookPage { .. } => None,
         }
     }
 
@@ -443,64 +436,33 @@ impl SelectedSemanticRecipe {
                 mode: DataModifyMode::Set,
                 source: DataSource::Entity {
                     selector: Selector::from(crate::ir::minecraft::AtMostOneSelector::SelfExecutor),
-                    path: written_book_literal_page_path(*page_index),
+                    path: written_book_page_path(*page_index),
                 },
             }),
-            Self::Java26_2MacroBookPage { .. } => {
-                let target_storage = StorageId::parse("mdl:preflight").expect("static ID is valid");
-                let target_path = NbtPath::new(
-                    NbtPathSegment::Key(NbtPathKey::new("book_page").expect("static key is valid")),
-                    vec![],
-                );
-                let target = StoragePath::new(target_storage.clone(), target_path.clone());
-                let empty_init = MacroLine {
-                    segments: vec![MacroSegment::Literal(format!(
-                        "data modify storage {target_storage} {target_path} set value \"\""
-                    ))],
-                };
-                let entity_read = MacroLine {
-                    segments: vec![
-                        MacroSegment::Literal(format!(
-                            "data modify storage {target_storage} {target_path} set from entity @s equipment.mainhand.components.\"minecraft:written_book_content\".pages["
-                        )),
-                        MacroSegment::Variable(MacroVariableId(0)),
-                        MacroSegment::Literal("].raw".to_owned()),
-                    ],
-                };
-                let macro_cmd = MacroCommand::new(
-                    vec![empty_init, entity_read],
-                    crate::ir::minecraft::MacroArguments::new(vec![
-                        crate::ir::minecraft::MacroVariable {
-                            key: "index".to_owned(),
-                            slot: crate::ir::minecraft::MacroSlot::NbtIndex,
-                            source: target,
-                        },
-                    ])
-                    .expect("macro arguments are valid"),
-                    OriginId::UNKNOWN,
-                )
-                .expect("macro command is valid");
-                CommandKind::Macro(macro_cmd)
-            }
         }
     }
 
     pub(crate) const fn book_page_index(&self) -> Option<u8> {
         match self {
-            Self::Java26_2BookPage { page_index, .. } => Some(*page_index),
-            Self::Java26_2Say { .. }
-            | Self::Java26_2Teleport { .. }
-            | Self::Java26_2MoveBy { .. }
-            | Self::Java26_2MacroBookPage { .. } => None,
+            Self::Java26_2BookPage { page_index, .. } => page_index.as_const().copied(),
+            _ => None,
         }
     }
 
     pub(crate) const fn is_unusable_inline(&self) -> bool {
-        matches!(self, Self::Java26_2MacroBookPage { .. })
+        matches!(
+            self,
+            Self::Java26_2BookPage {
+                page_index: Operand::Runtime(_),
+                ..
+            }
+        )
     }
 }
 
-pub(crate) fn written_book_literal_page_path(page_index: u8) -> NbtPath {
+/// Builds the NBT path for the written-book page entity source, embedding the
+/// concrete page index as a static `NbtPathSegment::Index`.
+fn written_book_page_path(page_index: Operand<u8>) -> NbtPath {
     NbtPath::new(
         NbtPathSegment::Key(NbtPathKey::new("equipment").expect("static key is valid")),
         vec![
@@ -510,10 +472,15 @@ pub(crate) fn written_book_literal_page_path(page_index: u8) -> NbtPath {
                 NbtPathKey::new("minecraft:written_book_content").expect("static key is valid"),
             ),
             NbtPathSegment::Key(NbtPathKey::new("pages").expect("static key is valid")),
-            NbtPathSegment::Index(i32::from(page_index)),
+            NbtPathSegment::Index(page_index.map(i32::from)),
             NbtPathSegment::Key(NbtPathKey::new("raw").expect("static key is valid")),
         ],
     )
+}
+
+/// Deprecated compatibility alias for `written_book_page_path`.
+pub(crate) fn written_book_literal_page_path(page_index: u8) -> NbtPath {
+    written_book_page_path(Operand::Const(page_index))
 }
 
 fn target_position_reads(position: &TargetPosition) -> ContextMask {
@@ -798,7 +765,12 @@ fn select_reachable_recipes(
                 ));
                 continue;
             };
-            match select_recipe(target, operation, operation_declaration) {
+            match select_recipe(
+                target,
+                operation,
+                operation_declaration,
+                instruction_data.operands(),
+            ) {
                 Ok(recipe) => *slot = Some(recipe),
                 Err(finding) => findings.push(finding),
             }
@@ -967,6 +939,7 @@ fn select_recipe(
     target: JavaEditionTarget,
     operation: MinecraftOperationId,
     declaration: &MinecraftOperationDecl,
+    operands: &[ValueId],
 ) -> Result<SelectedSemanticRecipe, Diagnostic> {
     let recipe = MinecraftRecipeId::for_semantic_key(target, declaration.key());
     let projection = recipe.contract_projection(declaration.receiver_kind());
@@ -1086,22 +1059,29 @@ fn select_recipe(
         (
             MinecraftRecipeId::Java26_2ReadMainHandWrittenBookLiteralPage,
             MinecraftOperationAttributes::BookPage { page_index, .. },
-        ) => match page_index {
-            MacroOrStatic::Static(n) => {
-                let selected = SelectedSemanticRecipe::Java26_2BookPage {
-                    operation,
-                    page_index: *n,
-                };
+        ) => {
+            let resolved = match page_index {
+                Operand::Const(n) => Operand::Const(*n),
+                Operand::Runtime(_) => {
+                    let &index_value = operands.first().ok_or_else(|| {
+                        Diagnostic::new(
+                            "lower.preflight.missing-macro-operand",
+                            "runtime book-page external is missing its index operand",
+                            declaration.origins().call(),
+                        )
+                    })?;
+                    Operand::Runtime(index_value)
+                }
+            };
+            let selected = SelectedSemanticRecipe::Java26_2BookPage {
+                operation,
+                page_index: resolved,
+            };
+            if resolved.is_const() {
                 validate_selected_recipe(&selected, declaration)?;
-                Ok(selected)
             }
-            MacroOrStatic::Macro(index_value) => {
-                Ok(SelectedSemanticRecipe::Java26_2MacroBookPage {
-                    operation,
-                    index_value: *index_value,
-                })
-            }
-        },
+            Ok(selected)
+        }
         _ => Err(Diagnostic::new(
             "lower.preflight.recipe-attribute-shape",
             format!(

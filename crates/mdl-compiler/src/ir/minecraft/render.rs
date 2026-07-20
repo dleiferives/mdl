@@ -524,11 +524,11 @@ mod tests {
         ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
         ExternalCallableRef, FakeScoreHolder, FiniteF64, FunctionCall, FunctionResourceId,
         FunctionWithStorage, JavaDecimal, MacroArguments, MacroCommand, MacroLine, MacroSegment,
-        MacroSlot, MacroVariable, MacroVariableId, MinecraftProgramBuilder, NbtKey, NbtPath,
-        NbtPathKey, NbtPathSegment, NbtValue, NonNegativeI32, ObjectiveName, ReturnCommand,
-        SayCommand, SayMessage, ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation,
-        ScoreRange, ScoreRef, ScoreSelection, SingleScoreHolder, StorageId, StorageNumericType,
-        StoragePath, StoreChannel, StoreDestination, TargetAnchor, TargetAxes, TargetLocalPosition,
+        MacroVariable, MacroVariableId, MinecraftProgramBuilder, NbtKey, NbtPath, NbtPathKey,
+        NbtPathSegment, NbtValue, NonNegativeI32, ObjectiveName, ReturnCommand, SayCommand,
+        SayMessage, ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation, ScoreRange,
+        ScoreRef, ScoreSelection, SingleScoreHolder, StorageId, StorageNumericType, StoragePath,
+        StoreChannel, StoreDestination, SyntaxSlot, TargetAnchor, TargetAxes, TargetLocalPosition,
         TargetPosition, TargetRotation, TargetRotationAxis, TargetWorldAxis, TargetWorldPosition,
         TeleportCommand, UnboundedSelector,
     };
@@ -756,7 +756,7 @@ mod tests {
         // plain line that needs no substitution (so it is not $-prefixed).
         let arguments = MacroArguments::new(vec![MacroVariable {
             key: "index".to_owned(),
-            slot: MacroSlot::NbtIndex,
+            slot: SyntaxSlot::NbtIndex,
             source: storage("index"),
         }])
         .unwrap();

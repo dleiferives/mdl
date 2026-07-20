@@ -1,6 +1,6 @@
 //! Program-owned, target-independent typed Minecraft operations.
 
-use super::{CoreProgram, MacroOrStatic, MinecraftOperationId, ProgramError};
+use super::{CoreProgram, MinecraftOperationId, Operand, ProgramError};
 use crate::entity::EntityLimitError;
 use crate::ir::semantic::{
     AmbientContextRequirements, ContextRequirement, EntityCapability, EntityKind, MessageLiteral,
@@ -30,7 +30,7 @@ pub enum MinecraftOperationAttributes {
     },
     /// Static or dynamic-index main-hand written-book literal-page read.
     BookPage {
-        page_index: MacroOrStatic<u8>,
+        page_index: Operand<u8>,
         page_origin: OriginId,
     },
 }
@@ -227,7 +227,7 @@ impl CoreProgram {
         let MinecraftOperationAttributes::BookPage { page_index, .. } = &mut decl.attributes else {
             panic!("patch_book_page_index called on non-BookPage operation");
         };
-        *page_index = MacroOrStatic::Macro(value);
+        *page_index = Operand::Runtime(value);
     }
 
     /// Returns a typed Minecraft operation, or `None` for a foreign identity.

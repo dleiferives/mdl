@@ -158,8 +158,16 @@ impl ExternalSemanticBinding {
                 .minecraft_operation(operation)
                 .is_some_and(|operation| {
                     let signature = minecraft_descriptor(operation.key()).signature();
+                    // Extra runtime operands beyond the semantic descriptor's
+                    // static operands come from macro-typed attributes (e.g. a
+                    // runtime book-page index). The first N parameters must
+                    // match the descriptor; additional ones are runtime values
+                    // validated when the body is lowered.
+                    let static_count = signature.operands().len();
+                    let static_params = &parameters[..parameters.len().min(static_count)];
                     operation.is_well_formed()
-                        && semantic_runtime_types_match_core(signature.operands(), parameters)
+                        && parameters.len() >= static_count
+                        && semantic_runtime_types_match_core(signature.operands(), static_params)
                         && semantic_runtime_types_match_core(signature.results(), results)
                 }),
         }

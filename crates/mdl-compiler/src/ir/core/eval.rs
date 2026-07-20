@@ -13,8 +13,9 @@ use crate::entity::EntityVec;
 use crate::source::SourceContext;
 
 use super::{
-    BlockId, BlockTarget, CoreOp, CoreProgram, CoreType, ExternalOpId, FunctionId, I32Predicate,
-    InstId, TerminatorKind, ValueId, verify_program,
+    BlockId, BlockTarget, CoreOp, CoreProgram, CoreType, ExternalOpId, ExternalSemanticBinding,
+    FunctionId, I32Predicate, InstId, MinecraftOperationAttributes, Operand, TerminatorKind,
+    ValueId, verify_program,
 };
 
 /// One runtime value in the currently executable Core subset.
@@ -299,6 +300,14 @@ pub enum CoreEvaluationError {
         /// External declaration being invoked.
         operation: ExternalOpId,
     },
+    /// A macro-backed external was skipped during Core evaluation because its
+    /// behavior depends on Minecraft runtime substitution. The caller should
+    /// verify correctness through the pinned server lifecycle.
+    SkippedMacroExternal {
+        function: FunctionId,
+        instruction: InstId,
+        operation: ExternalOpId,
+    },
     /// Execution reached a terminator asserting that control is impossible.
     ReachedUnreachable {
         /// Active function.
@@ -368,6 +377,14 @@ impl fmt::Display for CoreEvaluationError {
             } => write!(
                 formatter,
                 "function {function:?} instruction {instruction:?} invokes unsupported external operation {operation:?}"
+            ),
+            Self::SkippedMacroExternal {
+                function,
+                instruction,
+                operation,
+            } => write!(
+                formatter,
+                "function {function:?} instruction {instruction:?} skipped macro external operation {operation:?}"
             ),
             Self::ReachedUnreachable { function, block } => write!(
                 formatter,
@@ -499,6 +516,10 @@ impl<'program> CoreEvaluator<'program> {
         Ok(EvaluationAction::Terminator(terminator))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "instruction dispatch intentionally keeps every Core subset opcode exhaustive"
+    )]
     fn execute_instruction(
         &self,
         state: &mut EvaluationState,
@@ -556,6 +577,31 @@ impl<'program> CoreEvaluator<'program> {
                 state.peak_call_depth = state.peak_call_depth.max(state.frames.len());
             }
             CoreOp::External(operation) => {
+                let is_macro = self
+                    .program
+                    .external_op(operation)
+                    .and_then(|decl| match decl.binding() {
+                        ExternalSemanticBinding::MinecraftOperation(mop) => {
+                            self.program.minecraft_operation(mop)
+                        }
+                        _ => None,
+                    })
+                    .is_some_and(|op| {
+                        matches!(
+                            op.attributes(),
+                            MinecraftOperationAttributes::BookPage {
+                                page_index: Operand::Runtime(_),
+                                ..
+                            }
+                        )
+                    });
+                if is_macro {
+                    return Err(CoreEvaluationError::SkippedMacroExternal {
+                        function: frame.function,
+                        instruction,
+                        operation,
+                    });
+                }
                 return Err(CoreEvaluationError::UnsupportedExternal {
                     function: frame.function,
                     instruction,

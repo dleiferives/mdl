@@ -1,5 +1,5 @@
 use crate::diagnostic::Diagnostics;
-use crate::ir::core::{CoreOp, CoreType, I32Predicate};
+use crate::ir::core::{CoreOp, CoreType, I32Predicate, Operand};
 use crate::ir::minecraft::{
     CommandKind, Condition, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
     ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FiniteF64, NbtKey, NbtPath,
@@ -446,7 +446,7 @@ fn list_element_path(
 ) -> Result<StoragePath, Diagnostics> {
     let base = list_path(context, home, origin)?;
     let mut segments = base.path().segments().to_vec();
-    segments.push(NbtPathSegment::Index(index));
+    segments.push(NbtPathSegment::Index(Operand::Const(index)));
     Ok(StoragePath::new(
         base.storage().clone(),
         NbtPath::from_segments(segments).expect("list element path is nonempty"),

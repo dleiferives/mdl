@@ -199,7 +199,9 @@ fn reconcile_selected_semantic_command(
             == &crate::ir::minecraft::Selector::from(
                 crate::ir::minecraft::AtMostOneSelector::SelfExecutor,
             )
-            && path == &super::super::preflight::written_book_literal_page_path(*page_index) => {}
+            && page_index.as_const().is_some_and(|n| {
+                path == &super::super::preflight::written_book_literal_page_path(*n)
+            }) => {}
         _ => {
             return Err(recipe_mismatch(
                 "constructed semantic command differs from its exact selected recipe",
@@ -616,7 +618,7 @@ mod tests {
     use crate::entity::EntityId;
     use crate::ir::core::{
         BlockId, BlockTarget, CoreProgram, CoreType, ExternalSemanticBinding, FunctionBuilder,
-        FunctionId, InstId, MacroOrStatic, MinecraftOperationAttributes, MinecraftOperationOrigins,
+        FunctionId, InstId, MinecraftOperationAttributes, MinecraftOperationOrigins, Operand,
         Terminator, TerminatorKind,
     };
     use crate::ir::minecraft::{
@@ -905,7 +907,7 @@ mod tests {
                 MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
                 EntityKind::ArmorStand,
                 MinecraftOperationAttributes::BookPage {
-                    page_index: MacroOrStatic::Static(0),
+                    page_index: Operand::Const(0),
                     page_origin: OriginId::UNKNOWN,
                 },
                 MinecraftOperationOrigins::new(

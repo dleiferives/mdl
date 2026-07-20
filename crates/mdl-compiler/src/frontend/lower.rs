@@ -22,9 +22,9 @@ use crate::ir::core::{
     BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
     CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityQueryDecl, EntityQueryStep,
     ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder, FunctionId,
-    I32ClosedRange, I32Predicate, InstId, MacroOrStatic, MinecraftOperationAttributes,
-    MinecraftOperationOrigins, ProgramError, RunModifierInstance, TargetFragment, Terminator,
-    TerminatorKind, ValueId, verify_program,
+    I32ClosedRange, I32Predicate, InstId, MinecraftOperationAttributes, MinecraftOperationOrigins,
+    Operand, ProgramError, RunModifierInstance, TargetFragment, Terminator, TerminatorKind,
+    ValueId, verify_program,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -1090,6 +1090,7 @@ fn declare_functions(
     Ok(SourceToCoreMap::new(correlations))
 }
 
+#[allow(clippy::too_many_lines)]
 fn declare_external_operations(
     program: &mut CoreProgram,
     checked: &CheckedFrontendOutput,
@@ -1148,12 +1149,16 @@ fn declare_external_operations(
                         page_index,
                         page_origin,
                     } => MinecraftOperationAttributes::BookPage {
-                        page_index: MacroOrStatic::Static(*page_index),
+                        page_index: Operand::Const(*page_index),
                         page_origin: *page_origin,
                     },
                     HirMinecraftOperationAttributes::BookPageRuntime { page_origin, .. } => {
+                        // Placeholder — the real runtime index flows as the External
+                        // instruction's operand, not through this attribute. The
+                        // `Macro(_)` variant only signals "is dynamic" for preflight.
+                        // See ps-11-implementation-handoff.md §2.
                         MinecraftOperationAttributes::BookPage {
-                            page_index: MacroOrStatic::Macro(ValueId::from_index(0)),
+                            page_index: Operand::Runtime(ValueId::from_index(0)),
                             page_origin: *page_origin,
                         }
                     }
@@ -1184,8 +1189,15 @@ fn declare_external_operations(
             HirExternalSemantic::UnsafeMinecraftCommand { .. }
             | HirExternalSemantic::MinecraftOperation { .. } => vec![],
         };
+        let parameters = match &external.semantic {
+            HirExternalSemantic::MinecraftOperation {
+                attributes: HirMinecraftOperationAttributes::BookPageRuntime { .. },
+                ..
+            } => vec![CoreType::I32],
+            _ => vec![],
+        };
         let operation = program
-            .declare_external_op(binding, vec![], results, external.origin)
+            .declare_external_op(binding, parameters, results, external.origin)
             .map_err(|error| CoreGenerationFailure::ExternalDeclaration {
                 source_external: external.id,
                 error,
@@ -1342,10 +1354,17 @@ fn verify_source_semantic_correlation(
                         page_origin,
                     },
                     MinecraftOperationAttributes::BookPage {
-                        page_index: MacroOrStatic::Static(core_n),
+                        page_index: Operand::Const(core_n),
                         page_origin: core_origin,
                     },
                 ) => *page_index == *core_n && page_origin == core_origin,
+                (
+                    HirMinecraftOperationAttributes::BookPageRuntime { page_origin, .. },
+                    MinecraftOperationAttributes::BookPage {
+                        page_index: Operand::Runtime(_),
+                        page_origin: core_origin,
+                    },
+                ) => page_origin == core_origin,
                 _ => false,
             };
             if operation.key() != *key
@@ -2017,7 +2036,8 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 Ok(Some(block))
             }
             HirStatementKind::External(external) => {
-                let _ = self.lower_external(*external, statement.origin)?;
+                let _ =
+                    self.lower_external(*external, &mut block, environment, statement.origin)?;
                 Ok(Some(block))
             }
             HirStatementKind::If(conditional) => self.lower_if(block, environment, conditional),
@@ -2297,6 +2317,8 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
     fn lower_external(
         &mut self,
         external: SourceExternalOpId,
+        block: &mut BlockId,
+        environment: &mut Environment,
         origin: OriginId,
     ) -> Result<Vec<ValueId>, CoreGenerationFailure> {
         let operation =
@@ -2308,16 +2330,22 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                         source_external: external,
                     },
                 ))?;
+        let sem = self.checked.external_op(external).map(|op| &op.semantic);
+        let operands = match sem {
+            Some(HirExternalSemantic::MinecraftOperation {
+                attributes: HirMinecraftOperationAttributes::BookPageRuntime { page_index, .. },
+                ..
+            }) => {
+                let bundle = self.lower_expression(block, environment, page_index)?;
+                bundle.into_values()
+            }
+            _ => vec![],
+        };
         let (instruction, results) = self
             .builder
-            .external_with_identity(operation, vec![], origin)
+            .external_with_identity(operation, operands, origin)
             .map_err(|error| self.construction(error))?;
-        if matches!(
-            self.checked
-                .external_op(external)
-                .map(|external| &external.semantic),
-            Some(HirExternalSemantic::MinecraftOperation { .. })
-        ) {
+        if matches!(sem, Some(HirExternalSemantic::MinecraftOperation { .. })) {
             self.record_semantic_operation(external, operation, instruction)?;
         }
         Ok(results)
@@ -2762,7 +2790,7 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                     .into_boxed_slice(),
             ),
             HirExpressionKind::External(external) => ValueBundle(
-                self.lower_external(*external, expression.origin)?
+                self.lower_external(*external, block, environment, expression.origin)?
                     .into_boxed_slice(),
             ),
             HirExpressionKind::StructConstruct { struct_, fields } => {

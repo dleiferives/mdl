@@ -3,7 +3,7 @@
 use super::analysis::definition_block;
 use super::{
     BlockId, CoreProgram, CoreType, Dominance, DominatorTree, EntityQueryStep, FunctionBody,
-    FunctionId, MacroOrStatic, MinecraftOperationAttributes, PlacementIndex, RunModifierInstance,
+    FunctionId, MinecraftOperationAttributes, Operand, PlacementIndex, RunModifierInstance,
     TargetFragment, TerminatorKind, UnsafeMinecraftCommandFragment, UseIndex, UseSite, ValueDef,
     ValueId,
 };
@@ -214,8 +214,8 @@ fn verify_linked_inventories(
             MinecraftOperationAttributes::Teleport { .. }
             | MinecraftOperationAttributes::MoveBy { .. } => true,
             MinecraftOperationAttributes::BookPage { page_index, .. } => match page_index {
-                MacroOrStatic::Static(n) => *n < 100,
-                MacroOrStatic::Macro(_) => true,
+                Operand::Const(n) => *n < 100,
+                Operand::Runtime(_) => true,
             },
         };
         if !declaration.is_well_formed() || !attributes_are_valid {

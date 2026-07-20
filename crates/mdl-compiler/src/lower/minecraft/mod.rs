@@ -12,6 +12,7 @@ mod call;
 mod coalescing;
 mod construct;
 mod control;
+mod crossings;
 mod demand;
 mod edge_transfer;
 mod emit;

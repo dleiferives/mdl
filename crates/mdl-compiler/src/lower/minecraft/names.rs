@@ -1,5 +1,5 @@
 use crate::entity::EntityId;
-use crate::ir::core::{BlockId, CoreType, FunctionId, InstId, ValueId};
+use crate::ir::core::{BlockId, CoreType, FunctionId, InstId, Operand, ValueId};
 use crate::ir::minecraft::{
     FakeScoreHolder, FunctionResourceId, NbtPath, NbtPathKey, NbtPathSegment, PackResourcePath,
     ResourcePath, StorageId, StoragePath,
@@ -90,7 +90,7 @@ impl<'a> GeneratedNames<'a> {
 
     pub(crate) fn activation_frame_for(base: &StoragePath) -> StoragePath {
         let mut segments = base.path().segments().to_vec();
-        segments.push(NbtPathSegment::Index(-1));
+        segments.push(NbtPathSegment::Index(Operand::Const(-1)));
         StoragePath::new(
             base.storage().clone(),
             NbtPath::from_segments(segments).expect("activation frame path is nonempty"),
@@ -102,7 +102,7 @@ impl<'a> GeneratedNames<'a> {
         storage_ordinal: u32,
     ) -> StoragePath {
         let mut segments = base.path().segments().to_vec();
-        segments.push(NbtPathSegment::Index(-1));
+        segments.push(NbtPathSegment::Index(Operand::Const(-1)));
         segments.push(NbtPathSegment::Key(
             NbtPathKey::new(&format!("s{storage_ordinal}"))
                 .expect("generated activation spill key must be valid"),

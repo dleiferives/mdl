@@ -5090,11 +5090,24 @@ impl<'a> BodyChecker<'a> {
                             let checked = self.check_expression(argument, assigned)?;
                             match (checked.expression, checked.ty) {
                                 (Some(page_index), Some(ValueType::Int32)) => {
-                                    attributes =
-                                        Some(HirMinecraftOperationAttributes::BookPageRuntime {
-                                            page_index: Box::new(page_index),
-                                            page_origin: self.origin(argument.span)?,
-                                        });
+                                    if Self::runtime_index_contains_forbidden(&page_index) {
+                                        self.diagnostics.push(
+                                            PendingDiagnostic::new(
+                                                LITERAL_CONTEXT_REQUIRED,
+                                                "a runtime book-page index may not contain a function call yet",
+                                                argument.span,
+                                            )
+                                            .primary("this expression contains a call or external operation"),
+                                        );
+                                        valid = false;
+                                    } else {
+                                        attributes = Some(
+                                            HirMinecraftOperationAttributes::BookPageRuntime {
+                                                page_index: Box::new(page_index),
+                                                page_origin: self.origin(argument.span)?,
+                                            },
+                                        );
+                                    }
                                 }
                                 (_, Some(_)) => {
                                     self.diagnostics.push(
@@ -5151,6 +5164,42 @@ impl<'a> BodyChecker<'a> {
                 FunctionResult::Value(ValueType::String)
             }),
         }))
+    }
+
+    fn runtime_index_contains_forbidden(expression: &HirExpression) -> bool {
+        match &expression.kind {
+            HirExpressionKind::Call(_) | HirExpressionKind::External(_) => true,
+            HirExpressionKind::StructConstruct { fields, .. }
+            | HirExpressionKind::AnonymousStructConstruct { fields, .. } => fields
+                .iter()
+                .any(|field| Self::runtime_index_contains_forbidden(&field.value)),
+            HirExpressionKind::StructProject { aggregate, .. }
+            | HirExpressionKind::AnonymousStructProject { aggregate, .. }
+            | HirExpressionKind::Index { aggregate, .. }
+            | HirExpressionKind::Not(aggregate) => {
+                Self::runtime_index_contains_forbidden(aggregate)
+            }
+            HirExpressionKind::ListI32 { operands, .. }
+            | HirExpressionKind::String { operands, .. } => {
+                operands.iter().any(Self::runtime_index_contains_forbidden)
+            }
+            HirExpressionKind::WrappingArithmetic { left, right, .. }
+            | HirExpressionKind::Compare { left, right, .. } => {
+                Self::runtime_index_contains_forbidden(left)
+                    || Self::runtime_index_contains_forbidden(right)
+            }
+            HirExpressionKind::Switch(switch) => {
+                Self::runtime_index_contains_forbidden(&switch.scrutinee)
+                    || switch
+                        .arms
+                        .iter()
+                        .any(|arm| Self::runtime_index_contains_forbidden(&arm.body))
+            }
+            HirExpressionKind::Bool(_)
+            | HirExpressionKind::Int32(_)
+            | HirExpressionKind::EnumVariant { .. }
+            | HirExpressionKind::Local(_) => false,
+        }
     }
 
     fn check_unknown_minecraft_method_arguments(

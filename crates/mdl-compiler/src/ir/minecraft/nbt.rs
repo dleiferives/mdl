@@ -3,6 +3,7 @@ use std::fmt;
 use std::fmt::Write as _;
 
 use super::{FiniteF32, FiniteF64, StorageId};
+use crate::ir::core::Operand;
 
 /// Initial maximum nesting depth for compiler-constructed NBT.
 pub const MAX_NBT_DEPTH: usize = 64;
@@ -130,7 +131,12 @@ pub enum NbtPathSegment {
     /// Select a compound child.
     Key(NbtPathKey),
     /// Select one list element; negative indexes count from the end.
-    Index(i32),
+    ///
+    /// A `Const` index renders as `[n]`. A `Runtime` index represents a
+    /// dynamic value that must be macro-substituted; its `$(key)` rendering
+    /// is produced by `extract_crossings` (PS-11C) where the macro frame
+    /// context is available.
+    Index(Operand<i32>),
     /// Select every element of a list.
     AllElements,
 }
@@ -197,7 +203,13 @@ impl fmt::Display for NbtPath {
                     }
                     write_path_key(key.as_str(), formatter)?;
                 }
-                NbtPathSegment::Index(element) => write!(formatter, "[{element}]")?,
+                NbtPathSegment::Index(element) => match element {
+                    Operand::Const(n) => write!(formatter, "[{n}]")?,
+                    Operand::Runtime(_) => panic!(
+                        "runtime NBT index rendered outside a macro context; \
+                         PS-11C extract_crossings handles $(key) substitution"
+                    ),
+                },
                 NbtPathSegment::AllElements => formatter.write_str("[]")?,
             }
         }
@@ -542,6 +554,7 @@ mod tests {
         MAX_NBT_DEPTH, NbtBuildError, NbtKey, NbtPath, NbtPathKey, NbtPathKeyErrorReason,
         NbtPathSegment, NbtValue, NbtValueRef, StoragePath,
     };
+    use crate::ir::core::Operand;
     use crate::ir::minecraft::{FiniteF32, FiniteF64, StorageId};
 
     #[test]
@@ -571,7 +584,7 @@ mod tests {
         let path = NbtPath::new(
             NbtPathSegment::Key(NbtPathKey::new("prison.cells").unwrap()),
             vec![
-                NbtPathSegment::Index(-1),
+                NbtPathSegment::Index(Operand::Const(-1)),
                 NbtPathSegment::AllElements,
                 NbtPathSegment::Key(NbtPathKey::new("user \"name\"").unwrap()),
             ],

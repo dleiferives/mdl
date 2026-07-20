@@ -6,13 +6,19 @@ use crate::source::OriginId;
 
 use super::StoragePath;
 
+/// A stubbed indirect-reference recipe. PS-11B structurally promotes the slot
+/// taxonomy but defers the full `SyntaxSlot` serialization and `IndirectRecipe`
+/// design to PS-11C when `extract_crossings` wires the crossing-selection pass.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum IndirectRecipe {}
+
 /// Where a runtime value can safely appear in command syntax.
 ///
 /// Each variant represents a distinct syntax position into which a macro variable
 /// `$(key)` may be substituted. The compiler owns the serialization, escaping,
 /// and validation rules for every slot.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum MacroSlot {
+pub enum SyntaxSlot {
     /// Plain integer (no type suffix). Numeric NBT → decimal text.
     Int,
     /// Floating-point (up to 15 fraction digits). Float/Double NBT → decimal text.
@@ -30,6 +36,27 @@ pub enum MacroSlot {
     /// Raw command text fragment. **Unsafe** — requires explicit opt-in.
     /// Never produced by automatic lowering.
     CommandFragment,
+}
+
+impl SyntaxSlot {
+    /// Whether an indirect-reference encoding exists for this syntax position.
+    ///
+    /// Positions that support indirection (data source, score operand, store
+    /// target, text component) return `Some` in future PS-11C; all positions
+    /// return `None` today.
+    #[must_use]
+    pub const fn indirection_form(&self) -> Option<IndirectRecipe> {
+        match self {
+            Self::Int
+            | Self::Float
+            | Self::Snbt
+            | Self::NbtKey
+            | Self::NbtIndex
+            | Self::ResourceId
+            | Self::SelectorFragment
+            | Self::CommandFragment => None,
+        }
+    }
 }
 
 /// One segment of a macro command line.
@@ -51,7 +78,7 @@ pub struct MacroVariable {
     /// The `$(key)` identifier. Must match the regex `[a-zA-Z0-9_]+`.
     pub key: String,
     /// What syntax position this variable targets.
-    pub slot: MacroSlot,
+    pub slot: SyntaxSlot,
     /// Where the runtime value lives in command storage.
     pub source: StoragePath,
 }
@@ -333,7 +360,7 @@ fn validate_variable_key(key: &str) -> Result<(), MacroKeyError> {
 mod tests {
     use super::{
         MacroArguments, MacroArgumentsErrorReason, MacroCommand, MacroCommandError, MacroKeyError,
-        MacroLine, MacroSegment, MacroSlot, MacroVariable, MacroVariableId,
+        MacroLine, MacroSegment, MacroVariable, MacroVariableId, SyntaxSlot,
     };
     use crate::ir::minecraft::{NbtPath, NbtPathKey, NbtPathSegment, StorageId, StoragePath};
     use crate::source::OriginId;
@@ -345,7 +372,7 @@ mod tests {
         )
     }
 
-    fn var(_id: u16, key: &str, slot: MacroSlot) -> MacroVariable {
+    fn var(_id: u16, key: &str, slot: SyntaxSlot) -> MacroVariable {
         MacroVariable {
             key: key.to_owned(),
             slot,
@@ -368,7 +395,7 @@ mod tests {
             ("key with space", Some(MacroKeyError::InvalidCharacter)),
             ("key-with-dash", Some(MacroKeyError::InvalidCharacter)),
         ] {
-            let result = MacroArguments::new(vec![var(0, key, MacroSlot::Int)]).map(|_| ());
+            let result = MacroArguments::new(vec![var(0, key, SyntaxSlot::Int)]).map(|_| ());
             match (result, expected) {
                 (Ok(()), None) => {}
                 (Err(error), Some(key_error))
@@ -381,8 +408,8 @@ mod tests {
     #[test]
     fn duplicate_keys_are_rejected() {
         let error = MacroArguments::new(vec![
-            var(0, "a", MacroSlot::Int),
-            var(1, "a", MacroSlot::Float),
+            var(0, "a", SyntaxSlot::Int),
+            var(1, "a", SyntaxSlot::Float),
         ])
         .unwrap_err();
         assert_eq!(
@@ -442,7 +469,7 @@ mod tests {
 
     #[test]
     fn valid_macro_command_is_accepted() {
-        let args = MacroArguments::new(vec![var(0, "msg", MacroSlot::Int)]).unwrap();
+        let args = MacroArguments::new(vec![var(0, "msg", SyntaxSlot::Int)]).unwrap();
         let cmd = MacroCommand::new(
             vec![MacroLine {
                 segments: vec![

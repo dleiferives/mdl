@@ -482,15 +482,33 @@ impl Executor {
     }
 
     fn data_modify_append(&mut self, storage: &str, path: &str, source: &str) -> Result<(), String> {
-        let snbt = source.strip_prefix("value ").ok_or_else(|| format!("expected value: {source}"))?;
-        let val = parse_snbt_literal(snbt)?;
-        self.world.storage.append(storage, path, val)
+        if let Some(snbt) = source.strip_prefix("value ") {
+            let val = parse_snbt_literal(snbt)?;
+            self.world.storage.append(storage, path, val)
+        } else if let Some(from) = source.strip_prefix("from ") {
+            let storage_part = from.strip_prefix("storage ").unwrap_or(from);
+            let (src_storage, src_path) = split_first_word(storage_part);
+            let src = self.world.storage.get(src_storage, &src_path)
+                .ok_or_else(|| format!("source not found: {src_storage} {src_path}"))?;
+            self.world.storage.append(storage, path, src)
+        } else {
+            Err(format!("expected value or from: {source}"))
+        }
     }
 
     fn data_modify_prepend(&mut self, storage: &str, path: &str, source: &str) -> Result<(), String> {
-        let snbt = source.strip_prefix("value ").ok_or_else(|| format!("expected value: {source}"))?;
-        let val = parse_snbt_literal(snbt)?;
-        self.world.storage.prepend(storage, path, val)
+        if let Some(snbt) = source.strip_prefix("value ") {
+            let val = parse_snbt_literal(snbt)?;
+            self.world.storage.prepend(storage, path, val)
+        } else if let Some(from) = source.strip_prefix("from ") {
+            let storage_part = from.strip_prefix("storage ").unwrap_or(from);
+            let (src_storage, src_path) = split_first_word(storage_part);
+            let src = self.world.storage.get(src_storage, &src_path)
+                .ok_or_else(|| format!("source not found: {src_storage} {src_path}"))?;
+            self.world.storage.prepend(storage, path, src)
+        } else {
+            Err(format!("expected value or from: {source}"))
+        }
     }
 
     fn data_modify_merge(&mut self, storage: &str, path: &str, source: &str) -> Result<(), String> {

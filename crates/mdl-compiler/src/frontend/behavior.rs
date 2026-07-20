@@ -258,6 +258,10 @@ fn collect_statement_calls(
             true
         }
         HirStatementKind::Break | HirStatementKind::Continue => false,
+        HirStatementKind::Destructure { operand, .. } => {
+            collect_expression_calls(operand, calls);
+            true
+        }
         HirStatementKind::Run(run) => {
             collect_block_calls(&run.body, calls);
             true
@@ -306,7 +310,8 @@ fn collect_expression_calls(expression: &HirExpression, calls: &mut BTreeSet<Sou
             }
         }
         HirExpressionKind::StructProject { aggregate, .. }
-        | HirExpressionKind::AnonymousStructProject { aggregate, .. } => {
+        | HirExpressionKind::AnonymousStructProject { aggregate, .. }
+        | HirExpressionKind::Index { aggregate, .. } => {
             collect_expression_calls(aggregate, calls);
         }
         HirExpressionKind::ListI32 { operands, .. }
@@ -459,6 +464,9 @@ impl BehaviorEvaluator<'_> {
                 (condition.join(body).join(RECURSIVE_WORK), true)
             }
             HirStatementKind::Break | HirStatementKind::Continue => (FunctionBehavior::NONE, false),
+            HirStatementKind::Destructure { operand, .. } => {
+                (self.expression(operand)?.join(FINITE_WORK), true)
+            }
             HirStatementKind::Run(run) => (self.run(run)?, true),
             HirStatementKind::Return(value) => (
                 value
@@ -625,7 +633,8 @@ impl BehaviorEvaluator<'_> {
                 Ok(behavior)
             }
             HirExpressionKind::StructProject { aggregate, .. }
-            | HirExpressionKind::AnonymousStructProject { aggregate, .. } => {
+            | HirExpressionKind::AnonymousStructProject { aggregate, .. }
+            | HirExpressionKind::Index { aggregate, .. } => {
                 Ok(self.expression(aggregate)?.join(FINITE_WORK))
             }
             HirExpressionKind::ListI32 { operands, .. }

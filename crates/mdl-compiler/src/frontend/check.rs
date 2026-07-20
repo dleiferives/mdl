@@ -1,7 +1,7 @@
 //! Signature collection, semantic checking, and structured flow analysis.
 
-use std::collections::{BTreeMap, HashMap};
 use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU32;
@@ -10,26 +10,27 @@ use std::rc::Rc;
 use super::FrontendLimits;
 use super::ast::{
     AstAssignment, AstBindingKind, AstBlock, AstCall, AstCallStatement, AstComparisonOp,
-    AstCoordinateSigil, AstDeclaration, AstExpression, AstExpressionKind, AstFunction,
-    AstFunctionVisibility, AstIfStatement, AstModule, AstName, AstResultTypeKind,
+    AstCoordinateSigil, AstDeclaration, AstDestructureTargetKind, AstDestructuringStatement,
+    AstExpression, AstExpressionKind, AstFunction, AstFunctionVisibility, AstIfStatement,
+    AstInferredStructEntries, AstInferredStructLiteral, AstModule, AstName, AstResultTypeKind,
     AstReturnStatement, AstRunModifier, AstRunStatement, AstStatement, AstStructLiteral,
     AstSwitchExpression, AstSwitchLabel, AstSwitchPattern, AstSwitchPatternKind,
     AstSwitchStatement, AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::context::{apply_run_modifiers, function_entry_context};
 use super::hir::{
-    CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBinding, HirBindingKind,
-    HirBlock, HirCall, HirComparisonOp, HirContextStep, HirEntityQuery, HirEntityQueryStep,
-    HirEnum, HirEnumVariant, HirExecutionContext, HirExecutorCapture, HirExpression,
-    HirExpressionKind, HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirIfArm,
-    HirListI32Op, HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun,
-    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField,
-    HirStructFieldValue, HirSwitchExpression, HirSwitchExpressionArm, HirSwitchLabel,
-    HirSwitchPattern, HirSwitchPatternKind, HirSwitchStatement, HirSwitchStatementArm,
-    HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId, SourceEnumId,
-    HirAnonymousStruct, HirAnonymousStructField, HirAnonymousStructKind, SourceAnonymousStructId,
-    SourceExternalOpId, SourceFunctionId, SourceModuleId, SourceRunId, SourceStructId,
-    SourceVariantId, ValueType, verify,
+    CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirAnonymousStruct,
+    HirAnonymousStructField, HirAnonymousStructKind, HirBinding, HirBindingKind, HirBlock, HirCall,
+    HirComparisonOp, HirContextStep, HirDestructureTarget, HirDestructureTargetRole,
+    HirEntityQuery, HirEntityQueryStep, HirEnum, HirEnumVariant, HirExecutionContext,
+    HirExecutorCapture, HirExpression, HirExpressionKind, HirExternalOp, HirExternalSemantic,
+    HirFunction, HirIf, HirIfArm, HirListI32Op, HirMinecraftOperationAttributes, HirModule,
+    HirModuleInfo, HirRun, HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirStruct,
+    HirStructField, HirStructFieldValue, HirSwitchExpression, HirSwitchExpressionArm,
+    HirSwitchLabel, HirSwitchPattern, HirSwitchPatternKind, HirSwitchStatement,
+    HirSwitchStatementArm, HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId,
+    SourceAnonymousStructId, SourceEnumId, SourceExternalOpId, SourceFunctionId, SourceModuleId,
+    SourceRunId, SourceStructId, SourceVariantId, ValueType, verify,
 };
 use super::input::{ModuleDependency, ModuleKey};
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
@@ -942,7 +943,9 @@ fn resolve_value_type(
                             diagnostics.push(
                                 PendingDiagnostic::new(
                                     DUPLICATE_STRUCT_FIELD,
-                                    format!("anonymous struct field `{name}` is declared more than once"),
+                                    format!(
+                                        "anonymous struct field `{name}` is declared more than once"
+                                    ),
                                     field.name.span,
                                 )
                                 .support(original, "first field is here"),
@@ -1155,7 +1158,7 @@ fn collect_module_signatures(
                         anonymous,
                         diagnostics,
                     )
-                        .unwrap_or(ValueType::Int32),
+                    .unwrap_or(ValueType::Int32),
                 ),
             };
             (result, Some(result_ast.span))
@@ -1412,6 +1415,9 @@ impl<'a> BodyChecker<'a> {
             AstStatement::Return(statement) => self.check_return(statement, assigned),
             AstStatement::Run(statement) => self.check_run(statement, assigned),
             AstStatement::UnsafeMinecraft(statement) => self.check_unsafe_minecraft(statement),
+            AstStatement::Destructure(destructure) => {
+                self.check_destructuring(destructure, assigned)
+            }
             AstStatement::Error(span) => {
                 self.diagnostics.push(PendingDiagnostic::new(
                     DIRTY_AST,
@@ -1541,6 +1547,256 @@ impl<'a> BodyChecker<'a> {
         Ok(CheckedStatement::continuing(HirStatement {
             kind: HirStatementKind::External(id),
             origin,
+        }))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "destructure checking keeps operand, target, and assignment rules atomic"
+    )]
+    fn check_destructuring(
+        &mut self,
+        statement: &AstDestructuringStatement,
+        assigned: &mut Assigned,
+    ) -> Result<CheckedStatement, CheckError> {
+        let operand = self.check_expression(&statement.value, assigned)?;
+        let Some(ValueType::AnonymousStruct(struct_id)) = operand.ty else {
+            if operand.ty.is_some() {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        TYPE_MISMATCH,
+                        "destructure operand must be a positional anonymous struct",
+                        statement.value.span,
+                    )
+                    .primary("only positional anonymous struct values can be destructured"),
+                );
+            }
+            return Ok(CheckedStatement::invalid());
+        };
+        let interner = self.signatures.anonymous.borrow();
+        let anonymous = interner.entries.iter().find(|entry| entry.id == struct_id);
+        let Some(anonymous) = anonymous else {
+            return Ok(CheckedStatement::invalid());
+        };
+        let components: &[ValueType] = match &anonymous.key {
+            AnonymousTypeKey::Positional(types) => types,
+            AnonymousTypeKey::Named { .. } => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        TYPE_MISMATCH,
+                        "destructure operand must be a positional anonymous struct",
+                        statement.value.span,
+                    )
+                    .primary("named anonymous structs use field projection, not destructuring"),
+                );
+                return Ok(CheckedStatement::invalid());
+            }
+        };
+        if statement.targets.len() != components.len() {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    ARGUMENT_COUNT,
+                    format!(
+                        "destructure requires {} targets but {} were provided",
+                        components.len(),
+                        statement.targets.len()
+                    ),
+                    statement.span,
+                )
+                .primary("destructure target count must match the operand's component count"),
+            );
+            return Ok(CheckedStatement::invalid());
+        }
+
+        let mut targets = Vec::with_capacity(statement.targets.len());
+        let mut valid = operand.expression.is_some();
+        let mut seen_names: HashMap<Rc<str>, Span> = HashMap::new();
+
+        for (component_index, ast_target) in statement.targets.iter().enumerate() {
+            let component_ty = components[component_index];
+            let spelling: Rc<str> = Rc::from(self.spelling(ast_target.name.span)?);
+            let name_origin = self.origin(ast_target.name.span)?;
+            let target_origin = self.origin(ast_target.span)?;
+
+            match ast_target.kind {
+                AstDestructureTargetKind::Const => {
+                    if let Some(original) =
+                        seen_names.insert(Rc::clone(&spelling), ast_target.name.span)
+                    {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                DUPLICATE_BINDING,
+                                format!("destructure target `{spelling}` appears more than once"),
+                                ast_target.name.span,
+                            )
+                            .support(original, "first occurrence is here"),
+                        );
+                        valid = false;
+                    }
+                    let reserved = is_reserved_compiler_name(&spelling);
+                    if reserved {
+                        self.diagnostics.push(reserved_compiler_name_diagnostic(
+                            &spelling,
+                            ast_target.name.span,
+                        ));
+                        valid = false;
+                    }
+                    let local = self.allocate_binding(
+                        HirBindingKind::Const,
+                        component_ty,
+                        ast_target.name.span,
+                        ast_target.name.span,
+                        ast_target.span,
+                    )?;
+                    self.install_active_binding(
+                        Rc::clone(&spelling),
+                        ActiveBinding::Unique(ScopeBinding {
+                            local,
+                            kind: HirBindingKind::Const,
+                            ty: component_ty,
+                            name_span: ast_target.name.span,
+                            type_span: ast_target.name.span,
+                        }),
+                        local,
+                    );
+                    assigned.set(local, true);
+                    targets.push(HirDestructureTarget {
+                        role: HirDestructureTargetRole::Const,
+                        local: Some(local),
+                        component: u32::try_from(component_index).unwrap_or(u32::MAX),
+                        ty: component_ty,
+                        name_origin,
+                        origin: target_origin,
+                    });
+                }
+                AstDestructureTargetKind::Var => {
+                    if let Some(original) =
+                        seen_names.insert(Rc::clone(&spelling), ast_target.name.span)
+                    {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                DUPLICATE_BINDING,
+                                format!("destructure target `{spelling}` appears more than once"),
+                                ast_target.name.span,
+                            )
+                            .support(original, "first occurrence is here"),
+                        );
+                        valid = false;
+                    }
+                    let reserved = is_reserved_compiler_name(&spelling);
+                    if reserved {
+                        self.diagnostics.push(reserved_compiler_name_diagnostic(
+                            &spelling,
+                            ast_target.name.span,
+                        ));
+                        valid = false;
+                    }
+                    let local = self.allocate_binding(
+                        HirBindingKind::Var,
+                        component_ty,
+                        ast_target.name.span,
+                        ast_target.name.span,
+                        ast_target.span,
+                    )?;
+                    self.install_active_binding(
+                        Rc::clone(&spelling),
+                        ActiveBinding::Unique(ScopeBinding {
+                            local,
+                            kind: HirBindingKind::Var,
+                            ty: component_ty,
+                            name_span: ast_target.name.span,
+                            type_span: ast_target.name.span,
+                        }),
+                        local,
+                    );
+                    assigned.set(local, true);
+                    targets.push(HirDestructureTarget {
+                        role: HirDestructureTargetRole::Var,
+                        local: Some(local),
+                        component: u32::try_from(component_index).unwrap_or(u32::MAX),
+                        ty: component_ty,
+                        name_origin,
+                        origin: target_origin,
+                    });
+                }
+                AstDestructureTargetKind::Assign => {
+                    let name: Rc<str> = Rc::from(self.spelling(ast_target.name.span)?);
+                    if name.as_ref() == "_" {
+                        targets.push(HirDestructureTarget {
+                            role: HirDestructureTargetRole::Discard,
+                            local: None,
+                            component: u32::try_from(component_index).unwrap_or(u32::MAX),
+                            ty: component_ty,
+                            name_origin,
+                            origin: target_origin,
+                        });
+                        continue;
+                    }
+                    let target_binding = self.active_binding(name.as_ref());
+                    match target_binding {
+                        Some(ActiveBinding::Unique(binding)) => {
+                            if binding.kind == HirBindingKind::Const {
+                                self.diagnostics.push(
+                                    PendingDiagnostic::new(
+                                        IMMUTABLE_ASSIGNMENT,
+                                        format!("cannot assign to immutable binding `{name}`"),
+                                        ast_target.name.span,
+                                    )
+                                    .primary("binding is `const`"),
+                                );
+                                valid = false;
+                            }
+                            if binding.ty != component_ty {
+                                self.type_mismatch(
+                                    ast_target.name.span,
+                                    component_ty,
+                                    binding.ty,
+                                    binding.type_span,
+                                    "expected type from destructure target",
+                                );
+                                valid = false;
+                            }
+                            assigned.set(binding.local, true);
+                            targets.push(HirDestructureTarget {
+                                role: HirDestructureTargetRole::Assign,
+                                local: Some(binding.local),
+                                component: u32::try_from(component_index).unwrap_or(u32::MAX),
+                                ty: component_ty,
+                                name_origin,
+                                origin: target_origin,
+                            });
+                        }
+                        Some(ActiveBinding::Poisoned(_)) => {
+                            valid = false;
+                        }
+                        None => {
+                            self.diagnostics.push(
+                                PendingDiagnostic::new(
+                                    UNKNOWN_NAME,
+                                    format!("unknown binding `{name}`"),
+                                    ast_target.name.span,
+                                )
+                                .primary("no active binding has this name"),
+                            );
+                            valid = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(operand) = operand.expression else {
+            return Ok(CheckedStatement::invalid());
+        };
+        if !valid {
+            return Ok(CheckedStatement::invalid());
+        }
+        Ok(CheckedStatement::continuing(HirStatement {
+            kind: HirStatementKind::Destructure {
+                operand,
+                targets: targets.into_boxed_slice(),
+            },
+            origin: self.origin(statement.span)?,
         }))
     }
 
@@ -2368,7 +2624,8 @@ impl<'a> BodyChecker<'a> {
             AstBindingKind::Var => HirBindingKind::Var,
         };
         let declared_type = if let Some(ty) = &declaration.ty {
-            self.resolve_type(ty.kind.clone()).unwrap_or(ValueType::Int32)
+            self.resolve_type(ty.kind.clone())
+                .unwrap_or(ValueType::Int32)
         } else {
             let Some(initializer) = declaration.initializer.as_ref() else {
                 self.diagnostics.push(PendingDiagnostic::new(
@@ -2384,7 +2641,10 @@ impl<'a> BodyChecker<'a> {
             };
             ty
         };
-        let type_span = declaration.ty.as_ref().map_or(declaration.name.span, |ty| ty.span);
+        let type_span = declaration
+            .ty
+            .as_ref()
+            .map_or(declaration.name.span, |ty| ty.span);
         let local = self.allocate_binding(
             binding_kind,
             declared_type,
@@ -3315,6 +3575,12 @@ impl<'a> BodyChecker<'a> {
             AstExpressionKind::Compare { op, left, right } => {
                 self.check_comparison(*op, left, right, expression.span, assigned)
             }
+            AstExpressionKind::Index { aggregate, index } => {
+                self.check_index_expression(aggregate, *index, expression.span, assigned)
+            }
+            AstExpressionKind::InferredStructLiteral(literal) => {
+                self.check_inferred_struct_literal(literal, expression.span, assigned, expected)
+            }
             AstExpressionKind::Error => {
                 self.diagnostics.push(PendingDiagnostic::new(
                     DIRTY_AST,
@@ -3582,6 +3848,254 @@ impl<'a> BodyChecker<'a> {
         );
     }
 
+    fn check_inferred_struct_literal(
+        &mut self,
+        literal: &AstInferredStructLiteral,
+        span: Span,
+        assigned: &Assigned,
+        expected: Option<ValueType>,
+    ) -> Result<CheckedExpression, CheckError> {
+        let Some(expected) = expected else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    LITERAL_CONTEXT_REQUIRED,
+                    "inferred struct literal requires an exact expected type",
+                    span,
+                )
+                .primary("write an explicit type annotation or an explicit struct literal"),
+            );
+            return Ok(CheckedExpression::invalid(span));
+        };
+        match &literal.entries {
+            AstInferredStructEntries::Named(fields) => {
+                let anon_id: Option<SourceAnonymousStructId>;
+                let nom_id: Option<SourceStructId>;
+                let field_specs: Vec<(Box<str>, ValueType, Span)>;
+                match expected {
+                    ValueType::Struct(id) => {
+                        let struct_ = id.as_usize().and_then(|i| self.signatures.structs.get(i));
+                        let Some(struct_) = struct_ else {
+                            return Ok(CheckedExpression::invalid(span));
+                        };
+                        field_specs = struct_
+                            .fields
+                            .iter()
+                            .map(|f| (f.name.clone(), f.ty, f.name_span))
+                            .collect();
+                        anon_id = None;
+                        nom_id = Some(id);
+                    }
+                    ValueType::AnonymousStruct(id) => {
+                        let interner = self.signatures.anonymous.borrow();
+                        let anonymous = interner.entries.iter().find(|e| e.id == id);
+                        let Some(anonymous) = anonymous else {
+                            return Ok(CheckedExpression::invalid(span));
+                        };
+                        let AnonymousTypeKey::Named(field_list) = &anonymous.key else {
+                            self.diagnostics.push(
+                                PendingDiagnostic::new(
+                                    TYPE_MISMATCH,
+                                    "named inferred struct literal requires a named anonymous struct",
+                                    span,
+                                )
+                                .primary("expected a named anonymous struct type"),
+                            );
+                            return Ok(CheckedExpression::invalid(span));
+                        };
+                        field_specs = field_list
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), *ty, span))
+                            .collect();
+                        anon_id = Some(id);
+                        nom_id = None;
+                    }
+                    _ => {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                TYPE_MISMATCH,
+                                "inferred struct literal with named entries requires a struct type",
+                                span,
+                            )
+                            .primary("expected a struct or named anonymous struct type"),
+                        );
+                        return Ok(CheckedExpression::invalid(span));
+                    }
+                };
+                let mut seen = vec![None::<Span>; field_specs.len()];
+                let mut values = Vec::with_capacity(fields.len());
+                let mut valid = true;
+                for initializer in fields {
+                    let spelling = self.spelling(initializer.name.span)?;
+                    let index = field_specs
+                        .iter()
+                        .position(|(name, _, _)| name.as_ref() == spelling.as_ref());
+                    let checked = self.check_expression_expected(
+                        &initializer.value,
+                        assigned,
+                        index.map(|i| field_specs[i].1),
+                    )?;
+                    let Some(index) = index else {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                UNKNOWN_STRUCT_FIELD,
+                                format!("struct has no field `{spelling}`"),
+                                initializer.name.span,
+                            )
+                            .primary("unknown field initializer"),
+                        );
+                        valid = false;
+                        continue;
+                    };
+                    if let Some(original) = seen[index].replace(initializer.name.span) {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                DUPLICATE_STRUCT_INITIALIZER,
+                                format!("field `{spelling}` is initialized more than once"),
+                                initializer.name.span,
+                            )
+                            .primary("duplicate field initializer")
+                            .support(original, "first initializer is here"),
+                        );
+                        valid = false;
+                    }
+                    if checked.ty != Some(field_specs[index].1) {
+                        if let Some(actual) = checked.ty {
+                            self.type_mismatch(
+                                checked.span,
+                                actual,
+                                field_specs[index].1,
+                                field_specs[index].2,
+                                "field type is declared here",
+                            );
+                        }
+                        valid = false;
+                    }
+                    if let Some(value) = checked.expression {
+                        values.push(HirStructFieldValue {
+                            field: u32::try_from(index).unwrap_or(u32::MAX),
+                            value,
+                            origin: self.origin(initializer.span)?,
+                        });
+                    } else {
+                        valid = false;
+                    }
+                }
+                for (index, occurrence) in seen.iter().enumerate() {
+                    if occurrence.is_none() {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                MISSING_STRUCT_FIELD,
+                                format!("missing initializer for field `{}`", field_specs[index].0),
+                                span,
+                            )
+                            .primary("every field must be initialized")
+                            .support(field_specs[index].2, "field is declared here"),
+                        );
+                        valid = false;
+                    }
+                }
+                if !valid {
+                    return Ok(CheckedExpression::invalid(span));
+                }
+                if let Some(id) = anon_id {
+                    Ok(CheckedExpression::valid(
+                        HirExpressionKind::AnonymousStructConstruct {
+                            struct_: id,
+                            fields: values.into_boxed_slice(),
+                        },
+                        ValueType::AnonymousStruct(id),
+                        self.origin(span)?,
+                        span,
+                    ))
+                } else {
+                    Ok(CheckedExpression::valid(
+                        HirExpressionKind::StructConstruct {
+                            struct_: nom_id.unwrap(),
+                            fields: values.into_boxed_slice(),
+                        },
+                        ValueType::Struct(nom_id.unwrap()),
+                        self.origin(span)?,
+                        span,
+                    ))
+                }
+            }
+            AstInferredStructEntries::Positional(values) => {
+                let ValueType::AnonymousStruct(struct_id) = expected else {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            TYPE_MISMATCH,
+                            "inferred struct literal with positional entries requires a positional anonymous struct",
+                            span,
+                        )
+                        .primary("expected a positional anonymous struct type"),
+                    );
+                    return Ok(CheckedExpression::invalid(span));
+                };
+                let interner = self.signatures.anonymous.borrow();
+                let anonymous = interner.entries.iter().find(|e| e.id == struct_id);
+                let Some(anonymous) = anonymous else {
+                    return Ok(CheckedExpression::invalid(span));
+                };
+                let AnonymousTypeKey::Positional(components) = &anonymous.key else {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            TYPE_MISMATCH,
+                            "inferred struct literal with positional entries requires a positional anonymous struct",
+                            span,
+                        )
+                        .primary("expected a positional anonymous struct type"),
+                    );
+                    return Ok(CheckedExpression::invalid(span));
+                };
+                if values.len() != components.len() {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            ARGUMENT_COUNT,
+                            format!(
+                                "inferred struct literal requires {} entries but {} were provided",
+                                components.len(),
+                                values.len(),
+                            ),
+                            span,
+                        )
+                        .primary("entry count must match the anonymous struct's component count"),
+                    );
+                    return Ok(CheckedExpression::invalid(span));
+                }
+                let mut checked = Vec::with_capacity(values.len());
+                let mut valid = true;
+                for (index, value) in values.iter().enumerate() {
+                    let entry =
+                        self.check_expression_expected(value, assigned, Some(components[index]))?;
+                    if entry.ty != Some(components[index]) {
+                        valid = false;
+                    }
+                    if let Some(expr) = entry.expression {
+                        checked.push(HirStructFieldValue {
+                            field: u32::try_from(index).unwrap_or(u32::MAX),
+                            value: expr,
+                            origin: self.origin(value.span)?,
+                        });
+                    } else {
+                        valid = false;
+                    }
+                }
+                if !valid {
+                    return Ok(CheckedExpression::invalid(span));
+                }
+                Ok(CheckedExpression::valid(
+                    HirExpressionKind::AnonymousStructConstruct {
+                        struct_: struct_id,
+                        fields: checked.into_boxed_slice(),
+                    },
+                    ValueType::AnonymousStruct(struct_id),
+                    self.origin(span)?,
+                    span,
+                ))
+            }
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "nominal field checking retains exact duplicate, missing, and type diagnostics"
@@ -3697,6 +4211,85 @@ impl<'a> BodyChecker<'a> {
         ))
     }
 
+    fn check_index_expression(
+        &mut self,
+        aggregate: &AstExpression,
+        index_span: Span,
+        expression_span: Span,
+        assigned: &Assigned,
+    ) -> Result<CheckedExpression, CheckError> {
+        let aggregate = self.check_expression(aggregate, assigned)?;
+        let Some(ValueType::AnonymousStruct(struct_id)) = aggregate.ty else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    UNRESOLVED_MEMBER,
+                    "index access requires a positional anonymous struct value",
+                    expression_span,
+                )
+                .primary("only positional anonymous struct values support compile-time indexing"),
+            );
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        let interner = self.signatures.anonymous.borrow();
+        let anonymous = interner.entries.iter().find(|e| e.id == struct_id);
+        let Some(anonymous) = anonymous else {
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        let AnonymousTypeKey::Positional(components) = &anonymous.key else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    UNRESOLVED_MEMBER,
+                    "named anonymous structs use field projection, not index access",
+                    expression_span,
+                )
+                .primary("named fields are accessed with `.field`, not `[index]`"),
+            );
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        let index_text = self.spelling(index_span)?;
+        let index: u32 = match index_text.parse() {
+            Ok(value) => value,
+            Err(_) => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        INTEGER_OUT_OF_RANGE,
+                        "index must be a non-negative integer literal",
+                        index_span,
+                    )
+                    .primary("only compile-time integer literals are accepted as an index"),
+                );
+                return Ok(CheckedExpression::invalid(expression_span));
+            }
+        };
+        let component = usize::try_from(index).ok();
+        if component.is_none_or(|c| c >= components.len()) {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INTEGER_OUT_OF_RANGE,
+                    format!(
+                        "index {index} is out of bounds for anonymous struct with {} components",
+                        components.len()
+                    ),
+                    index_span,
+                )
+                .primary("struct index is out of bounds"),
+            );
+            return Ok(CheckedExpression::invalid(expression_span));
+        }
+        let Some(aggregate) = aggregate.expression else {
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        Ok(CheckedExpression::valid(
+            HirExpressionKind::Index {
+                aggregate: Box::new(aggregate),
+                component: index,
+            },
+            components[component.unwrap_or(usize::MAX)],
+            self.origin(expression_span)?,
+            expression_span,
+        ))
+    }
+
     fn check_member_expression(
         &mut self,
         receiver: &AstExpression,
@@ -3723,53 +4316,107 @@ impl<'a> BodyChecker<'a> {
             }
         }
         let receiver = self.check_expression(receiver, assigned)?;
-        let Some(ValueType::Struct(struct_id)) = receiver.ty else {
-            let member = self.spelling(member_span)?;
-            self.diagnostics.push(
-                PendingDiagnostic::new(
-                    UNRESOLVED_MEMBER,
-                    format!("member `{member}` cannot be resolved on this value"),
-                    member_span,
-                )
-                .primary("field access requires a struct value"),
-            );
-            return Ok(CheckedExpression::invalid(expression_span));
-        };
-        let Some(struct_) = struct_id
-            .as_usize()
-            .and_then(|index| self.signatures.structs.get(index))
-        else {
-            return Ok(CheckedExpression::invalid(expression_span));
-        };
-        let member = self.spelling(member_span)?;
-        let Some((index, field)) = struct_
-            .fields
-            .iter()
-            .enumerate()
-            .find(|(_, field)| field.name.as_ref() == member.as_ref())
-        else {
-            self.diagnostics.push(
-                PendingDiagnostic::new(
-                    UNKNOWN_STRUCT_FIELD,
-                    format!("struct has no field `{member}`"),
-                    member_span,
-                )
-                .primary("unknown struct field"),
-            );
-            return Ok(CheckedExpression::invalid(expression_span));
-        };
-        let Some(receiver) = receiver.expression else {
-            return Ok(CheckedExpression::invalid(expression_span));
-        };
-        Ok(CheckedExpression::valid(
-            HirExpressionKind::StructProject {
-                aggregate: Box::new(receiver),
-                field: u32::try_from(index).unwrap_or(u32::MAX),
-            },
-            field.ty,
-            self.origin(expression_span)?,
-            expression_span,
-        ))
+        match receiver.ty {
+            Some(ValueType::Struct(struct_id)) => {
+                let Some(struct_) = struct_id
+                    .as_usize()
+                    .and_then(|index| self.signatures.structs.get(index))
+                else {
+                    return Ok(CheckedExpression::invalid(expression_span));
+                };
+                let member = self.spelling(member_span)?;
+                let Some((index, field)) = struct_
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, field)| field.name.as_ref() == member.as_ref())
+                else {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            UNKNOWN_STRUCT_FIELD,
+                            format!("struct has no field `{member}`"),
+                            member_span,
+                        )
+                        .primary("unknown struct field"),
+                    );
+                    return Ok(CheckedExpression::invalid(expression_span));
+                };
+                let Some(receiver) = receiver.expression else {
+                    return Ok(CheckedExpression::invalid(expression_span));
+                };
+                Ok(CheckedExpression::valid(
+                    HirExpressionKind::StructProject {
+                        aggregate: Box::new(receiver),
+                        field: u32::try_from(index).unwrap_or(u32::MAX),
+                    },
+                    field.ty,
+                    self.origin(expression_span)?,
+                    expression_span,
+                ))
+            }
+            Some(ValueType::AnonymousStruct(struct_id)) => {
+                let interner = self.signatures.anonymous.borrow();
+                let anonymous = interner.entries.iter().find(|e| e.id == struct_id);
+                let Some(anonymous) = anonymous else {
+                    return Ok(CheckedExpression::invalid(expression_span));
+                };
+                let fields: &[(Box<str>, ValueType)] = match &anonymous.key {
+                    AnonymousTypeKey::Named(fields) => fields,
+                    AnonymousTypeKey::Positional { .. } => {
+                        let member = self.spelling(member_span)?;
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                UNRESOLVED_MEMBER,
+                                format!("member `{member}` cannot be resolved on a positional anonymous struct"),
+                                member_span,
+                            )
+                            .primary("positional anonymous structs use index access, not field projection"),
+                        );
+                        return Ok(CheckedExpression::invalid(expression_span));
+                    }
+                };
+                let member = self.spelling(member_span)?;
+                let Some((index, field)) = fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (name, _))| name.as_ref() == member.as_ref())
+                else {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            UNKNOWN_STRUCT_FIELD,
+                            format!("anonymous struct has no field `{member}`"),
+                            member_span,
+                        )
+                        .primary("unknown field"),
+                    );
+                    return Ok(CheckedExpression::invalid(expression_span));
+                };
+                let Some(receiver) = receiver.expression else {
+                    return Ok(CheckedExpression::invalid(expression_span));
+                };
+                Ok(CheckedExpression::valid(
+                    HirExpressionKind::AnonymousStructProject {
+                        aggregate: Box::new(receiver),
+                        field: u32::try_from(index).unwrap_or(u32::MAX),
+                    },
+                    field.1,
+                    self.origin(expression_span)?,
+                    expression_span,
+                ))
+            }
+            _ => {
+                let member = self.spelling(member_span)?;
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        UNRESOLVED_MEMBER,
+                        format!("member `{member}` cannot be resolved on this value"),
+                        member_span,
+                    )
+                    .primary("field access requires a struct value"),
+                );
+                Ok(CheckedExpression::invalid(expression_span))
+            }
+        }
     }
 
     fn check_wrapping_arithmetic(

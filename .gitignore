@@ -2,4 +2,5 @@
 /.mdl-test
 /libraries/
 /logs/
+/tmp/
 /versions/**/*.jar

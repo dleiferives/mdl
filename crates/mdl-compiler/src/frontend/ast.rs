@@ -675,6 +675,28 @@ impl AstPrinter<'_> {
                 }
                 self.block(&run.body, indent + 1);
             }
+            AstStatement::Destructure(destructure) => {
+                self.line(
+                    indent,
+                    format_args!("destructure {}", location(destructure.span)),
+                );
+                for target in &destructure.targets {
+                    let role = match target.kind {
+                        AstDestructureTargetKind::Const => "const",
+                        AstDestructureTargetKind::Var => "var",
+                        AstDestructureTargetKind::Assign => "assign",
+                    };
+                    self.line(
+                        indent + 1,
+                        format_args!(
+                            "target {role} {} {}",
+                            self.spelling(target.name.span),
+                            location(target.span)
+                        ),
+                    );
+                }
+                self.expression(&destructure.value, indent + 1);
+            }
             AstStatement::UnsafeMinecraft(statement) => self.line(
                 indent,
                 format_args!(
@@ -824,6 +846,36 @@ impl AstPrinter<'_> {
                 self.expression(left, indent + 1);
                 self.expression(right, indent + 1);
             }
+            AstExpressionKind::Index { aggregate, .. } => {
+                self.line(indent, format_args!("index {}", location(expression.span)));
+                self.expression(aggregate, indent + 1);
+            }
+            AstExpressionKind::InferredStructLiteral(literal) => {
+                self.line(
+                    indent,
+                    format_args!("inferred-struct-literal {}", location(expression.span)),
+                );
+                match &literal.entries {
+                    AstInferredStructEntries::Named(fields) => {
+                        for field in fields {
+                            self.line(
+                                indent + 1,
+                                format_args!(
+                                    "field {} {}",
+                                    self.spelling(field.name.span),
+                                    location(field.span)
+                                ),
+                            );
+                            self.expression(&field.value, indent + 2);
+                        }
+                    }
+                    AstInferredStructEntries::Positional(values) => {
+                        for value in values {
+                            self.expression(value, indent + 1);
+                        }
+                    }
+                }
+            }
             AstExpressionKind::Error => {
                 self.line(
                     indent,
@@ -889,6 +941,30 @@ impl AstPrinter<'_> {
             AstValueTypeKind::ListI32 => "List<Int32>".to_owned(),
             AstValueTypeKind::String => "String".to_owned(),
             AstValueTypeKind::Named(name) => self.spelling(name.span),
+            AstValueTypeKind::Anonymous(anon) => match anon.kind {
+                AstAnonymousStructTypeKind::Named(fields) => {
+                    let fields = fields
+                        .iter()
+                        .map(|field| {
+                            format!(
+                                "{}: {}",
+                                self.spelling(field.name.span),
+                                self.value_type(field.ty.kind)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{{ {fields} }}")
+                }
+                AstAnonymousStructTypeKind::Positional(types) => {
+                    let types = types
+                        .iter()
+                        .map(|ty| self.value_type(ty.kind))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{{ {types} }}")
+                }
+            },
         }
     }
 

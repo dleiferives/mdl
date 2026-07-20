@@ -9,11 +9,12 @@ use std::cell::Cell;
 
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBlock, HirCall, HirComparisonOp,
-    HirEntityQuery, HirEntityQueryStep, HirExpression, HirExpressionKind, HirExternalOp,
-    HirExternalSemantic, HirFunction, HirIf, HirListI32Op, HirMinecraftOperationAttributes, HirRun,
-    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirSwitchExpression,
-    HirSwitchLabel, HirSwitchPatternKind, HirSwitchStatement, HirWhile, HirWrappingArithmeticOp,
-    LocalId, SourceExternalOpId, SourceFunctionId, SourceRunId, ValueType,
+    HirDestructureTargetRole, HirEntityQuery, HirEntityQueryStep, HirExpression, HirExpressionKind,
+    HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirListI32Op,
+    HirMinecraftOperationAttributes, HirRun, HirRunModifier, HirStatement, HirStatementKind,
+    HirStringOp, HirSwitchExpression, HirSwitchLabel, HirSwitchPatternKind, HirSwitchStatement,
+    HirWhile, HirWrappingArithmeticOp, LocalId, SourceExternalOpId, SourceFunctionId, SourceRunId,
+    SourceStructId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
 use crate::ir::core::{
@@ -1039,6 +1040,7 @@ fn collect_run_scopes_in_block<'a>(
             | HirStatementKind::Call(_)
             | HirStatementKind::External(_)
             | HirStatementKind::Return(_)
+            | HirStatementKind::Destructure { .. }
             | HirStatementKind::Break
             | HirStatementKind::Continue => {}
         }
@@ -1433,13 +1435,15 @@ fn flattened_core_types(
                 active.pop();
             }
             ValueType::AnonymousStruct(struct_) => {
-                let declaration = checked.anonymous_struct(struct_).ok_or(
-                    CoreGenerationFailure::Invariant(
-                        CoreGenerationInvariant::InvalidAggregateProjection {
-                            source_function: SourceFunctionId::from_index(0).expect("zero fits"),
-                        },
-                    ),
-                )?;
+                let declaration =
+                    checked
+                        .anonymous_struct(struct_)
+                        .ok_or(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateProjection {
+                                source_function: SourceFunctionId::from_index(0)
+                                    .expect("zero fits"),
+                            },
+                        ))?;
                 match &declaration.kind {
                     crate::frontend::hir::HirAnonymousStructKind::Named(fields) => {
                         for field in fields {
@@ -2029,6 +2033,77 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 self.switch_to(block)?;
                 self.terminate(TerminatorKind::Return(values), statement.origin)?;
                 Ok(None)
+            }
+            HirStatementKind::Destructure { operand, targets } => {
+                let value = self.lower_expression(&mut block, environment, operand)?;
+                let ValueType::AnonymousStruct(struct_) = operand.ty else {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateProjection {
+                            source_function: self.function.id,
+                        },
+                    ));
+                };
+                let declaration = self.checked.anonymous_struct(struct_).ok_or(
+                    CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType {
+                            struct_: SourceStructId::from_index(0).expect("zero fits"),
+                        },
+                    ),
+                )?;
+                let components: &[ValueType] = match &declaration.kind {
+                    crate::frontend::hir::HirAnonymousStructKind::Named(_) => {
+                        return Err(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateProjection {
+                                source_function: self.function.id,
+                            },
+                        ));
+                    }
+                    crate::frontend::hir::HirAnonymousStructKind::Positional(fields) => fields,
+                };
+                for target in targets.iter() {
+                    let component_index = usize::try_from(target.component).unwrap_or(usize::MAX);
+                    let Some(component_ty) = components.get(component_index) else {
+                        return Err(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType {
+                                struct_: SourceStructId::from_index(0).expect("zero fits"),
+                            },
+                        ));
+                    };
+                    let start =
+                        components[..component_index]
+                            .iter()
+                            .try_fold(0usize, |offset, ty| {
+                                Ok::<_, CoreGenerationFailure>(
+                                    offset.saturating_add(
+                                        flattened_core_types(self.checked, *ty)?.len(),
+                                    ),
+                                )
+                            })?;
+                    let len = flattened_core_types(self.checked, *component_ty)?.len();
+                    let end = start.saturating_add(len);
+                    let component_values =
+                        value
+                            .0
+                            .get(start..end)
+                            .ok_or(CoreGenerationFailure::Invariant(
+                                CoreGenerationInvariant::InvalidAggregateType {
+                                    struct_: SourceStructId::from_index(0).expect("zero fits"),
+                                },
+                            ))?;
+                    let bundle = ValueBundle(component_values.to_vec().into_boxed_slice());
+                    if let Some(local) = target.local {
+                        match target.role {
+                            HirDestructureTargetRole::Assign => {
+                                environment.assign(self.function.id, local, bundle)?;
+                            }
+                            HirDestructureTargetRole::Const | HirDestructureTargetRole::Var => {
+                                environment.activate(self.function.id, local, Some(bundle))?;
+                            }
+                            HirDestructureTargetRole::Discard => {}
+                        }
+                    }
+                }
+                Ok(Some(block))
             }
         }
     }
@@ -2860,6 +2935,156 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                         .map_err(|error| self.construction(error))?
                 };
                 ValueBundle::scalar(result)
+            }
+            HirExpressionKind::AnonymousStructConstruct { struct_, fields } => {
+                let declaration = self.checked.anonymous_struct(*struct_).ok_or(
+                    CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType {
+                            struct_: SourceStructId::from_index(0).expect("zero fits"),
+                        },
+                    ),
+                )?;
+                let field_count = match &declaration.kind {
+                    crate::frontend::hir::HirAnonymousStructKind::Named(fields) => fields.len(),
+                    crate::frontend::hir::HirAnonymousStructKind::Positional(fields) => {
+                        fields.len()
+                    }
+                };
+                let mut lowered = vec![None; field_count];
+                for field in fields {
+                    let index = usize::try_from(field.field).unwrap_or(usize::MAX);
+                    let Some(slot) = lowered.get_mut(index) else {
+                        return Err(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType {
+                                struct_: SourceStructId::from_index(0).expect("zero fits"),
+                            },
+                        ));
+                    };
+                    *slot = Some(self.lower_expression(block, environment, &field.value)?);
+                }
+                let mut values = vec![];
+                for field in lowered {
+                    values.extend(
+                        field
+                            .ok_or(CoreGenerationFailure::Invariant(
+                                CoreGenerationInvariant::InvalidAggregateType {
+                                    struct_: SourceStructId::from_index(0).expect("zero fits"),
+                                },
+                            ))?
+                            .into_values(),
+                    );
+                }
+                ValueBundle(values.into_boxed_slice())
+            }
+            HirExpressionKind::AnonymousStructProject { aggregate, field } => {
+                let ValueType::AnonymousStruct(struct_) = aggregate.ty else {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateProjection {
+                            source_function: self.function.id,
+                        },
+                    ));
+                };
+                let declaration = self.checked.anonymous_struct(struct_).ok_or(
+                    CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType {
+                            struct_: SourceStructId::from_index(0).expect("zero fits"),
+                        },
+                    ),
+                )?;
+                let field_index = usize::try_from(*field).unwrap_or(usize::MAX);
+                let components: &[ValueType] = match &declaration.kind {
+                    crate::frontend::hir::HirAnonymousStructKind::Named(fields) => {
+                        let types: Vec<ValueType> = fields.iter().map(|f| f.ty).collect();
+                        types.leak()
+                    }
+                    crate::frontend::hir::HirAnonymousStructKind::Positional(fields) => fields,
+                };
+                let Some(component_ty) = components.get(field_index) else {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType {
+                            struct_: SourceStructId::from_index(0).expect("zero fits"),
+                        },
+                    ));
+                };
+                let start = components[..field_index]
+                    .iter()
+                    .try_fold(0usize, |offset, ty| {
+                        Ok::<_, CoreGenerationFailure>(
+                            offset.saturating_add(flattened_core_types(self.checked, *ty)?.len()),
+                        )
+                    })?;
+                let end =
+                    start.saturating_add(flattened_core_types(self.checked, *component_ty)?.len());
+                let aggregate = self.lower_expression(block, environment, aggregate)?;
+                let values =
+                    aggregate
+                        .0
+                        .get(start..end)
+                        .ok_or(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType {
+                                struct_: SourceStructId::from_index(0).expect("zero fits"),
+                            },
+                        ))?;
+                ValueBundle(values.to_vec().into_boxed_slice())
+            }
+            HirExpressionKind::Index {
+                aggregate,
+                component,
+            } => {
+                let ValueType::AnonymousStruct(struct_) = aggregate.ty else {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateProjection {
+                            source_function: self.function.id,
+                        },
+                    ));
+                };
+                let declaration = self.checked.anonymous_struct(struct_).ok_or(
+                    CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType {
+                            struct_: SourceStructId::from_index(0).expect("zero fits"),
+                        },
+                    ),
+                )?;
+                let component_index = usize::try_from(*component).unwrap_or(usize::MAX);
+                let components: &[ValueType] = match &declaration.kind {
+                    crate::frontend::hir::HirAnonymousStructKind::Named(_) => {
+                        return Err(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateProjection {
+                                source_function: self.function.id,
+                            },
+                        ));
+                    }
+                    crate::frontend::hir::HirAnonymousStructKind::Positional(fields) => fields,
+                };
+                let Some(component_ty) = components.get(component_index) else {
+                    return Err(CoreGenerationFailure::Invariant(
+                        CoreGenerationInvariant::InvalidAggregateType {
+                            struct_: SourceStructId::from_index(0).expect("zero fits"),
+                        },
+                    ));
+                };
+                let start =
+                    components[..component_index]
+                        .iter()
+                        .try_fold(0usize, |offset, ty| {
+                            Ok::<_, CoreGenerationFailure>(
+                                offset
+                                    .saturating_add(flattened_core_types(self.checked, *ty)?.len()),
+                            )
+                        })?;
+                let end =
+                    start.saturating_add(flattened_core_types(self.checked, *component_ty)?.len());
+                let aggregate = self.lower_expression(block, environment, aggregate)?;
+                let values =
+                    aggregate
+                        .0
+                        .get(start..end)
+                        .ok_or(CoreGenerationFailure::Invariant(
+                            CoreGenerationInvariant::InvalidAggregateType {
+                                struct_: SourceStructId::from_index(0).expect("zero fits"),
+                            },
+                        ))?;
+                ValueBundle(values.to_vec().into_boxed_slice())
             }
             HirExpressionKind::Switch(switch) => {
                 self.lower_switch_expression(block, environment, switch)?

@@ -662,7 +662,29 @@ pub(super) enum HirStatementKind {
     Break,
     Continue,
     Run(HirRun),
+    Destructure {
+        operand: HirExpression,
+        targets: Box<[HirDestructureTarget]>,
+    },
     Return(Option<HirExpression>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirDestructureTarget {
+    pub(super) role: HirDestructureTargetRole,
+    pub(super) local: Option<LocalId>,
+    pub(super) component: u32,
+    pub(super) ty: ValueType,
+    pub(super) name_origin: OriginId,
+    pub(super) origin: OriginId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HirDestructureTargetRole {
+    Const,
+    Var,
+    Assign,
+    Discard,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -897,6 +919,10 @@ pub(super) enum HirExpressionKind {
         right: Box<HirExpression>,
     },
     Switch(HirSwitchExpression),
+    Index {
+        aggregate: Box<HirExpression>,
+        component: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1293,6 +1319,33 @@ impl<'a> Dumper<'a> {
                 indent,
                 &format!("continue {}", self.location(statement.origin)),
             ),
+            HirStatementKind::Destructure { operand, targets } => {
+                let mut parts: Vec<String> = Vec::new();
+                for target in targets.iter() {
+                    let prefix = match target.role {
+                        HirDestructureTargetRole::Const => "const ",
+                        HirDestructureTargetRole::Var => "var ",
+                        HirDestructureTargetRole::Assign => "",
+                        HirDestructureTargetRole::Discard => "_",
+                    };
+                    if target.role != HirDestructureTargetRole::Discard {
+                        if let Some(local) = target.local {
+                            parts.push(format!("{prefix}%{}", local.index()));
+                        }
+                    } else {
+                        parts.push(prefix.to_owned());
+                    }
+                }
+                self.line(
+                    indent,
+                    &format!(
+                        "destructure ({}) <- {} {}",
+                        parts.join(", "),
+                        self.expression(operand),
+                        self.location(statement.origin)
+                    ),
+                );
+            }
             HirStatementKind::Run(run) => self.dump_run(run, indent),
             HirStatementKind::Return(value) => {
                 let value = value.as_ref().map_or_else(
@@ -1471,6 +1524,12 @@ impl<'a> Dumper<'a> {
                 self.expression(&switch.scrutinee),
                 switch.arms.len()
             ),
+            HirExpressionKind::Index {
+                aggregate,
+                component,
+            } => {
+                format!("({})[{}]", self.expression(aggregate), component)
+            }
         };
         format!("{value}:{}", expression.ty)
     }
@@ -2127,6 +2186,68 @@ impl Verifier<'_> {
                 }
                 Ok(false)
             }
+            HirStatementKind::Destructure { operand, targets } => {
+                self.expression(function, operand, state)?;
+                let ValueType::AnonymousStruct(struct_) = operand.ty else {
+                    return Err(HirVerificationError::new(
+                        "destructure operand is not a positional anonymous struct",
+                    ));
+                };
+                let declaration = self.output.anonymous_struct(struct_).ok_or_else(|| {
+                    HirVerificationError::new("destructure operand has invalid anonymous struct")
+                })?;
+                let HirAnonymousStructKind::Positional(components) = &declaration.kind else {
+                    return Err(HirVerificationError::new(
+                        "destructure operand is a named, not positional, anonymous struct",
+                    ));
+                };
+                if targets.len() != components.len() {
+                    return Err(HirVerificationError::new(format!(
+                        "destructure has {} targets but operand has {} components",
+                        targets.len(),
+                        components.len()
+                    )));
+                }
+                for target in targets.iter() {
+                    let component_index = target.component as usize;
+                    if component_index >= components.len() {
+                        return Err(HirVerificationError::new(format!(
+                            "destructure target references component {component_index}, operand has {} components",
+                            components.len()
+                        )));
+                    }
+                    if target.ty != components[component_index] {
+                        return Err(HirVerificationError::new(format!(
+                            "destructure target has type {}, expected {}",
+                            target.ty, components[component_index]
+                        )));
+                    }
+                    if let Some(local) = target.local {
+                        match target.role {
+                            HirDestructureTargetRole::Const | HirDestructureTargetRole::Var => {
+                                let index = Self::local_index(function, local)?;
+                                if index != *next_declaration {
+                                    return Err(HirVerificationError::new(format!(
+                                        "destructure binding {local:?} is out of source order; expected binding index {}",
+                                        *next_declaration
+                                    )));
+                                }
+                                *next_declaration += 1;
+                                state.set_active(index, true);
+                                state.set_assigned(index, true);
+                                scope_locals.push(local);
+                            }
+                            HirDestructureTargetRole::Assign => {
+                                Self::active_local_index(function, local, state)?;
+                                let index = Self::local_index(function, local)?;
+                                state.set_assigned(index, true);
+                            }
+                            HirDestructureTargetRole::Discard => {}
+                        }
+                    }
+                }
+                Ok(true)
+            }
             HirStatementKind::Run(run) => {
                 self.verify_run(function, run, statement.origin, next_declaration, context)?;
                 Ok(true)
@@ -2668,21 +2789,29 @@ impl Verifier<'_> {
                     HirVerificationError::new("anonymous struct construction names invalid type")
                 })?;
                 let expected: Vec<ValueType> = match &declaration.kind {
-                    HirAnonymousStructKind::Named(fields) => fields.iter().map(|field| field.ty).collect(),
+                    HirAnonymousStructKind::Named(fields) => {
+                        fields.iter().map(|field| field.ty).collect()
+                    }
                     HirAnonymousStructKind::Positional(fields) => fields.to_vec(),
                 };
                 if fields.len() != expected.len() {
-                    return Err(HirVerificationError::new("anonymous struct construction has wrong arity"));
+                    return Err(HirVerificationError::new(
+                        "anonymous struct construction has wrong arity",
+                    ));
                 }
                 let mut seen = vec![false; expected.len()];
                 for field in fields {
                     let index = usize::try_from(field.field).unwrap_or(usize::MAX);
                     if index >= expected.len() || std::mem::replace(&mut seen[index], true) {
-                        return Err(HirVerificationError::new("anonymous struct construction has invalid field"));
+                        return Err(HirVerificationError::new(
+                            "anonymous struct construction has invalid field",
+                        ));
                     }
                     self.expression(function, &field.value, state)?;
                     if field.value.ty != expected[index] {
-                        return Err(HirVerificationError::new("anonymous struct field initializer type differs"));
+                        return Err(HirVerificationError::new(
+                            "anonymous struct field initializer type differs",
+                        ));
                     }
                 }
                 ValueType::AnonymousStruct(*struct_)
@@ -2690,17 +2819,23 @@ impl Verifier<'_> {
             HirExpressionKind::AnonymousStructProject { aggregate, field } => {
                 self.expression(function, aggregate, state)?;
                 let ValueType::AnonymousStruct(struct_) = aggregate.ty else {
-                    return Err(HirVerificationError::new("anonymous projection receiver is not structural"));
+                    return Err(HirVerificationError::new(
+                        "anonymous projection receiver is not structural",
+                    ));
                 };
                 let declaration = self.output.anonymous_struct(struct_).ok_or_else(|| {
                     HirVerificationError::new("anonymous projection names invalid type")
                 })?;
                 let index = usize::try_from(*field).unwrap_or(usize::MAX);
                 match &declaration.kind {
-                    HirAnonymousStructKind::Named(fields) => fields.get(index).map(|field| field.ty),
+                    HirAnonymousStructKind::Named(fields) => {
+                        fields.get(index).map(|field| field.ty)
+                    }
                     HirAnonymousStructKind::Positional(fields) => fields.get(index).copied(),
                 }
-                .ok_or_else(|| HirVerificationError::new("invalid anonymous struct projection field"))?
+                .ok_or_else(|| {
+                    HirVerificationError::new("invalid anonymous struct projection field")
+                })?
             }
             HirExpressionKind::ListI32 { op, operands } => {
                 for operand in operands {
@@ -2811,6 +2946,36 @@ impl Verifier<'_> {
                     ));
                 }
                 expression.ty
+            }
+            HirExpressionKind::Index {
+                aggregate,
+                component,
+            } => {
+                self.expression(function, aggregate, state)?;
+                let ValueType::AnonymousStruct(struct_) = aggregate.ty else {
+                    return Err(HirVerificationError::new(
+                        "index expression aggregate is not an anonymous struct",
+                    ));
+                };
+                let declaration = self.output.anonymous_struct(struct_).ok_or_else(|| {
+                    HirVerificationError::new("index expression has invalid anonymous struct")
+                })?;
+                let types: &[ValueType] = match &declaration.kind {
+                    HirAnonymousStructKind::Positional(types) => types,
+                    HirAnonymousStructKind::Named(_) => {
+                        return Err(HirVerificationError::new(
+                            "named anonymous structs use field projection, not index access",
+                        ));
+                    }
+                };
+                let index = usize::try_from(*component)
+                    .map_err(|_| HirVerificationError::new("index component does not fit usize"))?;
+                types.get(index).copied().ok_or_else(|| {
+                    HirVerificationError::new(format!(
+                        "index {index} is out of bounds for anonymous struct with {} components",
+                        types.len()
+                    ))
+                })?
             }
         };
         if expression.ty != inferred {
@@ -2923,6 +3088,7 @@ fn block_contains_return(block: &HirBlock) -> bool {
             | HirStatementKind::Assignment { .. }
             | HirStatementKind::Call(_)
             | HirStatementKind::External(_)
+            | HirStatementKind::Destructure { .. }
             | HirStatementKind::Break
             | HirStatementKind::Continue => false,
         })
@@ -2965,6 +3131,7 @@ fn verify_run_scope_ids(block: &HirBlock, next: &mut usize) -> Result<(), HirVer
             | HirStatementKind::Call(_)
             | HirStatementKind::External(_)
             | HirStatementKind::Return(_)
+            | HirStatementKind::Destructure { .. }
             | HirStatementKind::Break
             | HirStatementKind::Continue => {}
         }
@@ -3024,6 +3191,9 @@ fn record_external_operation_occurrences(
                 if let Some(value) = initializer {
                     record_expression_externals(value, seen)?;
                 }
+            }
+            HirStatementKind::Destructure { operand, .. } => {
+                record_expression_externals(operand, seen)?;
             }
             HirStatementKind::Assignment { value, .. } => record_expression_externals(value, seen)?,
             HirStatementKind::Call(call) => {
@@ -3090,9 +3260,8 @@ fn record_expression_externals(
         }
         HirExpressionKind::StructProject { aggregate, .. }
         | HirExpressionKind::AnonymousStructProject { aggregate, .. }
-        | HirExpressionKind::Not(aggregate) => {
-            record_expression_externals(aggregate, seen)
-        }
+        | HirExpressionKind::Index { aggregate, .. }
+        | HirExpressionKind::Not(aggregate) => record_expression_externals(aggregate, seen),
         HirExpressionKind::ListI32 { operands, .. }
         | HirExpressionKind::String { operands, .. } => {
             for operand in operands {

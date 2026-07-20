@@ -613,16 +613,25 @@ impl<'a> Parser<'a> {
                 self.recover_list(TokenKind::RightBrace);
             }
         }
-        let close = self.expect(TokenKind::RightBrace, "expected `}` after anonymous struct type");
+        let close = self.expect(
+            TokenKind::RightBrace,
+            "expected `}` after anonymous struct type",
+        );
         self.leave_depth();
         clean &= close.is_some();
         let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
         if (named && fields.is_empty()) || (!named && components.is_empty()) {
-            self.error(EXPECTED_TYPE, "anonymous struct types require a component", open.span());
+            self.error(
+                EXPECTED_TYPE,
+                "anonymous struct types require a component",
+                open.span(),
+            );
             clean = false;
         }
         clean.then(|| {
-            let span = self.cover(open.span(), end).expect("ordered type delimiters");
+            let span = self
+                .cover(open.span(), end)
+                .expect("ordered type delimiters");
             AstValueType {
                 kind: AstValueTypeKind::Anonymous(AstAnonymousStructType {
                     kind: if named {
@@ -970,7 +979,10 @@ impl<'a> Parser<'a> {
             None
         } else {
             clean &= self
-                .expect(TokenKind::Colon, "expected `:` or `:=` after the binding name")
+                .expect(
+                    TokenKind::Colon,
+                    "expected `:` or `:=` after the binding name",
+                )
                 .is_some();
             let ty = self.parse_value_type();
             clean &= ty.is_some();
@@ -1045,14 +1057,25 @@ impl<'a> Parser<'a> {
                 continue;
             }
             if !self.at(TokenKind::Pipe) {
-                self.error(EXPECTED_TOKEN, "expected `,` or `|` after destructuring target", self.current().span());
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `|` after destructuring target",
+                    self.current().span(),
+                );
                 clean = false;
                 self.recover_list(TokenKind::Pipe);
             }
         }
         clean &= !targets.is_empty();
-        clean &= self.expect(TokenKind::Pipe, "expected `|` after destructuring targets").is_some();
-        clean &= self.expect(TokenKind::LessEqual, "expected `<=` after destructuring targets").is_some();
+        clean &= self
+            .expect(TokenKind::Pipe, "expected `|` after destructuring targets")
+            .is_some();
+        clean &= self
+            .expect(
+                TokenKind::LessEqual,
+                "expected `<=` after destructuring targets",
+            )
+            .is_some();
         let value = self.parse_expression()?;
         clean &= !expression_has_error(&value);
         let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after destructuring");
@@ -1060,7 +1083,11 @@ impl<'a> Parser<'a> {
         let end = semicolon.map_or(value.span, Token::span);
         let span = self.cover(start, end)?;
         Ok(if clean {
-            AstStatement::Destructure(AstDestructuringStatement { targets, value, span })
+            AstStatement::Destructure(AstDestructuringStatement {
+                targets,
+                value,
+                span,
+            })
         } else {
             AstStatement::Error(span)
         })
@@ -1703,10 +1730,14 @@ impl<'a> Parser<'a> {
         while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfFile) {
             if named {
                 let start = self.current().span();
-                clean &= self.expect(TokenKind::Dot, "expected `.` before field name").is_some();
+                clean &= self
+                    .expect(TokenKind::Dot, "expected `.` before field name")
+                    .is_some();
                 let name = self.expect_identifier("expected an inferred struct field name");
                 clean &= name.is_some();
-                clean &= self.expect(TokenKind::Equal, "expected `=` after field name").is_some();
+                clean &= self
+                    .expect(TokenKind::Equal, "expected `=` after field name")
+                    .is_some();
                 let value = self.parse_expression()?;
                 clean &= !expression_has_error(&value);
                 if let Some(name) = name {
@@ -1734,7 +1765,10 @@ impl<'a> Parser<'a> {
                 self.recover_list(TokenKind::RightBrace);
             }
         }
-        let close = self.expect(TokenKind::RightBrace, "expected `}` after inferred struct literal");
+        let close = self.expect(
+            TokenKind::RightBrace,
+            "expected `}` after inferred struct literal",
+        );
         self.leave_depth();
         clean &= close.is_some();
         let end = close.map_or_else(|| self.previous_or_current_span(), Token::span);
@@ -2208,10 +2242,17 @@ fn expression_has_error(expression: &AstExpression) -> bool {
         AstExpressionKind::Call(call) => {
             expression_has_error(&call.callee) || call.arguments.iter().any(expression_has_error)
         }
+        AstExpressionKind::InferredStructLiteral(literal) => match &literal.entries {
+            AstInferredStructEntries::Named(fields) => fields
+                .iter()
+                .any(|field| expression_has_error(&field.value)),
+            AstInferredStructEntries::Positional(values) => values.iter().any(expression_has_error),
+        },
         AstExpressionKind::StructLiteral(literal) => literal
             .fields
             .iter()
             .any(|field| expression_has_error(&field.value)),
+        AstExpressionKind::Index { aggregate, .. } => expression_has_error(aggregate),
         AstExpressionKind::Not(operand) => expression_has_error(operand),
         AstExpressionKind::WrappingArithmetic { left, right, .. }
         | AstExpressionKind::Compare { left, right, .. } => {

@@ -3,7 +3,8 @@
   =================================
 
   Authority: syntax accepted by crates/mdl-compiler on trunk.
-  Updated: 2026-07-19, with PS-4 enums, switch, and range patterns.
+  Updated: 2026-07-19, with PS-4 enums, switch, and range patterns, and
+           PS-5 anonymous structs, destructuring, and inferred declarations.
 
   This grammar describes successful parses, not recovery productions or semantic
   restrictions. The lexer/parser tests remain executable conformance evidence.
@@ -56,13 +57,19 @@ ValueType = "Bool"
           | "String"
           | "List", "<", "Int32", ">"
           | TypeName
+          | AnonStructType
           ;
+
+AnonStructType = "{", StructField, { ",", StructField }, [ "," ], "}"
+               | "{", ValueType, { ",", ValueType }, [ "," ], "}"
+               ;
 
 Block = "{", { Statement }, "}" ;
 
 Statement = DeclarationStatement
           | AssignmentStatement
           | CallStatement
+          | DestructuringStatement
           | IfStatement
           | WhileStatement
           | SwitchStatement
@@ -78,9 +85,11 @@ DeclarationStatement = ConstDeclarationStatement
                      ;
 
 ConstDeclarationStatement = "const", Name, ":", ValueType,
-                            "=", Expression, ";" ;
+                            "=", Expression, ";"
+                          | "const", Name, ":=", Expression, ";" ;
 VarDeclarationStatement = "var", Name, ":", ValueType,
-                          [ "=", Expression ], ";" ;
+                          [ "=", Expression ], ";"
+                        | "var", Name, ":=", Expression, ";" ;
 
 AssignmentStatement = Name, "=", Expression, ";" ;
 
@@ -104,9 +113,16 @@ SwitchStatement = "switch", "(", Expression, ")", "{",
                   [ SwitchStatementArm, { ",", SwitchStatementArm }, [ "," ] ],
                   "}" ;
 SwitchStatementArm = PatternList, "=>", Block
-                   | "else", "=>", Block ;
+                    | "else", "=>", Block ;
 BreakStatement    = "break", ";" ;
 ContinueStatement = "continue", ";" ;
+DestructuringStatement = "|", DestructureTarget, { ",", DestructureTarget },
+                         [ "," ], "|", "<=", Expression, ";" ;
+
+DestructureTarget = "const", Name
+                  | "var", Name
+                  | Name
+                  ;
 ReturnStatement   = "return", [ Expression ], ";" ;
 
 RunStatement = "run", { RunModifier }, [ ExecutorCapture ], Block ;
@@ -131,6 +147,7 @@ PostfixExpression = PrimaryExpression, { PostfixSuffix } ;
 
 PostfixSuffix = ".", Name
               | Arguments
+              | "[", IntegerLiteral, "]"
               ;
 
 Arguments = "(", [ Expression, { ",", Expression }, [ "," ] ], ")" ;
@@ -141,10 +158,15 @@ PrimaryExpression = BooleanLiteral
                   | StaticDecimal
                   | StringLiteral
                   | InferredEnumLiteral
+                  | InferredStructLiteral
                   | SwitchExpression
                   | Name, [ StructLiteralBody ]
                   | "(", Expression, ")"
                   ;
+
+InferredStructLiteral = ".", StructLiteralBody
+                      | ".", "{", [ Expression, { ",", Expression }, [ "," ] ], "}"
+                      ;
 
 (* The parser admits a struct literal only when its type starts as one bare Name. *)
 StructLiteralBody = "{",

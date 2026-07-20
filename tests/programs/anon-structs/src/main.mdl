@@ -1,0 +1,33 @@
+fn make_bounds() -> { Int32, Int32 } {
+    return .{ 0, 100 };
+}
+
+fn clamp(value: Int32, bounds: { Int32, Int32 }) -> Int32 {
+    const lo := bounds[0];
+    const hi := bounds[1];
+    if (value < lo) {
+        return lo;
+    }
+    if (value > hi) {
+        return hi;
+    }
+    return value;
+}
+
+fn step(x: Int32, y: Int32) -> { Int32, Int32 } {
+    return .{ x +% 1, y +% 2 };
+}
+
+fn dot_product(a: { Int32, Int32 }, b: { Int32, Int32 }) -> Int32 {
+    return a[0] +% a[1] +% b[0] +% b[1];
+}
+
+export fn checksum(input: Int32) -> Int32 {
+    const bounds := make_bounds();
+    const clamped := clamp(input, bounds);
+    |const stepped_x, const stepped_y| <= step(clamped, input);
+    var sum := stepped_x +% stepped_y;
+    |sum, _| <= step(sum, input);
+    const result_pair: { Int32, Int32 } = .{ sum, input };
+    return dot_product(result_pair, .{ input, clamped });
+}

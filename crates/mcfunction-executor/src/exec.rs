@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::parse::{
     parse_command, CommandOutcome, ExecuteCmd, ExecuteCondition, ExecuteModifier, ParsedCommand,
-    ReturnCmd, ScheduleCmd, ScoreboardSub,
+    ReturnCmd, ScheduleCmd, ScoreboardSub, TagAction,
 };
 use crate::state::scoreboard::ScoreOp;
 use crate::state::{NbtValue, World};
@@ -317,14 +317,49 @@ impl Executor {
                 self.world.blocks.set(cmd.x, cmd.y, cmd.z, &self.current_dimension, &cmd.block);
                 CommandOutcome::success(0, vec![])
             }
-            ParsedCommand::Kill(_)
-            | ParsedCommand::Tag(_)
-            | ParsedCommand::Tellraw(_)
-            | ParsedCommand::Title(_)
-            | ParsedCommand::Playsound
-            | ParsedCommand::Rotate(_)
-            | ParsedCommand::Item(_)
-            | ParsedCommand::Advancement(_) => CommandOutcome::success(0, vec![]),
+            ParsedCommand::Kill(cmd) => {
+                let count = self.world.entities.remove_all_matching(&cmd.selector, &self.world.scoreboard);
+                CommandOutcome::success(count as i32, vec![])
+            }
+            ParsedCommand::Tag(cmd) => {
+                let ids = self.world.entities.resolve_selector(&cmd.selector, &self.world.scoreboard);
+                if ids.is_empty() { return CommandOutcome::failure(vec![]); }
+                let count = ids.len();
+                match &cmd.action {
+                    TagAction::Add => { for &id in &ids { self.world.entities.add_tag(id, &cmd.tag); } CommandOutcome::success(1, vec![]) }
+                    TagAction::Remove => { for &id in &ids { self.world.entities.remove_tag(id, &cmd.tag); } CommandOutcome::success(1, vec![]) }
+                    TagAction::List => {
+                        if let Some(e) = self.world.entities.get(ids[0]) {
+                            CommandOutcome::success(count as i32, vec![format!("Entity {} has tags: {}", ids[0], e.tags.join(", "))])
+                        } else { CommandOutcome::failure(vec![]) }
+                    }
+                }
+            }
+            ParsedCommand::Tellraw(cmd) => {
+                self.log.push(format!("[CHAT] {}", cmd.message));
+                CommandOutcome::success(1, vec![])
+            }
+            ParsedCommand::Title(cmd) => {
+                self.log.push(format!("[TITLE] {} {}", cmd.action, cmd.text));
+                CommandOutcome::success(1, vec![])
+            }
+            ParsedCommand::Playsound => unimplemented!("playsound"),
+            ParsedCommand::Rotate(cmd) => {
+                let ids = self.world.entities.resolve_selector(&cmd.selector, &self.world.scoreboard);
+                let count = ids.len();
+                for id in ids { self.world.entities.set_rotation(id, cmd.yaw, cmd.pitch); }
+                CommandOutcome::success(count as i32, vec![])
+            }
+            ParsedCommand::Item(_) => CommandOutcome::success(0, vec![]),
+            ParsedCommand::Advancement(_cmd) => {
+                let ids = self.world.entities.resolve_selector(&_cmd.selector, &self.world.scoreboard);
+                if ids.is_empty() { return CommandOutcome::failure(vec![]); }
+                match _cmd.action.as_str() {
+                    "grant" => { self.world.entities.grant_advancement(ids[0], &_cmd.advancement); CommandOutcome::success(1, vec![]) }
+                    "revoke" => { self.world.entities.revoke_advancement(ids[0], &_cmd.advancement); CommandOutcome::success(1, vec![]) }
+                    _ => CommandOutcome::failure(vec![]),
+                }
+            }
             ParsedCommand::Loot(_) => CommandOutcome::success(1, vec![]),
             ParsedCommand::Reload => {
                 let _ = self.load_datapacks();
@@ -429,10 +464,37 @@ impl Executor {
                 }
             }
             DataSub::Remove { storage, path } => {
+                if let Some(sel) = storage.strip_prefix("entity:") {
+                    let ids = self.world.entities.resolve_selector(sel, &self.world.scoreboard);
+                    if let Some(eid) = ids.first().copied() {
+                        match self.world.entities.nbt_remove(eid, path) {
+                            Ok(()) => return CommandOutcome::success(1, vec![]),
+                            Err(e) => return CommandOutcome::failure(vec![e]),
+                        }
+                    }
+                    return CommandOutcome::failure(vec![]);
+                }
                 let _ = self.world.storage.remove(storage, path);
                 CommandOutcome::success(1, vec![])
             }
             DataSub::Modify { storage, path, mode, source } => {
+                if let Some(sel) = storage.strip_prefix("entity:") {
+                    let ids = self.world.entities.resolve_selector(sel, &self.world.scoreboard);
+                    let Some(eid) = ids.first().copied() else { return CommandOutcome::failure(vec![]); };
+                    let result = match mode.as_str() {
+                        "set" => if let Some(snbt) = source.strip_prefix("value ") {
+                            NbtValue::from_snbt(snbt).and_then(|v| self.world.entities.nbt_set(eid, path, v))
+                        } else if let Some(from) = source.strip_prefix("from storage ") {
+                            let (sid, sp) = split_first_word(from);
+                            match self.world.storage.get(sid, &sp.to_owned()) { Some(v) => self.world.entities.nbt_set(eid, path, v), None => Err("src not found".into()) }
+                        } else { Err(format!("unknown source: {source}")) },
+                        "merge" => if let Some(snbt) = source.strip_prefix("value ") {
+                            NbtValue::from_snbt(snbt).and_then(|v| self.world.entities.nbt_merge(eid, path, v))
+                        } else { Err("merge needs value".into()) },
+                        _ => Err(format!("unknown mode: {mode}")),
+                    };
+                    return match result { Ok(()) => CommandOutcome::success(1, vec![]), Err(e) => CommandOutcome::failure(vec![e]) };
+                }
                 let result = match mode.as_str() {
                     "set" => self.data_modify_set(storage, path, source),
                     "append" => self.data_modify_append(storage, path, source),

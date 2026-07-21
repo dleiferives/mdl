@@ -209,30 +209,39 @@ fn parse_data_get(words: &[String]) -> ParsedCommand {
 }
 
 fn parse_data_remove(words: &[String]) -> ParsedCommand {
-    if words.len() < 3 || words[1] != "storage" {
+    if words.len() < 3 { return ParsedCommand::Raw(format!("data remove {}", words.join(" "))); }
+    let target_kind = &words[1];
+    let storage_prefix = match target_kind.as_str() { "entity" => "entity:", _ => "" };
+    if target_kind != "storage" && target_kind != "entity" {
         return ParsedCommand::Raw(format!("data remove {}", words.join(" ")));
     }
     ParsedCommand::Data(DataCmd {
         subcommand: DataSub::Remove {
-            storage: words[2].clone(),
+            storage: format!("{storage_prefix}{}", words[2]),
             path: words.get(3).cloned().unwrap_or_default(),
         },
     })
 }
 
 fn parse_data_modify(words: &[String]) -> ParsedCommand {
-    if words.len() < 4 || words[1] != "storage" {
+    if words.len() < 4 { return ParsedCommand::Raw(format!("data modify {}", words.join(" "))); }
+    let target_kind = &words[1];
+    if target_kind != "storage" && target_kind != "entity" && target_kind != "block" {
         return ParsedCommand::Raw(format!("data modify {}", words.join(" ")));
     }
-    let rest = words[4..].join(" ");
+    let storage_prefix = match target_kind.as_str() {
+        "entity" => "entity:", "block" => "block:", _ => "",
+    };
+    let storage = if target_kind == "block" && words.len() >= 6 {
+        format!("{storage_prefix}{} {} {}", words[2], words[3], words[4])
+    } else {
+        format!("{storage_prefix}{}", words[2])
+    };
+    let path = if target_kind == "block" && words.len() >= 6 { words[5].clone() } else { words[3].clone() };
+    let rest = if target_kind == "block" && words.len() >= 6 { words[6..].join(" ") } else { words[4..].join(" ") };
     let (mode, source) = split_first_word(&rest);
     ParsedCommand::Data(DataCmd {
-        subcommand: DataSub::Modify {
-            storage: words[2].clone(),
-            path: words[3].clone(),
-            mode: mode.to_owned(),
-            source: source.to_owned(),
-        },
+        subcommand: DataSub::Modify { storage, path, mode: mode.to_owned(), source: source.to_owned() },
     })
 }
 
@@ -395,28 +404,31 @@ fn parse_execute_condition(rest: &str) -> Option<(ExecuteCondition, String)> {
             }
         }
         "data" => {
-            let (storage_marker, after_storage) = split_first_word(rest);
-            if storage_marker != "storage" {
+            let (data_kind, after_kind) = split_first_word(rest);
+            if data_kind != "storage" && data_kind != "entity" && data_kind != "block" {
                 return None;
             }
-            let (storage, after_id) = split_first_word(after_storage);
-            // The next token is either a simple path or a brace-delimited compound {…}
-            let after_id = after_id.trim();
-            let (path_or_compound, remaining) = if after_id.starts_with('{') {
-                // Brace-delimited compound predicate — find matching closing brace
-                let end = find_matching_brace(after_id);
+            let (target, after_target) = split_first_word(after_kind);
+            let after_target = after_target.trim();
+            let (path_or_compound, remaining) = if after_target.starts_with('{') {
+                let end = find_matching_brace(after_target);
                 if end == 0 {
-                    (after_id.to_owned(), String::new())
+                    (after_target.to_owned(), String::new())
                 } else {
-                    let compound = after_id[..end].to_owned();
-                    let rest = after_id[end..].trim().to_owned();
+                    let compound = after_target[..end].to_owned();
+                    let rest = after_target[end..].trim().to_owned();
                     (compound, rest)
                 }
             } else {
-                let (path, r) = split_first_word(after_id);
+                let (path, r) = split_first_word(after_target);
                 (path.to_owned(), r.to_owned())
             };
-            Some((ExecuteCondition::Data(storage.to_owned(), path_or_compound), remaining))
+            let storage = match data_kind {
+                "entity" => format!("entity:{target}"),
+                "block" => format!("block:{target}"),
+                _ => target.to_owned(),
+            };
+            Some((ExecuteCondition::Data(storage, path_or_compound), remaining))
         }
         "entity" => {
             let (selector, r) = split_first_word(rest);

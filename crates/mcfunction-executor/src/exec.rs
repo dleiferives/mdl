@@ -454,24 +454,15 @@ impl Executor {
 
     fn execute_entity_data_get(&self, selector: &str, path: &str, scale: Option<f64>) -> CommandOutcome {
         let ids = self.world.entities.resolve_selector(selector, &self.world.scoreboard);
-        let Some(entity) = ids.first().and_then(|id| self.world.entities.get(*id)) else {
-            return CommandOutcome::failure(vec![]);
+        let Some(entity_id) = ids.first().copied() else {
+            return CommandOutcome::failure(vec!["No entity was found".to_owned()]);
         };
-        let value = match path {
-            "Pos[0]" => entity.x as i32,
-            "Pos[1]" => entity.y as i32,
-            "Pos[2]" => entity.z as i32,
-            "Rotation[0]" => entity.yaw as i32,
-            "Rotation[1]" => entity.pitch as i32,
-            _ => 0,
+        let Some(value) = self.world.entities.nbt_get(entity_id, path) else {
+            return CommandOutcome::failure(vec![format!("Entity {selector} not found at {path}")]);
         };
-        let result = match scale {
-            Some(s) => ((value as f64) * s) as i32,
-            None => value,
-        };
-        // Vanilla format: "entity has the following entity data: ..."
-        let log = format!("{selector} has the following entity data: Pos[...]={value}");
-        CommandOutcome::success(result, vec![log])
+        let snbt = value.to_snbt();
+        let result = match scale { Some(s) => ((value.as_i32() as f64) * s) as i32, None => value.as_i32() };
+        CommandOutcome::success(result, vec![format!("{selector} has the following entity data: {snbt}")])
     }
 
     fn data_modify_set(&mut self, storage: &str, path: &str, source: &str) -> Result<(), String> {

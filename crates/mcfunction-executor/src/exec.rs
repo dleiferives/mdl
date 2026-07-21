@@ -487,6 +487,11 @@ impl Executor {
                         } else if let Some(from) = source.strip_prefix("from storage ") {
                             let (sid, sp) = split_first_word(from);
                             match self.world.storage.get(sid, &sp.to_owned()) { Some(v) => self.world.entities.nbt_set(eid, path, v), None => Err("src not found".into()) }
+                        } else if let Some(from) = source.strip_prefix("from entity ") {
+                            let (ssel, sp) = split_first_word(from);
+                            let sids = self.world.entities.resolve_selector(ssel, &self.world.scoreboard);
+                            let Some(sid) = sids.first().copied() else { return CommandOutcome::failure(vec![]); };
+                            match self.world.entities.nbt_get(sid, &sp.to_owned()) { Some(v) => self.world.entities.nbt_set(eid, path, v), None => Err("src not found".into()) }
                         } else { Err(format!("unknown source: {source}")) },
                         "merge" => if let Some(snbt) = source.strip_prefix("value ") {
                             NbtValue::from_snbt(snbt).and_then(|v| self.world.entities.nbt_merge(eid, path, v))

@@ -168,6 +168,7 @@ fn parse_data(rest: &str) -> ParsedCommand {
         "get" => parse_data_get(&words),
         "remove" => parse_data_remove(&words),
         "modify" => parse_data_modify(&words),
+        "merge" => parse_data_merge(&words),
         _ => ParsedCommand::Raw(format!("data {rest}")),
     }
 }
@@ -232,6 +233,17 @@ fn parse_data_modify(words: &[String]) -> ParsedCommand {
             mode: mode.to_owned(),
             source: source.to_owned(),
         },
+    })
+}
+
+fn parse_data_merge(words: &[String]) -> ParsedCommand {
+    if words.len() < 4 { return ParsedCommand::Raw(format!("data merge {}", words.join(" "))); }
+    let target_kind = &words[1];
+    let storage_prefix = match target_kind.as_str() { "entity" => "entity:", _ => "" };
+    let storage = format!("{storage_prefix}{}", words[2]);
+    let nbt = words[3..].join(" ");
+    ParsedCommand::Data(DataCmd {
+        subcommand: DataSub::Modify { storage, path: String::new(), mode: "merge".to_owned(), source: format!("value {nbt}") },
     })
 }
 

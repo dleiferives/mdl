@@ -1050,6 +1050,16 @@ impl Executor {
                 }
             }
             ExecuteCondition::Data(storage, path) => {
+                if path.starts_with('{') { return evaluate_compound_predicate(self, storage, path); }
+                if let Some(sel) = storage.strip_prefix("entity:") {
+                    let ids = self.world.entities.resolve_selector(sel, &self.world.scoreboard);
+                    return ids.first().map_or(false, |id| self.world.entities.nbt_exists(*id, path));
+                }
+                if let Some(block_ref) = storage.strip_prefix("block:") {
+                    return resolve_block_coords(block_ref.trim()).map_or(false, |(x, y, z)| {
+                        self.world.blocks.nbt_exists(x, y, z, &self.current_dimension, path)
+                    });
+                }
                 self.world.storage.exists(storage, path)
             }
             ExecuteCondition::Entity(selector) => {
@@ -1119,6 +1129,35 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
         Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
     }
+}
+
+fn evaluate_compound_predicate(exec: &Executor, storage: &str, compound_snbt: &str) -> bool {
+    let Ok(predicate) = NbtValue::from_snbt(compound_snbt) else { return false; };
+    let target = if let Some(sel) = storage.strip_prefix("entity:") {
+        let ids = exec.world.entities.resolve_selector(sel, &exec.world.scoreboard);
+        ids.first().copied().and_then(|id| exec.world.entities.nbt_get(id, ""))
+    } else {
+        exec.world.storage.get_root(storage).cloned()
+    };
+    target.map_or(false, |t| nbt_compound_subset(&t, &predicate))
+}
+
+fn nbt_compound_subset(target: &NbtValue, predicate: &NbtValue) -> bool {
+    match (target, predicate) {
+        (NbtValue::Compound(t), NbtValue::Compound(p)) => p.iter().all(|(pk, pv)| t.iter().find(|(tk,_)| tk == pk).map(|(_, tv)| nbt_compound_subset(tv, pv)).unwrap_or(false)),
+        (NbtValue::List(t), NbtValue::List(p)) => t.len() == p.len() && t.iter().zip(p.iter()).all(|(a,b)| nbt_compound_subset(a,b)),
+        _ => target == predicate,
+    }
+}
+
+fn resolve_block_coords(block_ref: &str) -> Option<(i32, i32, i32)> {
+    let parts: Vec<&str> = block_ref.split_whitespace().collect();
+    if parts.len() < 3 { return None; }
+    fn rc(s: &str) -> Option<i32> {
+        if let Some(r) = s.strip_prefix('~') { if r.is_empty() { Some(0) } else { r.parse().ok() } }
+        else { s.parse().ok() }
+    }
+    Some((rc(parts[0])?, rc(parts[1])?, rc(parts[2])?))
 }
 
 /// Parses a simple SNBT literal like `3`, `-5b`, `"hello"`, `[1,2,3]`, `{a:1,b:2}`.

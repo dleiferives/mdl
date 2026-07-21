@@ -1,9 +1,10 @@
 # PS-12: Composable Entity-NBT Paths (Retires the Hardcoded Book Intrinsic)
 
-Status: **PS-12.0/PS-12A/PS-12B landed (bug fixes, grammar, schema+checker); PS-12C's HIR/Core
-representation is landed but Minecraft-side lowering is not yet built — see
-[`ps-12-entity-nbt-paths-todo.md`](ps-12-entity-nbt-paths-todo.md) PS-12C for the exact boundary
-and why it was stopped there.**
+Status: **PS-12.0 through PS-12D are all landed — the general path expression compiles, type-checks,
+lowers to Core, and lowers to real `.mcfunction` commands on both the inline and macro-helper
+routes, with four-policy differential evidence and an ignored pinned-server test. Only PS-12E
+(delete the retired intrinsic, add `.count` as the extensibility proof, handoff) remains — see
+[`ps-12-entity-nbt-paths-todo.md`](ps-12-entity-nbt-paths-todo.md).**
 
 ## Identity
 

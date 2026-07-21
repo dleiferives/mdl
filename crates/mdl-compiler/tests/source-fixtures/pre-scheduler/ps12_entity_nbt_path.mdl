@@ -1,0 +1,20 @@
+// MDL: success
+// PS-12D: the general schema-typed entity-NBT path expression, with a
+// genuinely runtime page index -- closes the exact untested gap that let
+// PS-12.0's two engine bugs ship silently (neither the const-literal book
+// fixture nor the checker-only PS-12B tests ever pushed a runtime index all
+// the way through Minecraft-target lowering).
+// HIR: entity-nbt-read
+// HIR: result_ty=String
+// CORE: entity_nbt_read
+// CORE: result=string
+
+export fn read_book() {
+    run.as(mc.entities(ArmorStand).with_tag("mdl_ps12_book").limit(1)) |reader| {
+        const index: Int32 = 0;
+        const page: String = reader.equipment.mainhand.components."minecraft:written_book_content".pages[index].raw;
+        if (page.ends_with_ascii("+")) {
+            reader.say("MDL_PS12_BOOK_OK");
+        }
+    }
+}

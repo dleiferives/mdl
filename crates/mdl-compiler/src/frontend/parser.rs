@@ -1417,8 +1417,19 @@ impl<'a> Parser<'a> {
                         expression.kind = AstExpressionKind::Error;
                         break;
                     }
-                    let Some(member_token) =
-                        self.expect_identifier("expected a member name after `.`")
+                    if let Some(key_token) = self.eat(TokenKind::StringLiteral) {
+                        expression = AstExpression {
+                            span: self.cover(expression.span, key_token.span())?,
+                            kind: AstExpressionKind::MemberKey {
+                                receiver: Box::new(expression),
+                                dot: dot.span(),
+                                key: key_token.span(),
+                            },
+                        };
+                        continue;
+                    }
+                    let Some(member_token) = self
+                        .expect_identifier("expected a member name or string literal after `.`")
                     else {
                         expression.span = self.cover(expression.span, dot.span())?;
                         expression.kind = AstExpressionKind::Error;
@@ -1461,23 +1472,17 @@ impl<'a> Parser<'a> {
                         expression.kind = AstExpressionKind::Error;
                         break;
                     }
-                    let index = self.expect(
-                        TokenKind::DecimalInteger,
-                        "expected a decimal component index",
-                    );
+                    let index = self.parse_expression()?;
+                    let index_clean = !expression_has_error(&index);
                     let close = self.expect(TokenKind::RightBracket, "expected `]` after index");
                     self.leave_depth();
-                    let Some(index) = index else {
-                        expression.kind = AstExpressionKind::Error;
-                        break;
-                    };
-                    let end = close.map_or(index.span(), Token::span);
+                    let end = close.map_or(index.span, Token::span);
                     let span = self.cover(expression.span, end)?;
                     expression = AstExpression {
-                        kind: if close.is_some() {
+                        kind: if close.is_some() && index_clean {
                             AstExpressionKind::Index {
                                 aggregate: Box::new(expression),
-                                index: index.span(),
+                                index: Box::new(index),
                             }
                         } else {
                             AstExpressionKind::Error
@@ -2243,7 +2248,8 @@ const fn is_identifier_like(kind: TokenKind) -> bool {
 fn expression_has_error(expression: &AstExpression) -> bool {
     match &expression.kind {
         AstExpressionKind::Error => true,
-        AstExpressionKind::Member { receiver, .. } => expression_has_error(receiver),
+        AstExpressionKind::Member { receiver, .. }
+        | AstExpressionKind::MemberKey { receiver, .. } => expression_has_error(receiver),
         AstExpressionKind::Call(call) => {
             expression_has_error(&call.callee) || call.arguments.iter().any(expression_has_error)
         }
@@ -2257,7 +2263,9 @@ fn expression_has_error(expression: &AstExpression) -> bool {
             .fields
             .iter()
             .any(|field| expression_has_error(&field.value)),
-        AstExpressionKind::Index { aggregate, .. } => expression_has_error(aggregate),
+        AstExpressionKind::Index { aggregate, index } => {
+            expression_has_error(aggregate) || expression_has_error(index)
+        }
         AstExpressionKind::Not(operand) => expression_has_error(operand),
         AstExpressionKind::WrappingArithmetic { left, right, .. }
         | AstExpressionKind::Compare { left, right, .. } => {
@@ -2696,6 +2704,74 @@ export fn run(value: Int32) -> Int32 {
         assert_eq!(output.diagnostics(), None);
         let expected = "module @0..41\n  private function f @0..41\n    parameter x: Int32 @5..13\n    result Bool @15..22\n    block @23..41\n      return @25..39\n        compare eq @32..38\n          name x @32..33\n          integer 1 @37..38\n";
         assert_eq!(dump(output.module(), &sources), expected);
+        assert_eq!(dump(output.module(), &sources), expected);
+    }
+
+    // PS-12A / S-042: `.` `StringLiteral` compile-time compound member key,
+    // additive alongside the existing `.` `Name` form.
+    #[test]
+    fn parses_string_literal_member_key() {
+        let text = r#"fn f(x: Int32) -> Bool { return x."minecraft:written_book_content"; }"#;
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        let dump = super::super::ast::dump(output.module(), &sources);
+        assert!(
+            dump.contains(r#"member-key "minecraft:written_book_content""#),
+            "{dump}"
+        );
+    }
+
+    #[test]
+    fn string_literal_member_key_chains_with_ordinary_member_access() {
+        let text = r#"fn f(x: Int32) -> Bool { return x."k".field; }"#;
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        let dump = super::super::ast::dump(output.module(), &sources);
+        assert!(dump.contains(r#"member-key "k""#), "{dump}");
+        assert!(dump.contains("member field"), "{dump}");
+    }
+
+    // PS-12A / S-042: `[` `IntegerLiteral` `]` widens to `[` `Expression` `]`.
+    // The existing PS-5 positional-tuple literal-index shape must still parse
+    // byte-identically; a general (identifier) index must now parse too.
+    #[test]
+    fn bracket_index_accepts_both_a_literal_and_a_general_expression() {
+        let text = r"fn f(pair: { Int32, Int32 }, i: Int32) -> Int32 { const a := pair[0]; const b := pair[i]; return a +% b; }";
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        let dump = super::super::ast::dump(output.module(), &sources);
+        assert!(dump.contains("index @"), "{dump}");
+        assert!(dump.contains("integer 0 @"), "{dump}");
+        assert!(dump.contains("name i @"), "{dump}");
+    }
+
+    #[test]
+    fn malformed_member_key_recovers_before_the_next_statement() {
+        let (_, _, output) = parse_text("fn f(x: Int32) { const a := x.; return 1; }");
+        assert!(output.diagnostics().is_some());
+        assert!(matches!(
+            &output.module().functions[0].body.statements[..],
+            [AstStatement::Error(_), AstStatement::Return(_)]
+        ));
+    }
+
+    #[test]
+    fn malformed_bracket_index_recovers_before_the_next_statement() {
+        let (_, _, output) =
+            parse_text("fn f(pair: { Int32, Int32 }) { const a := pair[; return 1; }");
+        assert!(output.diagnostics().is_some());
+        assert!(matches!(
+            &output.module().functions[0].body.statements[..],
+            [AstStatement::Error(_), AstStatement::Return(_)]
+        ));
+    }
+
+    #[test]
+    fn ps5_positional_index_dump_is_unchanged_by_the_general_bracket_grammar() {
+        let text = "fn f(pair: { Int32, Int32 }) -> Int32 { return pair[0] +% pair[1]; }";
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        let expected = "module @0..68\n  private function f @0..68\n    parameter pair: { Int32, Int32 } @5..27\n    result Int32 @29..37\n    block @38..68\n      return @40..66\n        wrapping-arithmetic +% @47..65\n          index @47..54\n            name pair @47..51\n            integer 0 @52..53\n          index @58..65\n            name pair @58..62\n            integer 1 @63..64\n";
         assert_eq!(dump(output.module(), &sources), expected);
     }
 

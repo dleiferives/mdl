@@ -3524,6 +3524,17 @@ impl<'a> BodyChecker<'a> {
             AstExpressionKind::Member {
                 receiver, member, ..
             } => self.check_member_expression(receiver, member.span, expression.span, assigned),
+            AstExpressionKind::MemberKey { .. } => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        UNRESOLVED_MEMBER,
+                        "a string-literal member key is only valid on a schema-typed entity-NBT path",
+                        expression.span,
+                    )
+                    .primary("this receiver does not support compile-time compound keys"),
+                );
+                Ok(CheckedExpression::invalid(expression.span))
+            }
             AstExpressionKind::Call(call) => {
                 if let Some(checked) = self.check_length_call(call, assigned)? {
                     return Ok(checked);
@@ -3580,7 +3591,7 @@ impl<'a> BodyChecker<'a> {
                 self.check_comparison(*op, left, right, expression.span, assigned)
             }
             AstExpressionKind::Index { aggregate, index } => {
-                self.check_index_expression(aggregate, *index, expression.span, assigned)
+                self.check_index_expression(aggregate, index, expression.span, assigned)
             }
             AstExpressionKind::InferredStructLiteral(literal) => {
                 self.check_inferred_struct_literal(literal, expression.span, assigned, expected)
@@ -4222,7 +4233,7 @@ impl<'a> BodyChecker<'a> {
     fn check_index_expression(
         &mut self,
         aggregate: &AstExpression,
-        index_span: Span,
+        index: &AstExpression,
         expression_span: Span,
         assigned: &Assigned,
     ) -> Result<CheckedExpression, CheckError> {
@@ -4251,6 +4262,17 @@ impl<'a> BodyChecker<'a> {
                     expression_span,
                 )
                 .primary("named fields are accessed with `.field`, not `[index]`"),
+            );
+            return Ok(CheckedExpression::invalid(expression_span));
+        };
+        let AstExpressionKind::DecimalInteger(index_span) = index.kind else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INTEGER_OUT_OF_RANGE,
+                    "index must be a non-negative integer literal",
+                    index.span,
+                )
+                .primary("only compile-time integer literals are accepted as an index"),
             );
             return Ok(CheckedExpression::invalid(expression_span));
         };

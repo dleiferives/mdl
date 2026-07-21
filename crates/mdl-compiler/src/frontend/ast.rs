@@ -413,12 +413,23 @@ pub(super) enum AstExpressionKind {
         dot: Span,
         member: AstName,
     },
+    /// `.` `StringLiteral` — a compile-time compound key (S-042), distinct from
+    /// `Member`'s identifier key. Only meaningful on a schema-typed entity-NBT
+    /// path receiver; rejected everywhere else during checking.
+    MemberKey {
+        receiver: Box<AstExpression>,
+        dot: Span,
+        key: Span,
+    },
     Call(AstCall),
     StructLiteral(AstStructLiteral),
     InferredStructLiteral(AstInferredStructLiteral),
+    /// `[` `Expression` `]` (S-042). The index is a full expression; checking
+    /// decides literal-only (positional anonymous struct) vs. const-or-runtime
+    /// (schema-typed NBT list) by the checked receiver type, not by grammar.
     Index {
         aggregate: Box<AstExpression>,
-        index: Span,
+        index: Box<AstExpression>,
     },
     Not(Box<AstExpression>),
     WrappingArithmetic {
@@ -798,6 +809,18 @@ impl AstPrinter<'_> {
                 );
                 self.expression(receiver, indent + 1);
             }
+            AstExpressionKind::MemberKey { receiver, dot, key } => {
+                self.line(
+                    indent,
+                    format_args!(
+                        "member-key {} dot={} {}",
+                        self.spelling(*key),
+                        location(*dot),
+                        location(expression.span)
+                    ),
+                );
+                self.expression(receiver, indent + 1);
+            }
             AstExpressionKind::Call(call) => {
                 self.line(indent, format_args!("call {}", location(expression.span)));
                 self.call(call, indent + 1);
@@ -850,9 +873,10 @@ impl AstPrinter<'_> {
                 self.expression(left, indent + 1);
                 self.expression(right, indent + 1);
             }
-            AstExpressionKind::Index { aggregate, .. } => {
+            AstExpressionKind::Index { aggregate, index } => {
                 self.line(indent, format_args!("index {}", location(expression.span)));
                 self.expression(aggregate, indent + 1);
+                self.expression(index, indent + 1);
             }
             AstExpressionKind::InferredStructLiteral(literal) => {
                 self.line(

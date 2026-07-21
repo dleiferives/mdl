@@ -146,8 +146,9 @@ PrefixExpression = "!", PrefixExpression
 PostfixExpression = PrimaryExpression, { PostfixSuffix } ;
 
 PostfixSuffix = ".", Name
+              | ".", StringLiteral
               | Arguments
-              | "[", IntegerLiteral, "]"
+              | "[", Expression, "]"
               ;
 
 Arguments = "(", [ Expression, { ",", Expression }, [ "," ] ], ")" ;

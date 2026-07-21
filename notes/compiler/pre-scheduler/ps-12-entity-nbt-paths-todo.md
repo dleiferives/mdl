@@ -1,6 +1,6 @@
 # PS-12 Composable Entity-NBT Paths Checklist
 
-Status: **PS-12.0 landed; PS-12A starting**
+Status: **PS-12.0 and PS-12A landed; PS-12B starting**
 
 Authoritative design: [`ps-12-entity-nbt-paths-plan.md`](ps-12-entity-nbt-paths-plan.md) and
 [`../entity-nbt-path-composability.md`](../entity-nbt-path-composability.md).
@@ -47,27 +47,43 @@ tranche builds on the engine actually being correct.
 Gate: the existing generic engine is actually trustworthy before anything is built on top of it.
 **Met.**
 
-## PS-12A — Grammar, parser, AST
+## PS-12A — Grammar, parser, AST — DONE
 
-- [ ] Extend `notes/syntax/grammar.ebnf`'s `PostfixSuffix` to `"." Name | "." StringLiteral |
-      Arguments | "[" Expression "]"` (was `"[" IntegerLiteral "]"`). Record as a syntax
-      decision note (`notes/syntax/`) matching the project's S-0xx convention if one doesn't
-      already cover this.
-- [ ] Parser: add the `.` `StringLiteral` postfix arm alongside the existing `.` `Name` arm in
-      `parse_postfix`; extend the `[` arm to parse a general `Expression` instead of only
-      `TokenKind::DecimalInteger`.
-- [ ] AST: extend `AstExpressionKind::Member` (or add a sibling variant) to carry a
-      string-literal key alternative to `Name`; extend `AstExpressionKind::Index`'s `index` from
-      a bare `Span` to hold a full `Box<AstExpression>` (needed for non-literal indices; keep
-      the existing literal-index behavior working through the same node).
-- [ ] Lexer/parser golden tests for both new forms; **explicit regression proof** that every
-      existing PS-5 fixture (`pair[0]`, named/positional anonymous structs, destructuring) still
-      parses byte-identically.
-- [ ] Bounded recovery for malformed string-literal keys and malformed bracket expressions,
-      matching the project's existing recovery conventions.
+- [x] Extended `notes/syntax/grammar.ebnf`'s `PostfixSuffix` to `"." Name | "." StringLiteral |
+      Arguments | "[" Expression "]"` (was `"[" IntegerLiteral "]"`). Already recorded as
+      [`../../syntax/entity-paths-and-general-indexing.md`](../../syntax/entity-paths-and-general-indexing.md)
+      (S-042) before implementation started.
+- [x] Parser: added the `.` `StringLiteral` postfix arm alongside the existing `.` `Name` arm in
+      `parse_postfix` (checked via `self.eat(TokenKind::StringLiteral)` before falling through to
+      `expect_identifier`); widened the `[` arm to `self.parse_expression()` instead of
+      `self.expect(TokenKind::DecimalInteger, ..)`.
+- [x] AST: added a **sibling variant** `AstExpressionKind::MemberKey { receiver, dot, key: Span }`
+      rather than modifying `Member` in place — `Member`'s `member: AstName` has ~10 existing
+      Name-only consumers (builtin/run-modifier/entity-query dispatch) that must keep rejecting a
+      string literal there; a sibling variant means none of them needed a
+      "must be Name, else reject" arm added. Changed `AstExpressionKind::Index`'s `index` from
+      `Span` to `Box<AstExpression>`; `check_index_expression` now requires
+      `AstExpressionKind::DecimalInteger` at check time (was enforced at parse time via the token
+      kind) — same accepted-program set, moved one layer up per the design note's "disambiguation
+      by checked receiver type, not grammar." `MemberKey` gets one checker arm today: an honest
+      `UNRESOLVED_MEMBER` rejection ("only valid on a schema-typed entity-NBT path"), since no
+      schema receiver exists until PS-12B — this is not throwaway stub code, it is the permanent
+      "no valid receiver" diagnostic PS-12B's checker will need regardless.
+- [x] Golden tests added in `frontend::parser::tests`: `parses_string_literal_member_key`,
+      `string_literal_member_key_chains_with_ordinary_member_access`,
+      `bracket_index_accepts_both_a_literal_and_a_general_expression`, and an **exact** dump
+      regression, `ps5_positional_index_dump_is_unchanged_by_the_general_bracket_grammar`, proving
+      `pair[0] +% pair[1]` dumps byte-identically through the widened grammar. Full workspace
+      suite (740 passed in `mdl-compiler`, up from 734) confirms no existing fixture changed
+      behavior.
+- [x] Bounded recovery: `malformed_member_key_recovers_before_the_next_statement` (`x.;`) and
+      `malformed_bracket_index_recovers_before_the_next_statement` (`pair[;`) both prove a syntax
+      error inside the new forms produces one `Error` statement and does not desync parsing of
+      the following statement — same shape as the project's existing call/paren recovery tests.
 
 Gate: clean syntax round-trips deterministically; zero behavior change to any program that
-doesn't use the two new forms.
+doesn't use the two new forms. **Met** — `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace --all-targets` all green.
 
 ## PS-12B — Schema table and unified chained-postfix checker
 

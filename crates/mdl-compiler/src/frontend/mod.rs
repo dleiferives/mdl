@@ -8,6 +8,7 @@ mod behavior;
 mod check;
 mod compile;
 mod context;
+mod entity_schema;
 mod hir;
 mod input;
 mod lexer;

@@ -544,6 +544,28 @@ pub(super) enum HirExternalSemantic {
         member_origin: OriginId,
         receiver_origin: OriginId,
     },
+    /// A schema-typed entity-NBT path read (PS-12, S-042), e.g.
+    /// `reader.equipment.mainhand.components."minecraft:written_book_content"
+    /// .pages[index].raw`. Never routed through `MinecraftSemanticKey` /
+    /// `MinecraftOperationAttributes` — the schema table
+    /// (`entity_schema.rs`) is the only source of path-step validity, and
+    /// version-dependence belongs to schema table selection, not a recipe.
+    EntityNbtRead {
+        receiver_kind: EntityKind,
+        executor_proof: HirContextStep,
+        segments: Box<[HirEntityPathSegment]>,
+        result_ty: ValueType,
+        receiver_origin: OriginId,
+    },
+}
+
+/// One step of a checked entity-NBT path, after the root. A `Key` step is
+/// always compile-time-constant (`nbt-schema-system.md` §7 — schema keys are
+/// never runtime-derived); an `Index` step may be const or runtime.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirEntityPathSegment {
+    Key(Box<str>),
+    Index(Box<HirExpression>),
 }
 
 /// Closed static attributes of one checked Minecraft operation occurrence.
@@ -1167,6 +1189,35 @@ impl<'a> Dumper<'a> {
                             executor_proof.modifier_index,
                             self.location(*call_origin),
                             self.location(*member_origin),
+                            self.location(*receiver_origin),
+                            self.location(external.origin),
+                        ),
+                    );
+                }
+                HirExternalSemantic::EntityNbtRead {
+                    receiver_kind,
+                    executor_proof,
+                    segments,
+                    result_ty,
+                    receiver_origin,
+                } => {
+                    let path = segments
+                        .iter()
+                        .map(|segment| match segment {
+                            HirEntityPathSegment::Key(key) => format!(".{key}"),
+                            HirEntityPathSegment::Index(index) => match &index.kind {
+                                HirExpressionKind::Int32(value) => format!("[{value}]"),
+                                _ => "[<runtime>]".to_string(),
+                            },
+                        })
+                        .collect::<String>();
+                    self.line(
+                        1,
+                        &format!(
+                            "external @{} entity-nbt-read receiver=Executor<{receiver_kind}> proof=run@{}:modifier{} path={path} result_ty={result_ty} receiver_origin={} {}",
+                            external.id.index(),
+                            executor_proof.run.index(),
+                            executor_proof.modifier_index,
                             self.location(*receiver_origin),
                             self.location(external.origin),
                         ),
@@ -1813,6 +1864,41 @@ impl Verifier<'_> {
                                 return Err(HirVerificationError::new(
                                     "runtime written-book page index must be an Int32",
                                 ));
+                            }
+                        }
+                    }
+                }
+                HirExternalSemantic::EntityNbtRead {
+                    receiver_kind,
+                    executor_proof,
+                    segments,
+                    result_ty: _,
+                    receiver_origin,
+                } => {
+                    self.origin(*receiver_origin, "entity-NBT path receiver")?;
+                    self.origin(executor_proof.origin, "entity-NBT path executor proof")?;
+                    if !receiver_kind
+                        .capabilities()
+                        .contains(EntityCapability::CommandExecutor)
+                    {
+                        return Err(HirVerificationError::new(format!(
+                            "entity-NBT path {:?} has a receiver kind without executor capability",
+                            external.id
+                        )));
+                    }
+                    if segments.is_empty() {
+                        return Err(HirVerificationError::new(format!(
+                            "entity-NBT path {:?} has no path segments",
+                            external.id
+                        )));
+                    }
+                    for segment in segments {
+                        if let HirEntityPathSegment::Index(index) = segment {
+                            if index.ty != ValueType::Int32 {
+                                return Err(HirVerificationError::new(format!(
+                                    "entity-NBT path {:?} has a non-Int32 index segment",
+                                    external.id
+                                )));
                             }
                         }
                     }
@@ -2748,6 +2834,7 @@ impl Verifier<'_> {
                     {
                         ValueType::String
                     }
+                    HirExternalSemantic::EntityNbtRead { result_ty, .. } => *result_ty,
                     _ => {
                         return Err(HirVerificationError::new(
                             "non-value external operation appears in an expression",

@@ -256,6 +256,14 @@ impl CoreGenerationOutput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CoreGenerationInvariant {
+    /// PS-12C (Core representation + Minecraft-side lowering for schema-typed
+    /// entity-NBT path reads) is not implemented yet — only PS-12B (grammar,
+    /// schema table, checker, HIR) has landed. Checking accepts entity-NBT
+    /// path expressions; Core generation does not yet lower them.
+    EntityNbtReadLoweringNotImplemented {
+        /// Checked external operation that cannot be lowered yet.
+        source_external: SourceExternalOpId,
+    },
     /// A source function was absent from the predeclared correlation map.
     MissingFunctionMapping {
         /// Missing source function.
@@ -416,6 +424,10 @@ impl fmt::Display for CoreGenerationInvariant {
     )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EntityNbtReadLoweringNotImplemented { source_external } => write!(
+                formatter,
+                "entity-NBT path Core lowering (PS-12C) is not implemented yet, blocking {source_external:?}"
+            ),
             Self::MissingFunctionMapping { source_function } => {
                 write!(formatter, "missing Core mapping for {source_function:?}")
             }
@@ -1098,6 +1110,13 @@ fn declare_external_operations(
     let mut external_correlations = Vec::with_capacity(checked.external_operation_count());
     for external in checked.external_ops() {
         let binding = match &external.semantic {
+            HirExternalSemantic::EntityNbtRead { .. } => {
+                return Err(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::EntityNbtReadLoweringNotImplemented {
+                        source_external: external.id,
+                    },
+                ));
+            }
             HirExternalSemantic::UnsafeMinecraftCommand { command, .. } => {
                 let fragment = TargetFragment::unsafe_minecraft_command(command).map_err(|_| {
                     CoreGenerationFailure::Invariant(
@@ -1188,6 +1207,9 @@ fn declare_external_operations(
             } => vec![CoreType::String],
             HirExternalSemantic::UnsafeMinecraftCommand { .. }
             | HirExternalSemantic::MinecraftOperation { .. } => vec![],
+            HirExternalSemantic::EntityNbtRead { .. } => unreachable!(
+                "EntityNbtRead already returned CoreGenerationFailure::Invariant above"
+            ),
         };
         let parameters = match &external.semantic {
             HirExternalSemantic::MinecraftOperation {
@@ -1294,6 +1316,9 @@ fn verify_source_semantic_correlation(
         .flatten();
 
     match &external.semantic {
+        HirExternalSemantic::EntityNbtRead { .. } => unreachable!(
+            "EntityNbtRead never reaches Core declaration yet, so never reaches verification"
+        ),
         HirExternalSemantic::UnsafeMinecraftCommand { .. } => {
             if !matches!(
                 declaration.binding(),

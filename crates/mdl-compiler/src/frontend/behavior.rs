@@ -611,6 +611,22 @@ impl BehaviorEvaluator<'_> {
                     false,
                 ))
             }
+            HirExternalSemantic::EntityNbtRead { receiver_kind, .. } => {
+                // Same real-world behavior as the retired ReadMainHandWrittenBookLiteralPage
+                // verb it generalizes: a pure, finite, non-forking NBT read requiring the
+                // current executor, no other ambient context.
+                let requirements = AmbientContextRequirements::NONE.with_executor(
+                    crate::ir::semantic::ContextRequirement::Required(*receiver_kind),
+                );
+                Ok(FunctionBehavior::new(
+                    requirements,
+                    WorldEffect::Read,
+                    ObservableEffect::None,
+                    ForkBound::None,
+                    TransitiveWork::Finite,
+                    false,
+                ))
+            }
         }
     }
 

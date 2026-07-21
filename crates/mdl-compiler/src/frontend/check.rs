@@ -18,19 +18,21 @@ use super::ast::{
     AstSwitchStatement, AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::context::{apply_run_modifiers, function_entry_context};
+use super::entity_schema::{SchemaNode, root_schema};
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirAnonymousStruct,
     HirAnonymousStructField, HirAnonymousStructKind, HirBinding, HirBindingKind, HirBlock, HirCall,
     HirComparisonOp, HirContextStep, HirDestructureTarget, HirDestructureTargetRole,
-    HirEntityQuery, HirEntityQueryStep, HirEnum, HirEnumVariant, HirExecutionContext,
-    HirExecutorCapture, HirExpression, HirExpressionKind, HirExternalOp, HirExternalSemantic,
-    HirFunction, HirIf, HirIfArm, HirListI32Op, HirMinecraftOperationAttributes, HirModule,
-    HirModuleInfo, HirRun, HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirStruct,
-    HirStructField, HirStructFieldValue, HirSwitchExpression, HirSwitchExpressionArm,
-    HirSwitchLabel, HirSwitchPattern, HirSwitchPatternKind, HirSwitchStatement,
-    HirSwitchStatementArm, HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId,
-    SourceAnonymousStructId, SourceEnumId, SourceExternalOpId, SourceFunctionId, SourceModuleId,
-    SourceRunId, SourceStructId, SourceVariantId, ValueType, verify,
+    HirEntityPathSegment, HirEntityQuery, HirEntityQueryStep, HirEnum, HirEnumVariant,
+    HirExecutionContext, HirExecutorCapture, HirExpression, HirExpressionKind, HirExternalOp,
+    HirExternalSemantic, HirFunction, HirIf, HirIfArm, HirListI32Op,
+    HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun, HirRunModifier,
+    HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField, HirStructFieldValue,
+    HirSwitchExpression, HirSwitchExpressionArm, HirSwitchLabel, HirSwitchPattern,
+    HirSwitchPatternKind, HirSwitchStatement, HirSwitchStatementArm, HirVerificationError,
+    HirWhile, HirWrappingArithmeticOp, LocalId, SourceAnonymousStructId, SourceEnumId,
+    SourceExternalOpId, SourceFunctionId, SourceModuleId, SourceRunId, SourceStructId,
+    SourceVariantId, ValueType, verify,
 };
 use super::input::{ModuleDependency, ModuleKey};
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
@@ -3523,8 +3525,16 @@ impl<'a> BodyChecker<'a> {
             }
             AstExpressionKind::Member {
                 receiver, member, ..
-            } => self.check_member_expression(receiver, member.span, expression.span, assigned),
+            } => {
+                if self.expression_roots_in_executor_capture(expression) {
+                    return self.check_entity_nbt_path_expression(expression, assigned);
+                }
+                self.check_member_expression(receiver, member.span, expression.span, assigned)
+            }
             AstExpressionKind::MemberKey { .. } => {
+                if self.expression_roots_in_executor_capture(expression) {
+                    return self.check_entity_nbt_path_expression(expression, assigned);
+                }
                 self.diagnostics.push(
                     PendingDiagnostic::new(
                         UNRESOLVED_MEMBER,
@@ -3591,6 +3601,9 @@ impl<'a> BodyChecker<'a> {
                 self.check_comparison(*op, left, right, expression.span, assigned)
             }
             AstExpressionKind::Index { aggregate, index } => {
+                if self.expression_roots_in_executor_capture(expression) {
+                    return self.check_entity_nbt_path_expression(expression, assigned);
+                }
                 self.check_index_expression(aggregate, index, expression.span, assigned)
             }
             AstExpressionKind::InferredStructLiteral(literal) => {
@@ -4228,6 +4241,237 @@ impl<'a> BodyChecker<'a> {
             self.origin(span)?,
             span,
         ))
+    }
+
+    /// Returns true iff `expression`'s postfix spine is rooted in an active
+    /// executor capture name (`reader`, `reader.equipment`,
+    /// `reader.equipment[0]`, ...). Read-only, never emits diagnostics — used
+    /// to route `Member`/`MemberKey`/`Index` checking to the entity-NBT
+    /// schema chain (PS-12, S-042) instead of ordinary struct/tuple
+    /// checking. An executor capture is never an ordinary `ValueType`
+    /// binding, so this can never misfire against a real struct/tuple value.
+    fn expression_roots_in_executor_capture(&self, expression: &AstExpression) -> bool {
+        match &expression.kind {
+            AstExpressionKind::Name(name) => self.spelling(name.span).is_ok_and(|spelling| {
+                self.active_executor_captures
+                    .contains_key(spelling.as_ref())
+            }),
+            AstExpressionKind::Member { receiver, .. }
+            | AstExpressionKind::MemberKey { receiver, .. } => {
+                self.expression_roots_in_executor_capture(receiver)
+            }
+            AstExpressionKind::Index { aggregate, .. } => {
+                self.expression_roots_in_executor_capture(aggregate)
+            }
+            _ => false,
+        }
+    }
+
+    /// Checks the whole entity-NBT path chain rooted at `expression` and, on
+    /// success, produces a checked value from its terminal `Scalar` schema
+    /// node. Only call when `expression_roots_in_executor_capture` returned
+    /// true. Reaching a non-terminal (`Compound`/`List`) node is rejected —
+    /// binding an in-progress chain to an intermediate variable
+    /// (`const item := reader.equipment.mainhand;`) is explicit deferred
+    /// follow-up, not required by PS-12's exit criteria.
+    fn check_entity_nbt_path_expression(
+        &mut self,
+        expression: &AstExpression,
+        assigned: &Assigned,
+    ) -> Result<CheckedExpression, CheckError> {
+        let Some(step) = self.check_entity_nbt_path_step(expression, assigned)? else {
+            return Ok(CheckedExpression::invalid(expression.span));
+        };
+        let Some(result_ty) = step.node.scalar_type() else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    TYPE_MISMATCH,
+                    "this entity-NBT path is not a complete field yet",
+                    expression.span,
+                )
+                .primary(format!(
+                    "chain reached {}, not a scalar field — continue with `.field`, \
+                     `.\"resource:id\"`, or `[index]`",
+                    step.node.kind_label()
+                )),
+            );
+            return Ok(CheckedExpression::invalid(expression.span));
+        };
+        let id = SourceExternalOpId::from_index(self.external_ops.len()).ok_or(
+            CheckError::IdentitySpaceExhausted(CheckedEntityKind::ExternalOperation),
+        )?;
+        let origin = self.origin(expression.span)?;
+        self.external_ops.push(HirExternalOp {
+            id,
+            semantic: HirExternalSemantic::EntityNbtRead {
+                receiver_kind: step.receiver_kind,
+                executor_proof: step.executor_proof,
+                segments: step.segments.into_boxed_slice(),
+                result_ty,
+                receiver_origin: step.receiver_origin,
+            },
+            origin,
+        });
+        Ok(CheckedExpression::valid(
+            HirExpressionKind::External(id),
+            result_ty,
+            origin,
+            expression.span,
+        ))
+    }
+
+    /// Recursive worker behind `check_entity_nbt_path_expression`. Returns
+    /// `Ok(None)` once a diagnostic has already been pushed for a failure
+    /// anywhere in the chain (unknown key, wrong step kind, stale capture,
+    /// non-`Int32` or call-containing runtime index); the caller must not
+    /// push a second diagnostic in that case.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive per-step-kind chain-resolution function keeps every failure diagnostic local to its cause"
+    )]
+    fn check_entity_nbt_path_step(
+        &mut self,
+        expression: &AstExpression,
+        assigned: &Assigned,
+    ) -> Result<Option<EntityPathStep>, CheckError> {
+        match &expression.kind {
+            AstExpressionKind::Name(name) => {
+                let spelling = self.spelling(name.span)?;
+                let Some(capture) = self
+                    .active_executor_captures
+                    .get(spelling.as_ref())
+                    .copied()
+                else {
+                    return Ok(None);
+                };
+                let is_current = matches!(
+                    self.execution_context.executor(),
+                    ContextFact::Established { value, by }
+                        if *value == capture.ty.kind() && *by == capture.proof
+                );
+                if !is_current {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            SCOPED_CAPABILITY_VALUE,
+                            format!(
+                                "executor capture `{spelling}` no longer proves the current executor"
+                            ),
+                            expression.span,
+                        )
+                        .primary("a nested executor transition replaced this exact proof")
+                        .support(capture.name_span, "capture was established here"),
+                    );
+                    return Ok(None);
+                }
+                Ok(Some(EntityPathStep {
+                    node: root_schema(capture.ty.kind()),
+                    receiver_kind: capture.ty.kind(),
+                    executor_proof: capture.proof,
+                    receiver_origin: self.origin(expression.span)?,
+                    segments: vec![],
+                }))
+            }
+            AstExpressionKind::Member {
+                receiver, member, ..
+            } => {
+                let Some(mut step) = self.check_entity_nbt_path_step(receiver, assigned)? else {
+                    return Ok(None);
+                };
+                let name = self.spelling(member.span)?;
+                let Some(child) = step.node.field_by_name(name.as_ref()) else {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            UNKNOWN_MEMBER,
+                            format!(
+                                "unknown entity-NBT field `.{name}` on {}",
+                                step.node.kind_label()
+                            ),
+                            member.span,
+                        )
+                        .primary("this key is not in the compiler-known schema"),
+                    );
+                    return Ok(None);
+                };
+                step.node = child;
+                step.segments.push(HirEntityPathSegment::Key(name));
+                Ok(Some(step))
+            }
+            AstExpressionKind::MemberKey { receiver, key, .. } => {
+                let Some(mut step) = self.check_entity_nbt_path_step(receiver, assigned)? else {
+                    return Ok(None);
+                };
+                let Some(content) = decode_string_literal(self.sources, *key)? else {
+                    return Ok(None);
+                };
+                let Some(child) = step.node.field_by_resource_id(&content) else {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            UNKNOWN_MEMBER,
+                            format!(
+                                "unknown entity-NBT field .\"{content}\" on {}",
+                                step.node.kind_label()
+                            ),
+                            *key,
+                        )
+                        .primary("this resource id is not in the compiler-known schema"),
+                    );
+                    return Ok(None);
+                };
+                step.node = child;
+                step.segments.push(HirEntityPathSegment::Key(content));
+                Ok(Some(step))
+            }
+            AstExpressionKind::Index { aggregate, index } => {
+                let Some(mut step) = self.check_entity_nbt_path_step(aggregate, assigned)? else {
+                    return Ok(None);
+                };
+                let Some(element) = step.node.list_element() else {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            UNRESOLVED_MEMBER,
+                            format!(
+                                "index access requires a schema NBT-list receiver, found {}",
+                                step.node.kind_label()
+                            ),
+                            expression.span,
+                        )
+                        .primary("only a known NBT-list field supports `[index]`"),
+                    );
+                    return Ok(None);
+                };
+                let checked_index = self.check_expression(index, assigned)?;
+                let Some(index_expr) = checked_index.expression else {
+                    return Ok(None);
+                };
+                if checked_index.ty != Some(ValueType::Int32) {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            TYPE_MISMATCH,
+                            "entity-NBT list index must be an Int32",
+                            index.span,
+                        )
+                        .primary("this index expression is not an Int32"),
+                    );
+                    return Ok(None);
+                }
+                if Self::runtime_index_contains_forbidden(&index_expr) {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            LITERAL_CONTEXT_REQUIRED,
+                            "a runtime entity-NBT list index may not contain a function call yet",
+                            index.span,
+                        )
+                        .primary("this expression contains a call or external operation"),
+                    );
+                    return Ok(None);
+                }
+                step.node = element;
+                step.segments
+                    .push(HirEntityPathSegment::Index(Box::new(index_expr)));
+                Ok(Some(step))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn check_index_expression(
@@ -5516,6 +5760,17 @@ struct InstalledExecutorCapture {
     hir: HirExecutorCapture,
 }
 
+/// Accumulated state of one in-progress entity-NBT path chain (PS-12, S-042).
+/// `node` is the schema position the chain has narrowed to so far; `segments`
+/// is the HIR path built alongside it.
+struct EntityPathStep {
+    node: SchemaNode,
+    receiver_kind: EntityKind,
+    executor_proof: HirContextStep,
+    receiver_origin: crate::source::OriginId,
+    segments: Vec<HirEntityPathSegment>,
+}
+
 #[derive(Clone, Copy)]
 enum ActiveBinding {
     Unique(ScopeBinding),
@@ -5872,11 +6127,11 @@ mod tests {
         ENUM_CONTEXT_REQUIRED, ENUM_EXPORT_ABI, IMMUTABLE_ASSIGNMENT, INTEGER_OUT_OF_RANGE,
         INVALID_ENTITY_TAG, INVALID_EXECUTOR_CAPTURE, INVALID_MESSAGE_LITERAL,
         INVALID_MINECRAFT_METHOD_RECEIVER, INVALID_SWITCH_ELSE, INVALID_SWITCH_PATTERN,
-        INVALID_UNSAFE_COMMAND, MESSAGE_LITERAL_REQUIRED, MISSING_RETURN, NON_EXHAUSTIVE_SWITCH,
-        OVERLAPPING_SWITCH_PATTERN, RESERVED_COMPILER_NAME, RETURN_IN_RUN_SCOPE,
-        RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED, SCOPED_CAPABILITY_VALUE, TRUNCATED,
-        TYPE_MISMATCH, UNINITIALIZED_READ, UNKNOWN_MEMBER, UNKNOWN_NAME, UNRESOLVED_MEMBER,
-        UNSUPPORTED_RUN_SCALAR_CAPTURE, VOID_VALUE, check,
+        INVALID_UNSAFE_COMMAND, LITERAL_CONTEXT_REQUIRED, MESSAGE_LITERAL_REQUIRED, MISSING_RETURN,
+        NON_EXHAUSTIVE_SWITCH, OVERLAPPING_SWITCH_PATTERN, RESERVED_COMPILER_NAME,
+        RETURN_IN_RUN_SCOPE, RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED,
+        SCOPED_CAPABILITY_VALUE, TRUNCATED, TYPE_MISMATCH, UNINITIALIZED_READ, UNKNOWN_MEMBER,
+        UNKNOWN_NAME, UNRESOLVED_MEMBER, UNSUPPORTED_RUN_SCALAR_CAPTURE, VOID_VALUE, check,
     };
     use crate::frontend::FrontendLimits;
     use crate::frontend::hir::{FunctionResult, HirStatementKind, SourceFunctionId, ValueType};
@@ -6537,5 +6792,167 @@ fn returning(condition: Bool) -> Int32 {
         let (_, _, output) = check_text(&text);
         assert_eq!(output.diagnostics(), None);
         assert!(output.checked().is_some());
+    }
+
+    // PS-12B: schema table + unified chained-postfix checker for entity-NBT
+    // paths (S-042). See notes/compiler/entity-nbt-path-composability.md §2.3.
+
+    #[test]
+    fn full_entity_nbt_chain_to_raw_type_checks_with_a_literal_index() {
+        let source = r#"fn read() {
+            run.as(mc.entities(ArmorStand).with_tag("x").limit(1)) |reader| {
+                const page: String = reader.equipment.mainhand.components."minecraft:written_book_content".pages[0].raw;
+            }
+        }"#;
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let checked = output.checked().unwrap();
+        assert_eq!(checked.external_operation_count(), 1);
+        let dump = checked.dump(&sources);
+        assert!(
+            dump.contains("entity-nbt-read receiver=Executor<ArmorStand>"),
+            "{dump}"
+        );
+        assert!(
+            dump.contains(
+                "path=.equipment.mainhand.components.minecraft:written_book_content.pages[0].raw"
+            ),
+            "{dump}"
+        );
+        assert!(dump.contains("result_ty=String"), "{dump}");
+    }
+
+    #[test]
+    fn full_entity_nbt_chain_to_raw_type_checks_with_a_genuinely_runtime_index() {
+        let source = r#"fn read() {
+            run.as(mc.entities(ArmorStand).limit(1)) |reader| {
+                const index: Int32 = 0;
+                const page: String = reader.equipment.offhand.components."minecraft:written_book_content".pages[index].raw;
+            }
+        }"#;
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let checked = output.checked().unwrap();
+        let dump = checked.dump(&sources);
+        assert!(
+            dump.contains(
+                "path=.equipment.offhand.components.minecraft:written_book_content.pages[<runtime>].raw"
+            ),
+            "{dump}"
+        );
+    }
+
+    #[test]
+    fn every_terminal_schema_field_and_every_equipment_slot_is_reachable() {
+        for slot in ["mainhand", "offhand", "head", "chest", "legs", "feet"] {
+            let source = format!(
+                r#"fn read() {{
+                    run.as(mc.entities(ArmorStand).limit(1)) |reader| {{
+                        const author: String = reader.equipment.{slot}.components."minecraft:written_book_content".author;
+                        const resolved: Bool = reader.equipment.{slot}.components."minecraft:written_book_content".resolved;
+                        const title: String = reader.equipment.{slot}.components."minecraft:written_book_content".title.raw;
+                    }}
+                }}"#
+            );
+            let (_, _, output) = check_text(&source);
+            assert_eq!(output.diagnostics(), None, "slot {slot}");
+            assert_eq!(output.checked().unwrap().external_operation_count(), 3);
+        }
+    }
+
+    #[test]
+    fn unknown_key_is_rejected_at_every_chain_depth() {
+        let cases = [
+            "reader.nonexistent",
+            "reader.equipment.nonexistent",
+            "reader.equipment.mainhand.nonexistent",
+            "reader.equipment.mainhand.components.\"minecraft:unknown_component\"",
+            "reader.equipment.mainhand.components.\"minecraft:written_book_content\".nonexistent",
+        ];
+        for chain in cases {
+            let source = format!(
+                r"fn bad() {{
+                    run.as(mc.entities(ArmorStand).limit(1)) |reader| {{
+                        const x := {chain};
+                    }}
+                }}"
+            );
+            let (_, _, output) = check_text(&source);
+            assert_eq!(codes(&output), [UNKNOWN_MEMBER], "{chain}");
+        }
+    }
+
+    #[test]
+    fn nbt_list_index_syntax_is_rejected_on_a_non_list_schema_node() {
+        let source = r"fn bad() {
+            run.as(mc.entities(ArmorStand).limit(1)) |reader| {
+                const x := reader.equipment[0];
+            }
+        }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [UNRESOLVED_MEMBER]);
+    }
+
+    #[test]
+    fn ordinary_positional_tuple_indexing_still_requires_a_compile_time_literal() {
+        // Disambiguation proof: a receiver that is NOT rooted in an executor
+        // capture is entirely unaffected by the entity-NBT schema checker —
+        // the pre-existing PS-5 literal-only rule for anonymous-struct tuple
+        // indexing is untouched.
+        let source = "fn bad(pair: { Int32, Int32 }, i: Int32) -> Int32 { return pair[i]; }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [INTEGER_OUT_OF_RANGE]);
+    }
+
+    #[test]
+    fn an_intermediate_non_scalar_chain_position_is_rejected() {
+        // Binding a non-terminal schema position to a variable
+        // (`const item := reader.equipment.mainhand;` then `item.components...`)
+        // is explicit deferred follow-up, not part of PS-12's exit criteria —
+        // this proves it fails with a clear diagnostic rather than silently
+        // misbehaving or panicking.
+        let source = r"fn bad() {
+            run.as(mc.entities(ArmorStand).limit(1)) |reader| {
+                const item := reader.equipment.mainhand;
+            }
+        }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [TYPE_MISMATCH]);
+    }
+
+    #[test]
+    fn a_stale_executor_capture_is_rejected_through_the_entity_nbt_chain() {
+        let source = r"fn bad() {
+            run.as(mc.entities(ArmorStand).limit(1)) |outer| {
+                run.as(mc.entities(ArmorStand).limit(1)) |inner| {
+                    const x := outer.equipment;
+                }
+            }
+        }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [SCOPED_CAPABILITY_VALUE]);
+    }
+
+    #[test]
+    fn a_runtime_list_index_containing_a_call_is_rejected() {
+        let source = r#"fn helper() -> Int32 { return 0; }
+        fn bad() {
+            run.as(mc.entities(ArmorStand).limit(1)) |reader| {
+                const x := reader.equipment.mainhand.components."minecraft:written_book_content".pages[helper()].raw;
+            }
+        }"#;
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [LITERAL_CONTEXT_REQUIRED]);
+    }
+
+    #[test]
+    fn a_non_int32_list_index_is_rejected() {
+        let source = r#"fn bad() {
+            run.as(mc.entities(ArmorStand).limit(1)) |reader| {
+                const x := reader.equipment.mainhand.components."minecraft:written_book_content".pages[true].raw;
+            }
+        }"#;
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [TYPE_MISMATCH]);
     }
 }

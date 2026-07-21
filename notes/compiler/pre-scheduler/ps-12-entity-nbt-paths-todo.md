@@ -1,6 +1,10 @@
 # PS-12 Composable Entity-NBT Paths Checklist
 
-Status: **PS-12.0 and PS-12A landed; PS-12B starting**
+Status: **PS-12.0, PS-12A, and PS-12B landed (checking is complete and shipped); PS-12C's
+representation half is landed but Core/Minecraft lowering is explicitly not — the compiler
+currently checks the new syntax cleanly and then fails Core generation with a clear,
+non-panicking, honestly-labeled error. See PS-12C below before starting the remaining
+lowering work.**
 
 Authoritative design: [`ps-12-entity-nbt-paths-plan.md`](ps-12-entity-nbt-paths-plan.md) and
 [`../entity-nbt-path-composability.md`](../entity-nbt-path-composability.md).
@@ -85,38 +89,107 @@ Gate: clean syntax round-trips deterministically; zero behavior change to any pr
 doesn't use the two new forms. **Met** — `cargo fmt --all -- --check`, `cargo clippy --workspace
 --all-targets -- -D warnings`, `cargo test --workspace --all-targets` all green.
 
-## PS-12B — Schema table and unified chained-postfix checker
+## PS-12B — Schema table and unified chained-postfix checker — DONE
 
-- [ ] Define the schema table (design note §2.4): `EquipmentSlots`, `ItemStack`, `Components`
-      (keyed by known resource-id string literals only), `WrittenBookContent`, `BookPageEntry`
-      — exactly enough to express the book-page chain plus prove extensibility.
-- [ ] Extend `check_member_expression` with an `Executor`/schema-node receiver case: `.equipment`
-      on an `Executor` starts the chain; each further `.name` narrows via the schema table.
-- [ ] Add the `.` `StringLiteral` checking arm: resolves the string content against the current
-      schema node's known keys; unrecognized key is a compile-time diagnostic, never a runtime
-      fallback.
-- [ ] Extend `check_index_expression` (or unify with member checking) to accept a general
-      `Int32` expression (const or runtime) when the receiver is a known NBT-list schema node,
-      while leaving the existing PS-5 literal-only/arity-checked rule unchanged for
-      `AnonymousStruct` positional receivers. Disambiguate by checked receiver type.
-- [ ] Chain accumulates an `NbtPath` prefix + root proof behind the scenes; an intermediate step
-      can be bound to a `const`/`var` and the chain continued from it (mirrors existing PS-5
-      struct-chain ergonomics).
-- [ ] Positive tests: full chain to `.raw`, chain broken at an intermediate binding and resumed,
-      every schema node reachable. Negative tests: unknown key at every depth, tuple-index syntax
-      on a schema node (rejected), NBT-list index syntax on an anonymous-struct tuple (rejected
-      — still literal-only there), wrong receiver kind.
+- [x] Defined the schema table as closed, `'static` compile-time data in a new module,
+      `frontend/entity_schema.rs`: `SchemaKey::{Identifier, ResourceId}` and
+      `SchemaNode::{Scalar, Compound, List}`, with `EquipmentSlots`/`ItemStack`/`Components`
+      (`ResourceId`-keyed)/`WrittenBookContent`/`BookPageEntry` — exactly what the book-page
+      chain needs. **`ItemStack.id`/`.count` are deliberately not included yet** — adding `.count`
+      as a pure table-row diff is PS-12E's extensibility proof; pre-populating it here would
+      leave nothing to prove. §4.3's key-form/uniqueness invariants are enforced by a test that
+      walks the whole table (`every_registered_table_satisfies_key_form_and_uniqueness_invariants`)
+      rather than a runtime registration API — the table is fixed Rust data, not user data, so
+      "registration-time validation" is a compile-time-authored, test-verified property.
+      Versioning (`JavaEditionTarget -> RootSchemaTable`) is not wired: the frontend checker is
+      target-independent everywhere else in this compiler (only `LoweringOptions` carries a
+      target), so there is exactly one table; keying `root_schema` by target is follow-up once a
+      second target exists, not a gap this design introduces.
+- [x] Did **not** extend `check_member_expression`/`check_index_expression` in place. Instead,
+      added `expression_roots_in_executor_capture` (a read-only peek down a `Member`/`MemberKey`/
+      `Index` spine to its base `Name`) to decide, before any checking happens, whether an
+      expression is a schema chain at all — an executor capture is never an ordinary `ValueType`
+      binding, so this can never misfire against a real struct/tuple receiver. When it returns
+      true, `check_expression_expected`'s `Member`/`MemberKey`/`Index` arms route to
+      `check_entity_nbt_path_expression` instead of the existing struct/tuple checkers, which are
+      otherwise completely untouched. This satisfies the same "disambiguate by receiver, not
+      grammar" goal the design note describes, by receiver-root detection instead of
+      receiver-type-after-checking (the two are equivalent here because the domains are disjoint).
+- [x] `.` `StringLiteral` checking arm: `check_entity_nbt_path_step`'s `MemberKey` case decodes
+      the literal and resolves it via `SchemaNode::field_by_resource_id`; an unrecognized id is
+      `UNKNOWN_MEMBER`, never a runtime fallback.
+- [x] `check_entity_nbt_path_step`'s `Index` case accepts any `Int32` expression (const or
+      runtime) when the receiver narrows to a `SchemaNode::List`; the existing
+      `check_index_expression` (now taking `index: &AstExpression` per PS-12A) is completely
+      unchanged and still literal-only for `AnonymousStruct` positional receivers. Runtime indices
+      reuse the existing `runtime_index_contains_forbidden` rule (no function calls yet — the
+      same live-range limitation `BookPageRuntime` was already guarding against).
+- [x] **Scope cut, recorded here rather than silently dropped:** intermediate-binding support
+      (`const item := reader.equipment.mainhand;` then continuing the chain from `item`) is **not
+      implemented**. `check_entity_nbt_path_expression` requires the chain to reach a `Scalar`
+      node in one uninterrupted expression; reaching a non-terminal node is rejected with
+      `TYPE_MISMATCH` ("this entity-NBT path is not a complete field yet"), proven by
+      `an_intermediate_non_scalar_chain_position_is_rejected`. This is not required by PS-12's
+      actual exit criteria (`ps-12-entity-nbt-paths-plan.md`'s exit criteria name the one-shot
+      chain, not intermediate binding), and building it means a new binding-classification
+      side-table threaded through declaration-checking, destructuring, and run-scope capture
+      floors — real, separable follow-up work, not a corner silently cut inside this tranche.
+- [x] Tests, all in `frontend::check::tests` unless noted: full chain to `.raw` with a literal
+      index and with a genuinely runtime index (both asserted via the HIR dump, which now renders
+      `[N]` for a literal index and `[<runtime>]` otherwise); every equipment slot reachable to
+      three different terminal fields (`.author`, `.resolved`, `.title.raw`); unknown key rejected
+      at every chain depth (5 cases); NBT-list `[...]` syntax rejected on a non-list schema node;
+      ordinary positional-tuple indexing proven unaffected (still literal-only); the intermediate-
+      binding cut (above); a stale executor capture rejected through the new chain (mirrors the
+      existing `typed_say` staleness test); a runtime index containing a call rejected; a
+      non-`Int32` index rejected. Plus `crates/mdl-compiler/tests/ps12b_entity_nbt_path_checker.rs`
+      — an integration test proving a full program using the new syntax checks with zero
+      diagnostics and *then* fails Core generation with a clear, structured,
+      non-panicking `CoreGenerationFailure::Invariant` (see PS-12C note below), not a crash.
 
 Gate: `reader.equipment.mainhand.components."minecraft:written_book_content".pages[index].raw`
 type-checks end to end for both a literal and a variable `index`, with `String` as its type.
+**Met.** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace --all-targets` all green (753 passed in `mdl-compiler`, up from 740).
 
 ## PS-12C — HIR/Core representation, lowering, and deletion
 
-- [ ] Add `HirExpressionKind::EntityNbtPath { root, segments, result_ty }` /
-      `HirEntityPathSegment` to `frontend/hir.rs`; wire checker output to build it.
-- [ ] Add `ExternalSemanticBinding::EntityNbtRead { selector_proof, path: NbtPath, result_ty:
-      CoreType }` to Core; wire `frontend/lower.rs` to declare it (replacing the
-      `MinecraftOperationAttributes::BookPage` construction).
+Representation is landed; **lowering is not** — see the explicit boundary below.
+
+- [x] Added `HirExternalSemantic::EntityNbtRead { receiver_kind, executor_proof, segments,
+      result_ty, receiver_origin }` / `HirEntityPathSegment::{Key(Box<str>), Index(Box<
+      HirExpression>)}` to `frontend/hir.rs`, and wired the checker (PS-12B, above) to build it —
+      **not** a new `HirExpressionKind` variant as the design note's illustrative sketch named it:
+      the codebase already routes every checked external operation through the existing
+      `HirExpressionKind::External(SourceExternalOpId)` + `HirExternalOp.semantic:
+      HirExternalSemantic` pair (this is exactly how `Say`/`Teleport`/`MoveBy`/the retired
+      `BookPage` all worked), so `EntityNbtRead` is a third `HirExternalSemantic` variant instead,
+      reusing that existing plumbing rather than adding a parallel one. Wired into every exhaustive
+      match this touches during *checking*: the HIR dumper (two sites), HIR verification (two
+      sites, including the "value type of an expression" match that would otherwise have silently
+      rejected every entity-NBT-read expression), and `frontend/behavior.rs`'s ambient-requirements
+      inference (real values: requires the current executor, `WorldEffect::Read`,
+      `ObservableEffect::None`, `ForkBound::None`, `TransitiveWork::Finite` — identical real-world
+      behavior to the retired `ReadMainHandWrittenBookLiteralPage` verb it generalizes).
+  - [ ] **Not done:** `ExternalSemanticBinding::EntityNbtRead` in Core. `frontend/lower.rs`'s
+        `declare_external_operations` currently returns a new, dedicated, honest error —
+        `CoreGenerationFailure::Invariant(CoreGenerationInvariant::
+        EntityNbtReadLoweringNotImplemented)` — the instant it sees an `EntityNbtRead` semantic,
+        proven by `ps12b_entity_nbt_path_checker.rs`. This is a deliberate stopping point, not an
+        oversight: the design note requires `EntityNbtRead` to bypass `SelectedSemanticRecipe`/
+        `MinecraftRecipeId` entirely, and every existing `InstructionPlan`/`AssignedInstructionPlan`
+        arm for `CoreOp::External` structurally assumes "either a selected recipe exists, or the
+        op becomes an opaque helper call with no constructed command" — there is no existing slot
+        for "an External op that builds a real structured command without a recipe." Building that
+        slot means new, parallel machinery across `preflight.rs`, `plan/assemble.rs`,
+        `plan/symbolic.rs`, `resources.rs`, `emit.rs`, and `plan/verify.rs` — real, multi-file,
+        deeply-interconnected lowering work carrying the same correctness risk PS-12.0 just spent
+        real effort fixing, and it deserves its own dedicated pass with its own full differential/
+        server verification, not to be rushed inside the same tranche as the checker.
+- [ ] Preflight: no-runtime-segment paths lower inline via `DataCommand::Modify` targeting the
+      real result home (generalizing the now-fixed PS-12.0 static-path shape); ≥1-runtime-segment
+      paths derive `is_unusable_inline()` from segment inspection (no authored flag) and route
+      through the (now-fixed) `crossings.rs` engine.
 - [ ] Preflight: no-runtime-segment paths lower inline via `DataCommand::Modify` targeting the
       real result home (generalizing the now-fixed PS-12.0 static-path shape); ≥1-runtime-segment
       paths derive `is_unusable_inline()` from segment inspection (no authored flag) and route

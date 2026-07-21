@@ -1,6 +1,9 @@
 # PS-12: Composable Entity-NBT Paths (Retires the Hardcoded Book Intrinsic)
 
-Status: **planned; PS-12.0 (bug fixes) starting immediately**
+Status: **PS-12.0/PS-12A/PS-12B landed (bug fixes, grammar, schema+checker); PS-12C's HIR/Core
+representation is landed but Minecraft-side lowering is not yet built — see
+[`ps-12-entity-nbt-paths-todo.md`](ps-12-entity-nbt-paths-todo.md) PS-12C for the exact boundary
+and why it was stopped there.**
 
 ## Identity
 

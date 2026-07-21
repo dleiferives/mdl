@@ -9,22 +9,22 @@ use std::cell::Cell;
 
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBlock, HirCall, HirComparisonOp,
-    HirDestructureTargetRole, HirEntityQuery, HirEntityQueryStep, HirExpression, HirExpressionKind,
-    HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirListI32Op,
-    HirMinecraftOperationAttributes, HirRun, HirRunModifier, HirStatement, HirStatementKind,
-    HirStringOp, HirSwitchExpression, HirSwitchLabel, HirSwitchPatternKind, HirSwitchStatement,
-    HirWhile, HirWrappingArithmeticOp, LocalId, SourceExternalOpId, SourceFunctionId, SourceRunId,
-    SourceStructId, ValueType,
+    HirDestructureTargetRole, HirEntityPathSegment, HirEntityQuery, HirEntityQueryStep,
+    HirExpression, HirExpressionKind, HirExternalOp, HirExternalSemantic, HirFunction, HirIf,
+    HirListI32Op, HirMinecraftOperationAttributes, HirRun, HirRunModifier, HirStatement,
+    HirStatementKind, HirStringOp, HirSwitchExpression, HirSwitchLabel, HirSwitchPatternKind,
+    HirSwitchStatement, HirWhile, HirWrappingArithmeticOp, LocalId, SourceExternalOpId,
+    SourceFunctionId, SourceRunId, SourceStructId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
 use crate::entity::EntityId;
 use crate::ir::core::{
     BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
-    CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityQueryDecl, EntityQueryStep,
-    ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder, FunctionId,
-    I32ClosedRange, I32Predicate, InstId, MinecraftOperationAttributes, MinecraftOperationOrigins,
-    Operand, ProgramError, RunModifierInstance, TargetFragment, Terminator, TerminatorKind,
-    ValueId, verify_program,
+    CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityNbtPathSegment, EntityQueryDecl,
+    EntityQueryStep, ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder,
+    FunctionId, I32ClosedRange, I32Predicate, InstId, MinecraftOperationAttributes,
+    MinecraftOperationOrigins, Operand, ProgramError, RunModifierInstance, TargetFragment,
+    Terminator, TerminatorKind, ValueId, verify_program,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -256,14 +256,6 @@ impl CoreGenerationOutput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CoreGenerationInvariant {
-    /// PS-12C (Core representation + Minecraft-side lowering for schema-typed
-    /// entity-NBT path reads) is not implemented yet — only PS-12B (grammar,
-    /// schema table, checker, HIR) has landed. Checking accepts entity-NBT
-    /// path expressions; Core generation does not yet lower them.
-    EntityNbtReadLoweringNotImplemented {
-        /// Checked external operation that cannot be lowered yet.
-        source_external: SourceExternalOpId,
-    },
     /// A source function was absent from the predeclared correlation map.
     MissingFunctionMapping {
         /// Missing source function.
@@ -424,10 +416,6 @@ impl fmt::Display for CoreGenerationInvariant {
     )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EntityNbtReadLoweringNotImplemented { source_external } => write!(
-                formatter,
-                "entity-NBT path Core lowering (PS-12C) is not implemented yet, blocking {source_external:?}"
-            ),
             Self::MissingFunctionMapping { source_function } => {
                 write!(formatter, "missing Core mapping for {source_function:?}")
             }
@@ -1110,12 +1098,37 @@ fn declare_external_operations(
     let mut external_correlations = Vec::with_capacity(checked.external_operation_count());
     for external in checked.external_ops() {
         let binding = match &external.semantic {
-            HirExternalSemantic::EntityNbtRead { .. } => {
-                return Err(CoreGenerationFailure::Invariant(
-                    CoreGenerationInvariant::EntityNbtReadLoweringNotImplemented {
+            HirExternalSemantic::EntityNbtRead {
+                receiver_kind,
+                segments,
+                result_ty,
+                receiver_origin,
+                ..
+            } => {
+                let core_segments = segments
+                    .iter()
+                    .map(|segment| match segment {
+                        HirEntityPathSegment::Key(key) => EntityNbtPathSegment::Key(key.clone()),
+                        HirEntityPathSegment::Index(index) => {
+                            EntityNbtPathSegment::Index(match index.kind {
+                                HirExpressionKind::Int32(value) => Operand::Const(value),
+                                _ => Operand::Runtime(ValueId::from_index(0)),
+                            })
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let read = program
+                    .declare_entity_nbt_read(
+                        *receiver_kind,
+                        core_segments,
+                        core_type(*result_ty),
+                        *receiver_origin,
+                    )
+                    .map_err(|error| CoreGenerationFailure::ExternalDeclaration {
                         source_external: external.id,
-                    },
-                ));
+                        error,
+                    })?;
+                ExternalSemanticBinding::EntityNbtRead(read)
             }
             HirExternalSemantic::UnsafeMinecraftCommand { command, .. } => {
                 let fragment = TargetFragment::unsafe_minecraft_command(command).map_err(|_| {
@@ -1207,15 +1220,26 @@ fn declare_external_operations(
             } => vec![CoreType::String],
             HirExternalSemantic::UnsafeMinecraftCommand { .. }
             | HirExternalSemantic::MinecraftOperation { .. } => vec![],
-            HirExternalSemantic::EntityNbtRead { .. } => unreachable!(
-                "EntityNbtRead already returned CoreGenerationFailure::Invariant above"
-            ),
+            HirExternalSemantic::EntityNbtRead { result_ty, .. } => vec![core_type(*result_ty)],
         };
         let parameters = match &external.semantic {
             HirExternalSemantic::MinecraftOperation {
                 attributes: HirMinecraftOperationAttributes::BookPageRuntime { .. },
                 ..
             } => vec![CoreType::I32],
+            HirExternalSemantic::EntityNbtRead { segments, .. } => {
+                let runtime_indices = segments
+                    .iter()
+                    .filter(|segment| {
+                        matches!(
+                            segment,
+                            HirEntityPathSegment::Index(index)
+                                if !matches!(index.kind, HirExpressionKind::Int32(_))
+                        )
+                    })
+                    .count();
+                vec![CoreType::I32; runtime_indices]
+            }
             _ => vec![],
         };
         let operation = program
@@ -1316,9 +1340,55 @@ fn verify_source_semantic_correlation(
         .flatten();
 
     match &external.semantic {
-        HirExternalSemantic::EntityNbtRead { .. } => unreachable!(
-            "EntityNbtRead never reaches Core declaration yet, so never reaches verification"
-        ),
+        HirExternalSemantic::EntityNbtRead {
+            receiver_kind,
+            segments,
+            result_ty,
+            receiver_origin,
+            ..
+        } => {
+            let ExternalSemanticBinding::EntityNbtRead(read) = declaration.binding() else {
+                return Err(invalid());
+            };
+            let read = program.entity_nbt_read(read).ok_or_else(invalid)?;
+            let segments_match = segments.len() == read.segments().len()
+                && segments
+                    .iter()
+                    .zip(read.segments())
+                    .all(|(hir, core)| match (hir, core) {
+                        (HirEntityPathSegment::Key(key), EntityNbtPathSegment::Key(core_key)) => {
+                            key.as_ref() == core_key.as_ref()
+                        }
+                        (
+                            HirEntityPathSegment::Index(index),
+                            EntityNbtPathSegment::Index(core_index),
+                        ) => match (&index.kind, core_index) {
+                            (HirExpressionKind::Int32(n), Operand::Const(core_n)) => n == core_n,
+                            (_, Operand::Runtime(_)) => true,
+                            _ => false,
+                        },
+                        _ => false,
+                    });
+            if read.receiver_kind() != *receiver_kind
+                || read.result_ty() != core_type(*result_ty)
+                || read.receiver_origin() != *receiver_origin
+                || !segments_match
+            {
+                return Err(invalid());
+            }
+            match attached.get(&core_external).map_or(&[][..], Vec::as_slice) {
+                [] if slot.is_none() => {}
+                [(function, instruction, instruction_origin)]
+                    if *instruction_origin == external.origin
+                        && slot
+                            == Some(SourceSemanticCoreOccurrence::new(
+                                core_external,
+                                *function,
+                                *instruction,
+                            )) => {}
+                _ => return Err(invalid()),
+            }
+        }
         HirExternalSemantic::UnsafeMinecraftCommand { .. } => {
             if !matches!(
                 declaration.binding(),
@@ -2364,13 +2434,33 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 let bundle = self.lower_expression(block, environment, page_index)?;
                 bundle.into_values()
             }
+            Some(HirExternalSemantic::EntityNbtRead { segments, .. }) => {
+                let mut operands = Vec::new();
+                for segment in segments {
+                    let HirEntityPathSegment::Index(index) = segment else {
+                        continue;
+                    };
+                    if matches!(index.kind, HirExpressionKind::Int32(_)) {
+                        continue;
+                    }
+                    let bundle = self.lower_expression(block, environment, index)?;
+                    operands.extend(bundle.into_values());
+                }
+                operands
+            }
             _ => vec![],
         };
         let (instruction, results) = self
             .builder
             .external_with_identity(operation, operands, origin)
             .map_err(|error| self.construction(error))?;
-        if matches!(sem, Some(HirExternalSemantic::MinecraftOperation { .. })) {
+        if matches!(
+            sem,
+            Some(
+                HirExternalSemantic::MinecraftOperation { .. }
+                    | HirExternalSemantic::EntityNbtRead { .. }
+            )
+        ) {
             self.record_semantic_operation(external, operation, instruction)?;
         }
         Ok(results)

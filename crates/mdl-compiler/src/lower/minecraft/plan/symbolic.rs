@@ -303,6 +303,7 @@ impl<'a> SymbolicChecker<'a> {
                 Ok(())
             }
             InstructionPlan::Minecraft { results, .. }
+            | InstructionPlan::EntityNbtRead { results, .. }
             | InstructionPlan::Scalar { results, .. } => {
                 self.finish_scalar_outputs(function, data, results, state, false)
             }
@@ -623,6 +624,20 @@ impl<'a> SymbolicChecker<'a> {
                         Some(function),
                         None,
                         format!("{instruction:?} has an invalid Minecraft command plan shape"),
+                        data.origin(),
+                    ));
+                }
+                for result in results {
+                    state.kill(result.home());
+                }
+                self.finish_scalar_outputs(function, data, results, state, true)
+            }
+            InstructionPlan::EntityNbtRead { results, .. } => {
+                if !matches!(data.op(), CoreOp::External(_)) || !data.operands().is_empty() {
+                    self.record(SymbolicIssue::shape(
+                        Some(function),
+                        None,
+                        format!("{instruction:?} has an invalid entity-NBT read plan shape"),
                         data.origin(),
                     ));
                 }
@@ -3574,7 +3589,8 @@ mod tests {
         match plan {
             InstructionPlan::OmittedPure
             | InstructionPlan::External { .. }
-            | InstructionPlan::Minecraft { .. } => true,
+            | InstructionPlan::Minecraft { .. }
+            | InstructionPlan::EntityNbtRead { .. } => true,
             InstructionPlan::Scalar { results, .. } => {
                 let mut valid = true;
                 for result in results.iter().copied() {
@@ -3688,7 +3704,8 @@ mod tests {
             let operand_homes: &[HomeId] = match instruction_plan {
                 InstructionPlan::OmittedPure
                 | InstructionPlan::External { .. }
-                | InstructionPlan::Minecraft { .. } => &[],
+                | InstructionPlan::Minecraft { .. }
+                | InstructionPlan::EntityNbtRead { .. } => &[],
                 InstructionPlan::Scalar { operands, .. } => operands,
                 InstructionPlan::Call { arguments, .. } => arguments,
             };

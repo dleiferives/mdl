@@ -766,13 +766,21 @@ impl<'a> PlanVerifier<'a> {
                     }
                 }
                 let is_macro_external = match data.op() {
-                    CoreOp::External(external) => self
-                        .plan
-                        .preflight()
-                        .selected_recipe(*external)
-                        .is_some_and(
-                            super::super::preflight::SelectedSemanticRecipe::is_unusable_inline,
-                        ),
+                    CoreOp::External(external) => {
+                        self.plan
+                            .preflight()
+                            .selected_recipe(*external)
+                            .is_some_and(
+                                super::super::preflight::SelectedSemanticRecipe::is_unusable_inline,
+                            )
+                            || self
+                                .plan
+                                .preflight()
+                                .selected_entity_nbt_read(*external)
+                                .is_some_and(
+                                super::super::preflight::ResolvedEntityNbtRead::is_unusable_inline,
+                            )
+                    }
                     _ => false,
                 };
                 if !matches!(data.op(), CoreOp::External(_))
@@ -831,6 +839,50 @@ impl<'a> PlanVerifier<'a> {
                         "lower.plan.minecraft-recipe",
                         format!(
                             "{function:?} {instruction:?} retains recipe {recipe:?}, but preflight selected {selected:?}"
+                        ),
+                        data.origin(),
+                    ),
+                }
+                let expected_types = self
+                    .core
+                    .external_op(*external)
+                    .map(|declaration| declaration.results().to_vec())
+                    .unwrap_or_default();
+                self.verify_results_against_types(
+                    function,
+                    instruction,
+                    data,
+                    layout,
+                    results,
+                    &expected_types,
+                );
+            }
+            InstructionPlan::EntityNbtRead { external, results } => {
+                let CoreOp::External(actual) = data.op() else {
+                    self.report(
+                        "lower.plan.instruction-kind",
+                        format!(
+                            "{function:?} {instruction:?} has an entity-NBT read plan for a non-external operation"
+                        ),
+                        data.origin(),
+                    );
+                    return;
+                };
+                if actual != external || !data.operands().is_empty() {
+                    self.report(
+                        "lower.plan.entity-nbt-read-shape",
+                        format!(
+                            "{function:?} {instruction:?} has an invalid entity-NBT read plan shape"
+                        ),
+                        data.origin(),
+                    );
+                }
+                match self.plan.preflight().selected_entity_nbt_read(*external) {
+                    Some(resolved) if !resolved.is_unusable_inline() => {}
+                    selected => self.report(
+                        "lower.plan.entity-nbt-read-selection",
+                        format!(
+                            "{function:?} {instruction:?} retains an inline entity-NBT read plan, but preflight selected {selected:?}"
                         ),
                         data.origin(),
                     ),

@@ -2,10 +2,10 @@
 
 use super::analysis::definition_block;
 use super::{
-    BlockId, CoreProgram, CoreType, Dominance, DominatorTree, EntityQueryStep, FunctionBody,
-    FunctionId, MinecraftOperationAttributes, Operand, PlacementIndex, RunModifierInstance,
-    TargetFragment, TerminatorKind, UnsafeMinecraftCommandFragment, UseIndex, UseSite, ValueDef,
-    ValueId,
+    BlockId, CoreProgram, CoreType, Dominance, DominatorTree, EntityNbtPathSegment,
+    EntityQueryStep, FunctionBody, FunctionId, MinecraftOperationAttributes, Operand,
+    PlacementIndex, RunModifierInstance, TargetFragment, TerminatorKind,
+    UnsafeMinecraftCommandFragment, UseIndex, UseSite, ValueDef, ValueId,
 };
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityId;
@@ -223,6 +223,29 @@ fn verify_linked_inventories(
                 "core.invalid-minecraft-operation",
                 format!("Minecraft operation {operation:?} is malformed"),
                 origins.call(),
+            ));
+        }
+    }
+    for (read, declaration) in program.entity_nbt_reads() {
+        if sources.origin(declaration.receiver_origin()).is_none() {
+            findings.push(Diagnostic::new(
+                "core.invalid-origin",
+                format!(
+                    "entity-NBT read {read:?} has invalid receiver origin {:?}",
+                    declaration.receiver_origin()
+                ),
+                OriginId::UNKNOWN,
+            ));
+        }
+        let keys_are_non_empty = declaration
+            .segments()
+            .iter()
+            .all(|segment| !matches!(segment, EntityNbtPathSegment::Key(key) if key.is_empty()));
+        if !declaration.is_well_formed() || !keys_are_non_empty {
+            findings.push(Diagnostic::new(
+                "core.invalid-entity-nbt-read",
+                format!("entity-NBT read {read:?} is malformed"),
+                declaration.receiver_origin(),
             ));
         }
     }

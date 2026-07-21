@@ -783,6 +783,30 @@ fn flatten_instruction_plan(
             let CoreOp::External(external) = data.op() else {
                 return Err(invalid_assignment(function));
             };
+            let flatten_results = |results: &[AssignedScalarResult]| {
+                results
+                    .iter()
+                    .copied()
+                    .map(|result| match result {
+                        AssignedScalarResult::Semantic {
+                            result_index,
+                            value,
+                            home,
+                        } => Ok(ScalarResultPlacement::Semantic {
+                            result_index,
+                            value,
+                            home: homes.assigned(function, home)?,
+                        }),
+                        AssignedScalarResult::RecipeTemporary { result_index, home } => {
+                            Ok(ScalarResultPlacement::RecipeTemporary {
+                                result_index,
+                                home: homes.assigned(function, home)?,
+                            })
+                        }
+                    })
+                    .collect::<Result<Vec<_>, PlanBuildError>>()
+                    .map(Vec::into_boxed_slice)
+            };
             if let Some(recipe) = preflight.selected_recipe(*external) {
                 if recipe.is_unusable_inline() {
                     return Ok(InstructionPlan::External {
@@ -794,39 +818,33 @@ fn flatten_instruction_plan(
                 if resources.external_helper(instruction).is_some() {
                     return Err(invalid_resources(function));
                 }
-                Ok(InstructionPlan::Minecraft {
+                return Ok(InstructionPlan::Minecraft {
                     external: *external,
                     recipe: recipe.recipe_id(),
-                    results: results
-                        .iter()
-                        .copied()
-                        .map(|result| match result {
-                            AssignedScalarResult::Semantic {
-                                result_index,
-                                value,
-                                home,
-                            } => Ok(ScalarResultPlacement::Semantic {
-                                result_index,
-                                value,
-                                home: homes.assigned(function, home)?,
-                            }),
-                            AssignedScalarResult::RecipeTemporary { result_index, home } => {
-                                Ok(ScalarResultPlacement::RecipeTemporary {
-                                    result_index,
-                                    home: homes.assigned(function, home)?,
-                                })
-                            }
-                        })
-                        .collect::<Result<Vec<_>, PlanBuildError>>()?
-                        .into_boxed_slice(),
-                })
-            } else {
-                Ok(InstructionPlan::External {
-                    helper: resources
-                        .external_helper(instruction)
-                        .ok_or_else(|| invalid_resources(function))?,
-                })
+                    results: flatten_results(results)?,
+                });
             }
+            if let Some(resolved) = preflight.selected_entity_nbt_read(*external) {
+                if resolved.is_unusable_inline() {
+                    return Ok(InstructionPlan::External {
+                        helper: resources
+                            .external_helper(instruction)
+                            .ok_or_else(|| invalid_resources(function))?,
+                    });
+                }
+                if resources.external_helper(instruction).is_some() {
+                    return Err(invalid_resources(function));
+                }
+                return Ok(InstructionPlan::EntityNbtRead {
+                    external: *external,
+                    results: flatten_results(results)?,
+                });
+            }
+            Ok(InstructionPlan::External {
+                helper: resources
+                    .external_helper(instruction)
+                    .ok_or_else(|| invalid_resources(function))?,
+            })
         }
         AssignedInstructionPlan::Scalar { operands, results } => {
             let operands = flatten_assigned_ids(function, operands, homes)?;

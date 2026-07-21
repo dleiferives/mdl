@@ -4,8 +4,8 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    CoreProgram, CoreType, ExternalOpId, FunctionReference, ProgramError, RunScopeId,
-    TargetFragmentId,
+    CoreProgram, CoreType, EntityNbtReadId, ExternalOpId, FunctionReference, ProgramError,
+    RunScopeId, TargetFragmentId,
 };
 use crate::entity::EntityLimitError;
 use crate::ir::command_line::{CommandLineShapeError, validate_command_line_shape};
@@ -119,6 +119,8 @@ pub enum ExternalSemanticBinding {
     MinecraftRunScope(RunScopeId),
     /// Invoke one program-owned normalized typed Minecraft operation.
     MinecraftOperation(super::MinecraftOperationId),
+    /// Read one program-owned schema-typed entity-NBT path.
+    EntityNbtRead(EntityNbtReadId),
 }
 
 impl ExternalSemanticBinding {
@@ -128,7 +130,9 @@ impl ExternalSemanticBinding {
     ) -> impl Iterator<Item = FunctionReference> + '_ {
         let scope = match self {
             Self::MinecraftRunScope(scope) => program.run_scope(scope),
-            Self::UnsafeTargetFragment(_) | Self::MinecraftOperation(_) => None,
+            Self::UnsafeTargetFragment(_)
+            | Self::MinecraftOperation(_)
+            | Self::EntityNbtRead(_) => None,
         };
         scope
             .into_iter()
@@ -170,6 +174,12 @@ impl ExternalSemanticBinding {
                         && semantic_runtime_types_match_core(signature.operands(), static_params)
                         && semantic_runtime_types_match_core(signature.results(), results)
                 }),
+            Self::EntityNbtRead(read) => program.entity_nbt_read(read).is_some_and(|read| {
+                read.is_well_formed()
+                    && parameters.len() == read.runtime_index_count()
+                    && parameters.iter().all(|ty| *ty == CoreType::I32)
+                    && results == [read.result_ty()]
+            }),
         }
     }
 }
@@ -290,6 +300,11 @@ impl CoreProgram {
             ExternalSemanticBinding::MinecraftOperation(operation) => {
                 if self.minecraft_operation(operation).is_none() {
                     return Err(ProgramError::InvalidMinecraftOperation);
+                }
+            }
+            ExternalSemanticBinding::EntityNbtRead(read) => {
+                if self.entity_nbt_read(read).is_none() {
+                    return Err(ProgramError::InvalidEntityNbtReadReference { read });
                 }
             }
         }

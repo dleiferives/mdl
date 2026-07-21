@@ -802,6 +802,10 @@ impl FunctionReport {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match keeps every closed instruction-plan variant's dump rendering together"
+)]
 fn dump_instruction(output: &mut String, report: &InstructionReport) {
     let instruction = report.instruction;
     match &report.plan {
@@ -821,6 +825,40 @@ fn dump_instruction(output: &mut String, report: &InstructionReport) {
             external, recipe, ..
         } => {
             dump_minecraft_instruction(output, report, *external, *recipe);
+        }
+        InstructionPlan::EntityNbtRead { external, results } => {
+            writeln!(
+                output,
+                "  instruction {} entity-nbt-read external={}",
+                instruction.index(),
+                external.index()
+            )
+            .unwrap();
+            for result in results.iter().copied() {
+                match result {
+                    ScalarResultPlacement::Semantic {
+                        result_index,
+                        value,
+                        home,
+                    } => {
+                        writeln!(
+                            output,
+                            "    result {result_index} semantic value={} home={}",
+                            value.index(),
+                            home.index()
+                        )
+                        .unwrap();
+                    }
+                    ScalarResultPlacement::RecipeTemporary { result_index, home } => {
+                        writeln!(
+                            output,
+                            "    result {result_index} recipe-temporary home={}",
+                            home.index()
+                        )
+                        .unwrap();
+                    }
+                }
+            }
         }
         InstructionPlan::Scalar { operands, results } => {
             writeln!(output, "  instruction {} scalar", instruction.index()).unwrap();

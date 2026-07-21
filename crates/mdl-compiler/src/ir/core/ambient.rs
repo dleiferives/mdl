@@ -5,8 +5,8 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    ControlFlowGraph, CoreOp, CoreProgram, ExternalOpId, ExternalSemanticBinding, FunctionId,
-    MinecraftOperationId, Reachability, RunModifierInstance, RunScopeId,
+    ControlFlowGraph, CoreOp, CoreProgram, EntityNbtReadId, ExternalOpId, ExternalSemanticBinding,
+    FunctionId, MinecraftOperationId, Reachability, RunModifierInstance, RunScopeId,
 };
 use crate::entity::EntityId;
 use crate::ir::semantic::{AmbientContextRequirements, ContextRequirement, EntityCapability};
@@ -31,6 +31,11 @@ pub enum CoreAmbientAnalysisError {
     InvalidMinecraftOperation {
         function: FunctionId,
         operation: MinecraftOperationId,
+    },
+    /// An external binding names an entity-NBT path read outside this program.
+    InvalidEntityNbtRead {
+        function: FunctionId,
+        read: EntityNbtReadId,
     },
     /// An external binding names a malformed or absent run scope.
     InvalidRunScope {
@@ -71,6 +76,10 @@ impl fmt::Display for CoreAmbientAnalysisError {
             } => write!(
                 formatter,
                 "Core function {function:?} references invalid Minecraft operation {operation:?}"
+            ),
+            Self::InvalidEntityNbtRead { function, read } => write!(
+                formatter,
+                "Core function {function:?} references invalid entity-NBT read {read:?}"
             ),
             Self::InvalidRunScope { function, scope } => write!(
                 formatter,
@@ -308,6 +317,17 @@ fn include_operation(
                         callee: checked_callee(program, equation.function, declaration.callee())?,
                         transfer: DependencyTransfer::RunScope(scope),
                     });
+                }
+                ExternalSemanticBinding::EntityNbtRead(read) => {
+                    let declaration = program.entity_nbt_read(read).ok_or(
+                        CoreAmbientAnalysisError::InvalidEntityNbtRead {
+                            function: equation.function,
+                            read,
+                        },
+                    )?;
+                    let requirement = AmbientContextRequirements::NONE
+                        .with_executor(ContextRequirement::Required(declaration.receiver_kind()));
+                    equation.direct = equation.direct.join(requirement);
                 }
             }
         }

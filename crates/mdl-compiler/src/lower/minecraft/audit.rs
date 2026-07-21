@@ -358,6 +358,17 @@ fn audit_external_operation(
                 ));
             }
         }
+        ExternalSemanticBinding::EntityNbtRead(read) => {
+            if core.entity_nbt_read(read).is_none() {
+                output.findings.push(Diagnostic::new(
+                    "lower.invalid-entity-nbt-read",
+                    format!(
+                        "external operation {operation:?} refers to an absent entity-NBT path read"
+                    ),
+                    origin,
+                ));
+            }
+        }
     }
 }
 

@@ -1,13 +1,14 @@
 use crate::diagnostic::Diagnostics;
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
 use crate::ir::core::{
-    BlockId, CoreOp, CoreProgram, ExternalSemanticBinding, FunctionId, InstData, InstId,
-    TargetFragment, TerminatorKind, ValueId,
+    BlockId, CoreOp, CoreProgram, CoreType, ExternalSemanticBinding, FunctionId, InstData, InstId,
+    Operand, TargetFragment, TerminatorKind, ValueId,
 };
 use crate::ir::minecraft::{
-    CommandId, CommandKind, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
-    ExecuteModifier, ExecuteModifiers, FunctionCall, InternalCallableRef, McFunctionId,
-    MinecraftProgram, NbtValue, Selector, UnsafeRawCommand,
+    AtMostOneSelector, CommandId, CommandKind, DataCommand, DataModifyMode, DataSource,
+    ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FunctionCall,
+    InternalCallableRef, McFunctionId, MinecraftProgram, NbtPath, NbtPathKey, NbtPathSegment,
+    NbtValue, Selector, StoreChannel, StoreDestination, SyntaxSlot, UnsafeRawCommand,
 };
 use crate::source::OriginId;
 
@@ -324,6 +325,22 @@ fn lower_instruction(
                     super::crossings::push_macro_call(context, target, args, data.origin())?;
                     return Ok(None);
                 }
+            } else if let Some(resolved) = plan.preflight().selected_entity_nbt_read(*external) {
+                if resolved.is_unusable_inline() {
+                    let args = super::crossings::seed_macro_frame(context, data.origin())?;
+                    let operands = entity_nbt_runtime_operands(resolved);
+                    if let Some(frame) = super::crossings::build_frame(&operands) {
+                        super::crossings::emit_bridges(
+                            context,
+                            plan,
+                            function,
+                            &frame,
+                            data.origin(),
+                        )?;
+                    }
+                    super::crossings::push_macro_call(context, target, args, data.origin())?;
+                    return Ok(None);
+                }
             }
             context.push(command(
                 CommandKind::Function(FunctionCall::new(
@@ -404,6 +421,41 @@ fn lower_instruction(
                     .push_correlated(command(selected.command_kind(), data.origin())?)
                     .map(Some)
             }
+        }
+        InstructionPlan::EntityNbtRead { external, results } => {
+            let CoreOp::External(actual) = data.op() else {
+                return Err(invariant_diagnostics(
+                    "non-external instruction has an entity-NBT read physical plan",
+                    data.origin(),
+                ));
+            };
+            if actual != external {
+                return Err(invariant_diagnostics(
+                    "entity-NBT read plan names the wrong external declaration",
+                    data.origin(),
+                ));
+            }
+            let resolved = plan
+                .preflight()
+                .selected_entity_nbt_read(*external)
+                .ok_or_else(|| {
+                    invariant_diagnostics(
+                        "entity-NBT read plan has no retained preflight resolution",
+                        data.origin(),
+                    )
+                })?;
+            let [result] = results.as_ref() else {
+                return Err(invariant_diagnostics(
+                    "entity-NBT read requires exactly one result home",
+                    data.origin(),
+                ));
+            };
+            let path = entity_nbt_path_from_segments(resolved.segments(), data.origin())?;
+            let read_source = DataSource::Entity {
+                selector: Selector::from(AtMostOneSelector::SelfExecutor),
+                path,
+            };
+            emit_entity_nbt_read_result(context, result.home(), read_source, data.origin())
         }
         InstructionPlan::Scalar { operands, results } => {
             if matches!(data.op(), CoreOp::Call(_)) {
@@ -500,6 +552,10 @@ fn define_external_helpers(
     clippy::too_many_arguments,
     reason = "each argument is a disjoint piece of the construction/plan context the closed binding vocabulary needs"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match keeps every closed external-binding helper construction together"
+)]
 fn define_external_helper(
     target: &mut TargetConstruction,
     core: &CoreProgram,
@@ -557,6 +613,69 @@ fn define_external_helper(
             let body = command(CommandKind::Macro(macro_cmd), data.origin())?;
             target.define_external_helper(helper, body)
         }
+        ExternalSemanticBinding::EntityNbtRead(_) => {
+            let resolved = plan
+                .preflight()
+                .selected_entity_nbt_read(operation)
+                .ok_or_else(|| {
+                    invariant_diagnostics(
+                        "entity-NBT read helper has no retained preflight resolution",
+                        data.origin(),
+                    )
+                })?;
+            if !resolved.is_unusable_inline() {
+                return Err(invariant_diagnostics(
+                    "all-constant entity-NBT read incorrectly received an external helper",
+                    data.origin(),
+                ));
+            }
+            let [result] = data.results() else {
+                return Err(invariant_diagnostics(
+                    "macro-routed entity-NBT read requires exactly one result",
+                    data.origin(),
+                ));
+            };
+            let home = plan.value_home(function, *result).ok_or_else(|| {
+                invariant_diagnostics(
+                    "macro-routed entity-NBT read result has no planned home",
+                    data.origin(),
+                )
+            })?;
+            // Every schema field reachable through a runtime list index today
+            // is `String` (`pages[index].raw` — no `Bool`/`I32` field sits
+            // behind a `List` step). If a future schema field changes that,
+            // this needs the same scratch/score conversion
+            // `emit_entity_nbt_read_result`'s inline path already has;
+            // assert the constraint here instead of silently mis-rendering.
+            if plan.home_type(home) != Some(CoreType::String) {
+                return Err(invariant_diagnostics(
+                    "macro-routed entity-NBT read result is not a String home; \
+                     runtime-index-reachable non-String fields are not supported yet",
+                    data.origin(),
+                ));
+            }
+            let result_target = plan.string_storage(home).ok_or_else(|| {
+                invariant_diagnostics(
+                    "macro-routed entity-NBT read result has no string storage",
+                    data.origin(),
+                )
+            })?;
+            let read_path = entity_nbt_path_from_segments(resolved.segments(), data.origin())?;
+            let base_cmd = CommandKind::Data(DataCommand::Modify {
+                target: result_target,
+                mode: DataModifyMode::Set,
+                source: DataSource::Entity {
+                    selector: Selector::from(AtMostOneSelector::SelfExecutor),
+                    path: read_path,
+                },
+            });
+            let operands = super::crossings::collect_runtime_operands(&base_cmd);
+            let frame = super::crossings::build_frame(&operands)
+                .expect("unusable-inline entity-NBT read must have runtime operands");
+            let macro_cmd = super::crossings::render_as_macro(&base_cmd, &frame, data.origin());
+            let body = command(CommandKind::Macro(macro_cmd), data.origin())?;
+            target.define_external_helper(helper, body)
+        }
     }
 }
 
@@ -599,6 +718,150 @@ fn retarget_to_result_home(
         mode,
         source,
     }))
+}
+
+/// Extracts the runtime operands of a macro-routed entity-NBT read directly
+/// from its resolved segments — the caller-side mirror of
+/// `crossings::collect_runtime_operands`, which instead walks a constructed
+/// `CommandKind`. There is no base command to walk yet at the call site (only
+/// the helper body, built separately in `define_external_helper`, has one),
+/// so this reads the same information straight from `ResolvedEntityNbtRead`.
+fn entity_nbt_runtime_operands(
+    resolved: &super::preflight::ResolvedEntityNbtRead,
+) -> Vec<super::crossings::RuntimeOperand> {
+    resolved
+        .segments()
+        .iter()
+        .filter_map(|segment| match segment {
+            super::preflight::ResolvedEntityNbtSegment::Index(Operand::Runtime(value_id)) => {
+                Some(super::crossings::RuntimeOperand {
+                    value_id: *value_id,
+                    slot: SyntaxSlot::NbtIndex,
+                })
+            }
+            super::preflight::ResolvedEntityNbtSegment::Key(_)
+            | super::preflight::ResolvedEntityNbtSegment::Index(Operand::Const(_)) => None,
+        })
+        .collect()
+}
+
+/// Builds the real `NbtPath` from a fully resolved (no more `Operand::Runtime`
+/// placeholders) entity-NBT read's segments. Shared by both the inline
+/// (all-`Const`, `emit_entity_nbt_read_result`) and macro-helper
+/// (≥1 `Runtime`, `define_external_helper`) routes — `NbtPathSegment::Index`
+/// already natively carries `Operand<i32>`, so there is nothing route-specific
+/// to decide here; which route a read takes was already fixed at plan time.
+pub(crate) fn entity_nbt_path_from_segments(
+    segments: &[super::preflight::ResolvedEntityNbtSegment],
+    origin: OriginId,
+) -> Result<NbtPath, Diagnostics> {
+    use super::preflight::ResolvedEntityNbtSegment;
+
+    let mut iter = segments.iter();
+    let Some(ResolvedEntityNbtSegment::Key(first_key)) = iter.next() else {
+        return Err(invariant_diagnostics(
+            "entity-NBT read path is empty or does not start with a key",
+            origin,
+        ));
+    };
+    let root = NbtPathKey::new(first_key).map_err(|_| {
+        invariant_diagnostics("entity-NBT read path has an invalid root key", origin)
+    })?;
+    let mut rest = Vec::with_capacity(segments.len().saturating_sub(1));
+    for segment in iter {
+        let core_segment = match segment {
+            ResolvedEntityNbtSegment::Key(key) => {
+                NbtPathSegment::Key(NbtPathKey::new(key).map_err(|_| {
+                    invariant_diagnostics("entity-NBT read path has an invalid key", origin)
+                })?)
+            }
+            ResolvedEntityNbtSegment::Index(operand) => NbtPathSegment::Index(*operand),
+        };
+        rest.push(core_segment);
+    }
+    Ok(NbtPath::new(NbtPathSegment::Key(root), rest))
+}
+
+/// Emits the fail-soft two-command read (type-appropriate default, then
+/// attempt) for one entity-NBT read result, generalizing the retired
+/// `BookPage` static arm's exact shape to any schema scalar type. `String`
+/// results write directly to their NBT string home; `Bool`/`I32` results
+/// (score-based homes, per PS-11's representation-selection: Minecraft
+/// scoreboards only hold integers) go through a shared scratch NBT slot and
+/// an `execute store result score … run data get storage …` conversion,
+/// since `data get` has no entity-source form in this IR yet.
+fn emit_entity_nbt_read_result(
+    context: &mut FunctionLoweringCx<'_, '_>,
+    home: HomeId,
+    read_source: DataSource,
+    origin: OriginId,
+) -> Result<Option<CommandId>, Diagnostics> {
+    match context.plan().home_type(home) {
+        Some(CoreType::String) => {
+            let target = context.plan().string_storage(home).ok_or_else(|| {
+                invariant_diagnostics("entity-NBT string result has no string storage", origin)
+            })?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: target.clone(),
+                    mode: DataModifyMode::Set,
+                    source: DataSource::Value(NbtValue::string("")),
+                }),
+                origin,
+            )?)?;
+            let read = CommandKind::Data(DataCommand::Modify {
+                target,
+                mode: DataModifyMode::Set,
+                source: read_source,
+            });
+            context.push_correlated(command(read, origin)?).map(Some)
+        }
+        Some(ty @ (CoreType::Bool | CoreType::I32)) => {
+            let score = context.score(home)?;
+            let scratch = context.plan().entity_nbt_scalar_scratch();
+            let default = if ty == CoreType::Bool {
+                NbtValue::byte(0)
+            } else {
+                NbtValue::int(0)
+            };
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: scratch.clone(),
+                    mode: DataModifyMode::Set,
+                    source: DataSource::Value(default),
+                }),
+                origin,
+            )?)?;
+            context.push(command(
+                CommandKind::Data(DataCommand::Modify {
+                    target: scratch.clone(),
+                    mode: DataModifyMode::Set,
+                    source: read_source,
+                }),
+                origin,
+            )?)?;
+            let store_mod = ExecuteModifier::new(
+                ExecuteModifierKind::Store(StoreChannel::Result, StoreDestination::Score(score)),
+                origin,
+            );
+            let get_cmd = command(
+                CommandKind::Data(DataCommand::Get {
+                    source: scratch,
+                    scale: None,
+                }),
+                origin,
+            )?;
+            let execute = CommandKind::Execute(ExecuteCommand::new(
+                ExecuteModifiers::new(store_mod, vec![]),
+                get_cmd,
+            ));
+            context.push_correlated(command(execute, origin)?).map(Some)
+        }
+        Some(CoreType::ListI32) | None => Err(invariant_diagnostics(
+            "entity-NBT read result has an unsupported physical type",
+            origin,
+        )),
+    }
 }
 
 fn define_run_scope_helper(

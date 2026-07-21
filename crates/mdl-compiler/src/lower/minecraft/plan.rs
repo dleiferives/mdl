@@ -192,6 +192,14 @@ pub(crate) enum InstructionPlan {
         /// Demanded runtime results written by the selected recipe.
         results: Box<[ScalarResultPlacement]>,
     },
+    /// One all-constant entity-NBT path read emitted in place — no recipe:
+    /// there is no fixed shape to select among for a schema-driven path.
+    EntityNbtRead {
+        /// Core external declaration whose entity-NBT read was resolved.
+        external: ExternalOpId,
+        /// Demanded runtime results written by the read.
+        results: Box<[ScalarResultPlacement]>,
+    },
     Scalar {
         operands: Box<[HomeId]>,
         results: Box<[ScalarResultPlacement]>,
@@ -542,6 +550,23 @@ impl LoweringPlan {
             crate::ir::minecraft::NbtPath::new(
                 crate::ir::minecraft::NbtPathSegment::Key(
                     crate::ir::minecraft::NbtPathKey::new("string_unit_scratch")
+                        .expect("generated scratch key is valid"),
+                ),
+                vec![],
+            ),
+        )
+    }
+
+    /// Shared scratch NBT slot used to bridge an entity-NBT `Bool`/`I32` read
+    /// into its scoreboard-based result home (`data get` has no entity-source
+    /// form in this IR yet, so the read lands here first, then converts via
+    /// `execute store result score … run data get storage …`).
+    pub(crate) fn entity_nbt_scalar_scratch(&self) -> StoragePath {
+        StoragePath::new(
+            self.activation_frames().storage().clone(),
+            crate::ir::minecraft::NbtPath::new(
+                crate::ir::minecraft::NbtPathSegment::Key(
+                    crate::ir::minecraft::NbtPathKey::new("entity_nbt_scalar_scratch")
                         .expect("generated scratch key is valid"),
                 ),
                 vec![],

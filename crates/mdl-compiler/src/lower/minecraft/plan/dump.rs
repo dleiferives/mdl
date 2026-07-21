@@ -186,6 +186,35 @@ fn dump_instruction(output: &mut String, instruction: usize, plan: &InstructionP
                 }
             }
         }
+        InstructionPlan::EntityNbtRead { external, results } => {
+            writeln!(
+                output,
+                "  instruction {instruction} entity-nbt-read external={}",
+                external.index(),
+            )
+            .unwrap();
+            for result in results {
+                match *result {
+                    ScalarResultPlacement::Semantic {
+                        result_index,
+                        value,
+                        home,
+                    } => writeln!(
+                        output,
+                        "    result {result_index} semantic value={} home={}",
+                        value.index(),
+                        home.index(),
+                    )
+                    .unwrap(),
+                    ScalarResultPlacement::RecipeTemporary { result_index, home } => writeln!(
+                        output,
+                        "    result {result_index} recipe-temporary home={}",
+                        home.index(),
+                    )
+                    .unwrap(),
+                }
+            }
+        }
         InstructionPlan::Scalar { operands, results } => {
             writeln!(output, "  instruction {instruction} scalar").unwrap();
             for (operand_index, home) in operands.iter().enumerate() {

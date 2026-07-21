@@ -9,6 +9,7 @@ mod ambient;
 mod analysis;
 mod builder;
 mod edit;
+mod entity_nbt;
 mod eval;
 mod external;
 mod minecraft;
@@ -33,6 +34,7 @@ pub use edit::{EditError, FunctionEditor, ValueReplacement};
 pub(crate) use edit::{
     JumpFusionApplicationStatistics, JumpFusionFactStatistics, JumpFusionPreparation,
 };
+pub use entity_nbt::{EntityNbtPathSegment, EntityNbtReadDecl};
 pub use eval::{
     CoreCallEvent, CoreEvaluation, CoreEvaluationError, CoreEvaluationLimits, CoreEvaluator,
     CoreValue,
@@ -77,6 +79,10 @@ entity_id!(
 entity_id!(
     /// Identity of one program-owned typed Minecraft operation.
     pub struct MinecraftOperationId;
+);
+entity_id!(
+    /// Identity of one program-owned schema-typed entity-NBT path read.
+    pub struct EntityNbtReadId;
 );
 entity_id!(
     /// Identity of a block within one Core function body.
@@ -731,6 +737,7 @@ pub struct CoreProgram {
     pub(crate) entity_queries: EntityVec<EntityQueryId, EntityQueryDecl>,
     pub(crate) run_scopes: EntityVec<RunScopeId, RunScopeDecl>,
     pub(crate) minecraft_operations: EntityVec<MinecraftOperationId, MinecraftOperationDecl>,
+    pub(crate) entity_nbt_reads: EntityVec<EntityNbtReadId, EntityNbtReadDecl>,
 }
 
 impl CoreProgram {
@@ -744,6 +751,7 @@ impl CoreProgram {
             entity_queries: EntityVec::new(),
             run_scopes: EntityVec::new(),
             minecraft_operations: EntityVec::new(),
+            entity_nbt_reads: EntityVec::new(),
         }
     }
 
@@ -908,6 +916,13 @@ pub enum ProgramError {
     },
     /// A typed Minecraft operation has an invalid key, receiver, or attributes.
     InvalidMinecraftOperation,
+    /// An entity-NBT path read has an empty path or an incapable receiver kind.
+    InvalidEntityNbtRead,
+    /// An external binding names an entity-NBT path read outside this program.
+    InvalidEntityNbtReadReference {
+        /// Invalid entity-NBT read identity.
+        read: EntityNbtReadId,
+    },
     /// A closed external binding was paired with an unsupported typed signature.
     InvalidExternalSignature {
         /// Binding whose closed contract was violated.
@@ -945,6 +960,10 @@ impl fmt::Display for ProgramError {
             }
             Self::InvalidMinecraftOperation => {
                 formatter.write_str("invalid typed Minecraft operation")
+            }
+            Self::InvalidEntityNbtRead => formatter.write_str("invalid entity-NBT path read"),
+            Self::InvalidEntityNbtReadReference { read } => {
+                write!(formatter, "invalid entity-NBT path read {read:?}")
             }
             Self::InvalidExternalSignature { binding } => {
                 write!(

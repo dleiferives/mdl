@@ -575,6 +575,29 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             },
         }
     }
+    for (read, data) in program.entity_nbt_reads() {
+        let _ = write!(
+            output,
+            "entity_nbt_read @nbt{} receiver={} result={} path=",
+            read.index(),
+            data.receiver_kind(),
+            data.result_ty()
+        );
+        for segment in data.segments() {
+            match segment {
+                super::EntityNbtPathSegment::Key(key) => {
+                    let _ = write!(output, ".{key}");
+                }
+                super::EntityNbtPathSegment::Index(Operand::Const(n)) => {
+                    let _ = write!(output, "[{n}]");
+                }
+                super::EntityNbtPathSegment::Index(Operand::Runtime(v)) => {
+                    let _ = write!(output, "[@{}]", v.index());
+                }
+            }
+        }
+        let _ = writeln!(output);
+    }
     for (operation, declaration) in program.external_ops() {
         let _ = write!(output, "external @ext{} ", operation.index());
         match declaration.binding() {
@@ -586,6 +609,9 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             }
             ExternalSemanticBinding::MinecraftOperation(semantic) => {
                 let _ = write!(output, "minecraft.operation @mc{}", semantic.index());
+            }
+            ExternalSemanticBinding::EntityNbtRead(read) => {
+                let _ = write!(output, "minecraft.entity_nbt_read @nbt{}", read.index());
             }
         }
         output.push_str(" : (");

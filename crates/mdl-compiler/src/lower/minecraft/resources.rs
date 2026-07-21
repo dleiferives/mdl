@@ -875,10 +875,13 @@ fn external_requires_helper(operation: &CoreOp, preflight: Option<&TargetPreflig
         return false;
     };
     preflight.is_none_or(|preflight| {
-        let Some(recipe) = preflight.selected_recipe(*external) else {
-            return true;
-        };
-        recipe.is_unusable_inline()
+        if let Some(recipe) = preflight.selected_recipe(*external) {
+            return recipe.is_unusable_inline();
+        }
+        if let Some(resolved) = preflight.selected_entity_nbt_read(*external) {
+            return resolved.is_unusable_inline();
+        }
+        true
     })
 }
 

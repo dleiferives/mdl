@@ -65,6 +65,10 @@ pub(crate) fn verify_constructed_control_recipes(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive per-plan-kind dispatch keeps every closed construction correlation check together"
+)]
 fn reconcile_semantic_commands(
     core: &CoreProgram,
     plan: &LoweringPlan,
@@ -82,20 +86,16 @@ fn reconcile_semantic_commands(
             for instruction in block_data.instructions().iter().copied() {
                 let planned = plan.instruction_plan(function, instruction);
                 let location = construction.location(function, instruction);
-                let expects_direct_command =
-                    matches!(planned, Some(InstructionPlan::Minecraft { .. }));
+                let expects_direct_command = matches!(
+                    planned,
+                    Some(InstructionPlan::Minecraft { .. } | InstructionPlan::EntityNbtRead { .. })
+                );
                 if expects_direct_command != location.is_some() {
                     return Err(recipe_mismatch(format!(
                         "post-construction command correlation disagrees for {function:?} {instruction:?}"
                     )));
                 }
-                let (
-                    Some(InstructionPlan::Minecraft {
-                        external, recipe, ..
-                    }),
-                    Some(location),
-                ) = (planned, location)
-                else {
+                let (Some(planned), Some(location)) = (planned, location) else {
                     continue;
                 };
                 let expected_function = plan
@@ -114,33 +114,231 @@ fn reconcile_semantic_commands(
                 let data = body.instruction(instruction).ok_or_else(|| {
                     recipe_mismatch("direct semantic command lost its Core instruction")
                 })?;
-                if !matches!(data.op(), CoreOp::External(actual) if actual == external) {
-                    return Err(recipe_mismatch(
-                        "direct semantic command no longer names its planned external declaration",
-                    ));
+                match planned {
+                    InstructionPlan::Minecraft {
+                        external, recipe, ..
+                    } => {
+                        if !matches!(data.op(), CoreOp::External(actual) if actual == external) {
+                            return Err(recipe_mismatch(
+                                "direct semantic command no longer names its planned external declaration",
+                            ));
+                        }
+                        let selected =
+                            plan.selected_semantic_recipe(*external).ok_or_else(|| {
+                                recipe_mismatch(
+                                    "direct semantic command lost its selected preflight recipe",
+                                )
+                            })?;
+                        if selected.recipe_id() != *recipe {
+                            return Err(recipe_mismatch(
+                                "direct semantic command recipe differs from retained preflight",
+                            ));
+                        }
+                        let command = program
+                            .function(location.function())
+                            .and_then(|function| function.body().command(location.command()))
+                            .ok_or_else(|| {
+                                recipe_mismatch("correlated target command does not exist")
+                            })?;
+                        if command.origin() != data.origin() {
+                            return Err(recipe_mismatch(
+                                "direct semantic command lost its exact occurrence origin",
+                            ));
+                        }
+                        reconcile_selected_semantic_command(
+                            core, selected, program, location, command,
+                        )?;
+                    }
+                    InstructionPlan::EntityNbtRead { external, .. } => {
+                        if !matches!(data.op(), CoreOp::External(actual) if actual == external) {
+                            return Err(recipe_mismatch(
+                                "entity-NBT read command no longer names its planned external declaration",
+                            ));
+                        }
+                        let resolved =
+                            plan.preflight().selected_entity_nbt_read(*external).ok_or_else(|| {
+                                recipe_mismatch(
+                                    "entity-NBT read command lost its selected preflight resolution",
+                                )
+                            })?;
+                        if resolved.is_unusable_inline() {
+                            return Err(recipe_mismatch(
+                                "inline entity-NBT read command retains a runtime index segment",
+                            ));
+                        }
+                        let command = program
+                            .function(location.function())
+                            .and_then(|function| function.body().command(location.command()))
+                            .ok_or_else(|| {
+                                recipe_mismatch("correlated target command does not exist")
+                            })?;
+                        if command.origin() != data.origin() {
+                            return Err(recipe_mismatch(
+                                "entity-NBT read command lost its exact occurrence origin",
+                            ));
+                        }
+                        reconcile_entity_nbt_read_command(
+                            plan, program, resolved, location, command,
+                        )?;
+                    }
+                    InstructionPlan::OmittedPure
+                    | InstructionPlan::Scalar { .. }
+                    | InstructionPlan::Call { .. }
+                    | InstructionPlan::External { .. } => {}
                 }
-                let selected = plan.selected_semantic_recipe(*external).ok_or_else(|| {
-                    recipe_mismatch("direct semantic command lost its selected preflight recipe")
-                })?;
-                if selected.recipe_id() != *recipe {
-                    return Err(recipe_mismatch(
-                        "direct semantic command recipe differs from retained preflight",
-                    ));
-                }
-                let command = program
-                    .function(location.function())
-                    .and_then(|function| function.body().command(location.command()))
-                    .ok_or_else(|| recipe_mismatch("correlated target command does not exist"))?;
-                if command.origin() != data.origin() {
-                    return Err(recipe_mismatch(
-                        "direct semantic command lost its exact occurrence origin",
-                    ));
-                }
-                reconcile_selected_semantic_command(core, selected, program, location, command)?;
             }
         }
     }
     Ok(())
+}
+
+/// Verifies one constructed inline entity-NBT read against its resolved
+/// segments. Two shapes are legal, matching `emit_entity_nbt_read_result`'s
+/// two branches:
+/// - `String` results: one `data modify <home> set from entity …` command,
+///   immediately preceded by an empty-string initialization of the same home
+///   (generalizes the retired `BookPage` reconciliation's exact shape).
+/// - `Bool`/`I32` results: `execute store result score … run data get
+///   storage <scratch>`, preceded by two commands writing the read (or its
+///   type-appropriate default on failure) into the shared scratch slot —
+///   `data get` has no entity-source form in this IR yet, so the read lands
+///   in NBT storage first and converts to a score last.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match keeps both legal constructed shapes and their fallback checks together"
+)]
+fn reconcile_entity_nbt_read_command(
+    plan: &LoweringPlan,
+    program: &MinecraftProgram,
+    resolved: &super::super::preflight::ResolvedEntityNbtRead,
+    location: crate::lower::minecraft::emit::ConstructedCommandLocation,
+    command: &crate::ir::minecraft::CommandNode,
+) -> Result<(), Diagnostics> {
+    let expected_path =
+        super::super::emit::entity_nbt_path_from_segments(resolved.segments(), command.origin())?;
+    let self_executor =
+        crate::ir::minecraft::Selector::from(crate::ir::minecraft::AtMostOneSelector::SelfExecutor);
+    match command.kind() {
+        CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
+            target: read_target,
+            mode: crate::ir::minecraft::DataModifyMode::Set,
+            source: crate::ir::minecraft::DataSource::Entity { selector, path },
+        }) => {
+            if selector != &self_executor {
+                return Err(recipe_mismatch(
+                    "entity-NBT read command selector differs from the current executor",
+                ));
+            }
+            if path != &expected_path {
+                return Err(recipe_mismatch(
+                    "entity-NBT read command path differs from its resolved segments",
+                ));
+            }
+            let fallback = preceding_command(program, location, 1)?;
+            if fallback.origin() != command.origin() {
+                return Err(recipe_mismatch(
+                    "entity-NBT read empty initialization lost its occurrence origin",
+                ));
+            }
+            match fallback.kind() {
+                CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
+                    target,
+                    mode: crate::ir::minecraft::DataModifyMode::Set,
+                    source: crate::ir::minecraft::DataSource::Value(value),
+                }) if target == read_target
+                    && value == &crate::ir::minecraft::NbtValue::string("") => {}
+                _ => {
+                    return Err(recipe_mismatch(
+                        "entity-NBT read is not preceded by an empty-string initialization of its result home",
+                    ));
+                }
+            }
+            Ok(())
+        }
+        CommandKind::Execute(execute) => {
+            let [modifier] = execute.modifiers().as_slice() else {
+                return Err(recipe_mismatch(
+                    "entity-NBT scalar read has an unexpected modifier chain",
+                ));
+            };
+            if !matches!(
+                modifier.kind(),
+                crate::ir::minecraft::ExecuteModifierKind::Store(
+                    crate::ir::minecraft::StoreChannel::Result,
+                    crate::ir::minecraft::StoreDestination::Score(_),
+                )
+            ) {
+                return Err(recipe_mismatch(
+                    "entity-NBT scalar read does not store its result into a score",
+                ));
+            }
+            let CommandKind::Data(crate::ir::minecraft::DataCommand::Get { source, .. }) =
+                execute.run().kind()
+            else {
+                return Err(recipe_mismatch(
+                    "entity-NBT scalar read does not convert from a storage read",
+                ));
+            };
+            let scratch = plan.entity_nbt_scalar_scratch();
+            if source != &scratch {
+                return Err(recipe_mismatch(
+                    "entity-NBT scalar read converts from an unexpected storage location",
+                ));
+            }
+            let read_attempt = preceding_command(program, location, 1)?;
+            let CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
+                target,
+                mode: crate::ir::minecraft::DataModifyMode::Set,
+                source: crate::ir::minecraft::DataSource::Entity { selector, path },
+            }) = read_attempt.kind()
+            else {
+                return Err(recipe_mismatch(
+                    "entity-NBT scalar read is not preceded by an entity read into the scratch slot",
+                ));
+            };
+            if target != &scratch || selector != &self_executor || path != &expected_path {
+                return Err(recipe_mismatch(
+                    "entity-NBT scalar read attempt differs from its resolved segments",
+                ));
+            }
+            let fallback = preceding_command(program, location, 2)?;
+            match fallback.kind() {
+                CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
+                    target,
+                    mode: crate::ir::minecraft::DataModifyMode::Set,
+                    source: crate::ir::minecraft::DataSource::Value(value),
+                }) if target == &scratch
+                    && (value == &crate::ir::minecraft::NbtValue::byte(0)
+                        || value == &crate::ir::minecraft::NbtValue::int(0)) => {}
+                _ => {
+                    return Err(recipe_mismatch(
+                        "entity-NBT scalar read is not preceded by a default initialization of its scratch slot",
+                    ));
+                }
+            }
+            Ok(())
+        }
+        _ => Err(recipe_mismatch(
+            "entity-NBT read command has an unexpected shape",
+        )),
+    }
+}
+
+fn preceding_command(
+    program: &MinecraftProgram,
+    location: crate::lower::minecraft::emit::ConstructedCommandLocation,
+    steps_back: u32,
+) -> Result<&crate::ir::minecraft::CommandNode, Diagnostics> {
+    let index = location
+        .command()
+        .index()
+        .checked_sub(steps_back)
+        .ok_or_else(|| recipe_mismatch("entity-NBT read has no preceding command"))?;
+    let id = crate::ir::minecraft::CommandId::from_index(index);
+    program
+        .function(location.function())
+        .and_then(|function| function.body().command(id))
+        .ok_or_else(|| recipe_mismatch("entity-NBT read's preceding command does not exist"))
 }
 
 fn reconcile_selected_semantic_command(

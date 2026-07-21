@@ -25,10 +25,8 @@ pub struct Executor {
     scheduled: Vec<PendingSchedule>,
     /// All log output produced so far.
     pub log: Vec<String>,
-    /// Root path to the sandbox/world directory.
     root: PathBuf,
-    /// Next entity ID for summon.
-    next_entity_id: u64,
+    pub current_dimension: String,
 }
 
 #[derive(Clone, Debug)]
@@ -68,7 +66,7 @@ impl Executor {
             scheduled: Vec::new(),
             log: Vec::new(),
             root,
-            next_entity_id: 1,
+            current_dimension: "minecraft:overworld".to_owned(),
         }
     }
 
@@ -316,9 +314,18 @@ impl Executor {
             ParsedCommand::Summon(sc) => self.execute_summon(sc),
             ParsedCommand::Forceload(_) => CommandOutcome::success(0, vec![]),
             ParsedCommand::Setblock(cmd) => {
-                self.world.blocks.set(cmd.x, cmd.y, cmd.z, "minecraft:overworld", &cmd.block);
+                self.world.blocks.set(cmd.x, cmd.y, cmd.z, &self.current_dimension, &cmd.block);
                 CommandOutcome::success(0, vec![])
             }
+            ParsedCommand::Kill(_)
+            | ParsedCommand::Tag(_)
+            | ParsedCommand::Tellraw(_)
+            | ParsedCommand::Title(_)
+            | ParsedCommand::Playsound
+            | ParsedCommand::Rotate(_)
+            | ParsedCommand::Item(_)
+            | ParsedCommand::Advancement(_) => CommandOutcome::success(0, vec![]),
+            ParsedCommand::Loot(_) => CommandOutcome::success(1, vec![]),
             ParsedCommand::Reload => {
                 let _ = self.load_datapacks();
                 CommandOutcome::success(0, vec!["[Server thread/INFO]: Reloading ResourcePackManager".to_owned()])
@@ -446,7 +453,7 @@ impl Executor {
     }
 
     fn execute_entity_data_get(&self, selector: &str, path: &str, scale: Option<f64>) -> CommandOutcome {
-        let ids = self.world.entities.resolve_selector(selector);
+        let ids = self.world.entities.resolve_selector(selector, &self.world.scoreboard);
         let Some(entity) = ids.first().and_then(|id| self.world.entities.get(*id)) else {
             return CommandOutcome::failure(vec![]);
         };
@@ -539,7 +546,7 @@ impl Executor {
                     if selector == "@s" {
                         // keep current executor
                     } else {
-                        let ids = self.world.entities.resolve_selector(selector);
+                        let ids = self.world.entities.resolve_selector(selector, &self.world.scoreboard);
                         if ids.is_empty() { skip = true; continue; }
                         ctx.executor = Some(ids[0]);
                         ctx.entity_ids = ids;
@@ -558,7 +565,7 @@ impl Executor {
                             }
                         }
                     } else {
-                        let ids = self.world.entities.resolve_selector(selector);
+                        let ids = self.world.entities.resolve_selector(selector, &self.world.scoreboard);
                         if let Some(id) = ids.first() {
                             if let Some(e) = self.world.entities.get(*id) {
                                 ctx.x = e.x;
@@ -683,7 +690,7 @@ impl Executor {
     ) -> CommandOutcome {
         // If the entry is a tag reference (starts with #), dispatch through tag logic.
         if let Some(tag_name) = name.strip_prefix('#') {
-            let fc = crate::parse::FunctionCmd { name: tag_name.to_owned(), is_tag: true };
+            let fc = crate::parse::FunctionCmd { name: tag_name.to_owned(), is_tag: true, with_storage: None, inline_args: None };
             return self.execute_function_call(&fc, budget);
         }
 
@@ -934,7 +941,7 @@ impl Executor {
         let ids = if target == "@s" {
             ctx.executor.map(|id| vec![id]).unwrap_or_default()
         } else {
-            self.world.entities.resolve_selector(target)
+            self.world.entities.resolve_selector(target, &self.world.scoreboard)
         };
         if ids.is_empty() {
             return CommandOutcome::failure(vec![]);
@@ -988,12 +995,12 @@ impl Executor {
                 self.world.storage.exists(storage, path)
             }
             ExecuteCondition::Entity(selector) => {
-                self.world.entities.resolve_selector_at(selector, ctx.x, ctx.y, ctx.z).len() > 0
+                self.world.entities.resolve_selector_at(selector, ctx.x, ctx.y, ctx.z, &self.world.scoreboard).len() > 0
             }
             ExecuteCondition::Function(name) => {
                 // Vanilla: execute if function RUNS the function and succeeds
                 // when the function completed successfully (success=1, no return fail).
-                let fc = crate::parse::FunctionCmd { name: name.clone(), is_tag: false };
+                let fc = crate::parse::FunctionCmd { name: name.clone(), is_tag: false, with_storage: None, inline_args: None };
                 let outcome = self.execute_function_call(&fc, &CommandBudget {
                     sequence_remaining: u32::MAX,
                     fork_limit: u32::MAX,
@@ -1025,7 +1032,7 @@ impl Executor {
             let numeric_type = words.get(3).map_or("double", |s| *s);
             let scale: f64 = words.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
             let scaled = (value as f64) * scale;
-            let ids = self.world.entities.resolve_selector(selector);
+            let ids = self.world.entities.resolve_selector(selector, &self.world.scoreboard);
             for id in ids {
                 let Some(e) = self.world.entities.get(id) else { continue; };
                 let (nx, ny, nz) = match &**path {

@@ -1,7 +1,7 @@
 use super::{
-    DataCmd, DataSub, ExecuteCmd, ExecuteCondition, ExecuteModifier, ForceloadCmd, FunctionCmd,
-    GameruleCmd, ParsedCommand, ReturnCmd, ScheduleCmd, ScoreboardCmd, ScoreboardSub, SetblockCmd,
-    SummonCmd, TeleportCmd,
+    AdvancementCmd, DataCmd, DataSub, ExecuteCmd, ExecuteCondition, ExecuteModifier, ForceloadCmd, FunctionCmd,
+    GameruleCmd, ItemCmd, KillCmd, LootCmd, ParsedCommand, ReturnCmd, RotateCmd, ScheduleCmd, ScoreboardCmd,
+    ScoreboardSub, SetblockCmd, SummonCmd, TagAction, TagCmd, TeleportCmd, TellrawCmd, TitleCmd,
 };
 
 pub fn parse_command(command: &str) -> ParsedCommand {
@@ -24,6 +24,15 @@ pub fn parse_command(command: &str) -> ParsedCommand {
         "summon" => parse_summon(rest),
         "forceload" => parse_forceload(rest),
         "setblock" => parse_setblock(rest),
+        "kill" => parse_kill(rest),
+        "tag" => parse_tag(rest),
+        "tellraw" => parse_tellraw(rest),
+        "title" => parse_title(rest),
+        "playsound" => ParsedCommand::Playsound,
+        "loot" => parse_loot(rest),
+        "rotate" => parse_rotate(rest),
+        "item" => parse_item(rest),
+        "advancement" => parse_advancement(rest),
         "reload" => ParsedCommand::Reload,
         "stop" => ParsedCommand::Stop,
         _ => ParsedCommand::Raw(command.to_owned()),
@@ -433,6 +442,51 @@ fn find_execute_keyword_pos(words: &[&str]) -> usize {
     0
 }
 
+fn parse_kill(rest: &str) -> ParsedCommand {
+    let (sel, _) = split_first_word(rest);
+    if sel.is_empty() { return ParsedCommand::Raw(format!("kill {rest}")); }
+    ParsedCommand::Kill(KillCmd { selector: sel.to_owned() })
+}
+fn parse_tag(rest: &str) -> ParsedCommand {
+    let w = split_words(rest);
+    if w.len() < 3 { return ParsedCommand::Raw(format!("tag {rest}")); }
+    let a = match w[1].as_str() { "add" => TagAction::Add, "remove" => TagAction::Remove, "list" => TagAction::List, _ => return ParsedCommand::Raw(format!("tag {rest}")) };
+    ParsedCommand::Tag(TagCmd { selector: w[0].clone(), action: a, tag: w[2].clone() })
+}
+fn parse_tellraw(rest: &str) -> ParsedCommand {
+    let w = split_words(rest);
+    if w.len() < 2 { return ParsedCommand::Raw(format!("tellraw {rest}")); }
+    ParsedCommand::Tellraw(TellrawCmd { selector: w[0].clone(), message: w[1..].join(" ") })
+}
+fn parse_title(rest: &str) -> ParsedCommand {
+    let w = split_words(rest);
+    if w.len() < 3 { return ParsedCommand::Raw(format!("title {rest}")); }
+    ParsedCommand::Title(TitleCmd { selector: w[0].clone(), action: w[1].clone(), text: w[2..].join(" ") })
+}
+fn parse_loot(rest: &str) -> ParsedCommand {
+    let w = split_words(rest);
+    if w.len() < 3 { return ParsedCommand::Raw(format!("loot {rest}")); }
+    let pos = if w.len() >= 6 { Some((w[1].parse().unwrap_or(0.0), w[2].parse().unwrap_or(0.0), w[3].parse().unwrap_or(0.0))) } else { None };
+    ParsedCommand::Loot(LootCmd { action: w[0].to_owned(), pos, source: w.join(" ") })
+}
+fn parse_rotate(rest: &str) -> ParsedCommand {
+    let w = split_words(rest);
+    if w.len() < 2 { return ParsedCommand::Raw(format!("rotate {rest}")); }
+    let y = w[1].strip_prefix('~').and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let p = w.get(2).and_then(|s| s.strip_prefix('~')).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    ParsedCommand::Rotate(RotateCmd { selector: w[0].clone(), yaw: y, pitch: p })
+}
+fn parse_item(rest: &str) -> ParsedCommand {
+    let w = split_words(rest);
+    if w.len() < 4 { return ParsedCommand::Raw(format!("item {rest}")); }
+    ParsedCommand::Item(ItemCmd { action: w[0].clone(), selector: w[2].clone(), slot: w[3].clone(), rest: w[4..].join(" ") })
+}
+fn parse_advancement(rest: &str) -> ParsedCommand {
+    let w = split_words(rest);
+    if w.len() < 4 { return ParsedCommand::Raw(format!("advancement {rest}")); }
+    ParsedCommand::Advancement(AdvancementCmd { action: w[0].clone(), selector: w[1].clone(), advancement: w[3..].join(" ") })
+}
+
 fn parse_remaining(input: &str) -> (String, String) {
     let input = input.trim();
     let mut depth: u32 = 0;
@@ -454,7 +508,7 @@ fn parse_function(rest: &str) -> ParsedCommand {
     let rest = rest.trim();
     let is_tag = rest.starts_with('#');
     let name = if is_tag { &rest[1..] } else { rest };
-    ParsedCommand::Function(FunctionCmd { name: name.to_owned(), is_tag })
+    ParsedCommand::Function(FunctionCmd { name: name.to_owned(), is_tag, with_storage: None, inline_args: None })
 }
 
 fn parse_teleport(rest: &str) -> ParsedCommand {

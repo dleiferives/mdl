@@ -184,8 +184,8 @@ fn parse_bracket_filters(bracket: &str) -> SelectorFilters {
                 else if let Some(dot) = val.find("..") { f.distance_min = val[..dot].parse().ok(); f.distance_max = val[dot+2..].parse().ok(); }
                 else { if let Ok(d) = val.parse() { f.distance_min = Some(d); f.distance_max = Some(d); } }
             }
-            "x" => f.ref_x = val.parse().ok(); "y" => f.ref_y = val.parse().ok(); "z" => f.ref_z = val.parse().ok();
-            "dx" => f.dx = val.parse().ok(); "dy" => f.dy = val.parse().ok(); "dz" => f.dz = val.parse().ok();
+            "x" => f.ref_x = val.parse().ok(), "y" => f.ref_y = val.parse().ok(), "z" => f.ref_z = val.parse().ok(),
+            "dx" => f.dx = val.parse().ok(), "dy" => f.dy = val.parse().ok(), "dz" => f.dz = val.parse().ok(),
             "x_rotation" => { let (a,b) = parse_float_range(val); f.pitch_min = a; f.pitch_max = b; }
             "y_rotation" => { let (a,b) = parse_float_range(val); f.yaw_min = a; f.yaw_max = b; }
             "sort" => f.sort = match val { "nearest" => SortOrder::Nearest, "furthest" => SortOrder::Furthest, "arbitrary" => SortOrder::Arbitrary, _ => SortOrder::Arbitrary },

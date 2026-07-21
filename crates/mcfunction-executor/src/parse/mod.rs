@@ -48,6 +48,15 @@ pub enum ParsedCommand {
     Summon(SummonCmd),
     Forceload(ForceloadCmd),
     Setblock(SetblockCmd),
+    Kill(KillCmd),
+    Tag(TagCmd),
+    Tellraw(TellrawCmd),
+    Title(TitleCmd),
+    Playsound,
+    Loot(LootCmd),
+    Rotate(RotateCmd),
+    Item(ItemCmd),
+    Advancement(AdvancementCmd),
     Reload,
     Stop,
     Raw(String),
@@ -122,7 +131,36 @@ pub enum ExecuteCondition {
 pub struct FunctionCmd {
     pub name: String,
     pub is_tag: bool,
+    pub with_storage: Option<(String, String)>,
+    pub inline_args: Option<String>,
 }
+
+#[derive(Clone, Debug)]
+pub struct KillCmd { pub selector: String }
+
+#[derive(Clone, Debug)]
+pub struct TagCmd { pub selector: String, pub action: TagAction, pub tag: String }
+
+#[derive(Clone, Debug)]
+pub enum TagAction { Add, Remove, List }
+
+#[derive(Clone, Debug)]
+pub struct TellrawCmd { pub selector: String, pub message: String }
+
+#[derive(Clone, Debug)]
+pub struct TitleCmd { pub selector: String, pub action: String, pub text: String }
+
+#[derive(Clone, Debug)]
+pub struct LootCmd { pub action: String, pub pos: Option<(f64, f64, f64)>, pub source: String }
+
+#[derive(Clone, Debug)]
+pub struct RotateCmd { pub selector: String, pub yaw: f32, pub pitch: f32 }
+
+#[derive(Clone, Debug)]
+pub struct ItemCmd { pub action: String, pub selector: String, pub slot: String, pub rest: String }
+
+#[derive(Clone, Debug)]
+pub struct AdvancementCmd { pub action: String, pub selector: String, pub advancement: String }
 
 #[derive(Clone, Debug)]
 pub struct TeleportCmd {

@@ -420,6 +420,10 @@ impl CheckedFrontendOutput {
         &self.module.functions
     }
 
+    pub(super) fn event_handlers(&self) -> &[HirEventHandler] {
+        &self.module.event_handlers
+    }
+
     pub(super) fn structs(&self) -> &[HirStruct] {
         &self.module.structs
     }
@@ -465,7 +469,31 @@ pub(super) struct HirModule {
     pub(super) run_scope_count: usize,
     pub(super) functions: Box<[HirFunction]>,
     pub(super) behaviors: Box<[FunctionBehavior]>,
+    pub(super) event_handlers: Box<[HirEventHandler]>,
     pub(super) origin: OriginId,
+}
+
+/// One push-model event-handler declaration (PS-15): `criterion` is the
+/// vanilla advancement trigger this handler installs, `reward` names the
+/// checked zero-parameter `Void` [`HirFunction`] (already present in the
+/// same dense `functions` inventory as every ordinary function) that runs
+/// when the criterion is satisfied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirEventHandler {
+    pub(super) reward: SourceFunctionId,
+    pub(super) criterion: HirCriterion,
+    pub(super) origin: OriginId,
+}
+
+/// Closed trigger vocabulary (Slice 1: one variant). Growing this to a
+/// second trigger is "add a variant", not a redesign.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum HirCriterion {
+    InventoryChanged {
+        /// Validated `namespace:path` item-resource-id spellings.
+        items: Box<[Box<str>]>,
+        items_origin: OriginId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -644,6 +672,16 @@ pub(super) struct HirFunction {
     pub(super) result_origin: Option<OriginId>,
     pub(super) bindings: Box<[HirBinding]>,
     pub(super) body: HirBlock,
+    /// Non-`None` only for a compiler-synthesized event-handler reward
+    /// function (PS-15): the executor (and, since vanilla runs a reward
+    /// as/at the triggering player, position/rotation/dimension) this
+    /// function's body is checked and verified against from entry, seeded
+    /// by the compiler because there is no source-level query to establish
+    /// it — vanilla itself guarantees the reward runs as/at the triggering
+    /// player. `capture.proof`'s `run`/`modifier_index` are a fixed
+    /// sentinel, not a reference to any real run scope; checking and
+    /// verification only ever compare it for equality against itself.
+    pub(super) entry_capture: Option<HirExecutorCapture>,
     pub(super) origin: OriginId,
 }
 
@@ -1255,7 +1293,30 @@ impl<'a> Dumper<'a> {
         for function in self.output.functions() {
             self.dump_function(function);
         }
+        for handler in self.output.event_handlers() {
+            self.dump_event_handler(handler);
+        }
         self.text
+    }
+
+    fn dump_event_handler(&mut self, handler: &HirEventHandler) {
+        let criterion = match &handler.criterion {
+            HirCriterion::InventoryChanged {
+                items,
+                items_origin,
+            } => format!(
+                "inventory_changed items={items:?} items_origin={}",
+                self.location(*items_origin)
+            ),
+        };
+        self.line(
+            1,
+            &format!(
+                "on reward=@{} {criterion} {}",
+                handler.reward.index(),
+                self.location(handler.origin)
+            ),
+        );
     }
 
     fn dump_function(&mut self, function: &HirFunction) {
@@ -1281,6 +1342,18 @@ impl<'a> Dumper<'a> {
                 self.location(function.origin)
             ),
         );
+        if let Some(capture) = &function.entry_capture {
+            self.line(
+                2,
+                &format!(
+                    "entry-capture Executor<{}> proof=run@{}:modifier{} {}",
+                    capture.ty.kind(),
+                    capture.proof.run.index(),
+                    capture.proof.modifier_index,
+                    self.location(capture.name_origin)
+                ),
+            );
+        }
         let behavior = self
             .output
             .function_behavior(function.id)
@@ -2103,7 +2176,18 @@ impl Verifier<'_> {
             state.set_assigned(index, true);
         }
         let mut next_declaration = function.parameter_count;
-        let context = function_entry_context();
+        let context = match &function.entry_capture {
+            Some(capture) => {
+                self.origin(capture.proof.origin, "event-handler entry proof")?;
+                self.origin(capture.name_origin, "event-handler entry capture")?;
+                function_entry_context()
+                    .establish_executor(capture.ty.kind(), capture.proof)
+                    .establish_position(capture.proof)
+                    .establish_rotation(capture.proof)
+                    .establish_dimension(capture.proof)
+            }
+            None => function_entry_context(),
+        };
         let continues = self.verify_block(
             function,
             &function.body,

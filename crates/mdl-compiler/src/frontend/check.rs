@@ -11,28 +11,29 @@ use super::FrontendLimits;
 use super::ast::{
     AstAssignment, AstBindingKind, AstBlock, AstCall, AstCallStatement, AstComparisonOp,
     AstCoordinateSigil, AstDeclaration, AstDestructureTargetKind, AstDestructuringStatement,
-    AstExpression, AstExpressionKind, AstFunction, AstFunctionVisibility, AstIfStatement,
-    AstInferredStructEntries, AstInferredStructLiteral, AstModule, AstName, AstResultTypeKind,
-    AstReturnStatement, AstRunModifier, AstRunStatement, AstStatement, AstStructLiteral,
-    AstSwitchExpression, AstSwitchLabel, AstSwitchPattern, AstSwitchPatternKind,
-    AstSwitchStatement, AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
+    AstEventHandler, AstEventHandlerArgumentValue, AstExpression, AstExpressionKind, AstFunction,
+    AstFunctionVisibility, AstIfStatement, AstInferredStructEntries, AstInferredStructLiteral,
+    AstModule, AstName, AstResultTypeKind, AstReturnStatement, AstRunModifier, AstRunStatement,
+    AstStatement, AstStructLiteral, AstSwitchExpression, AstSwitchLabel, AstSwitchPattern,
+    AstSwitchPatternKind, AstSwitchStatement, AstValueTypeKind, AstWhileStatement,
+    AstWrappingArithmeticOp,
 };
 use super::context::{apply_run_modifiers, function_entry_context};
 use super::entity_schema::{SchemaNode, block_root_schema, root_schema};
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirAnonymousStruct,
     HirAnonymousStructField, HirAnonymousStructKind, HirBinding, HirBindingKind, HirBlock, HirCall,
-    HirComparisonOp, HirContextStep, HirDestructureTarget, HirDestructureTargetRole,
+    HirComparisonOp, HirContextStep, HirCriterion, HirDestructureTarget, HirDestructureTargetRole,
     HirEntityNbtReceiver, HirEntityPathSegment, HirEntityQuery, HirEntityQueryStep, HirEnum,
-    HirEnumVariant, HirExecutionContext, HirExecutorCapture, HirExpression, HirExpressionKind,
-    HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirIfArm, HirListI32Op,
-    HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun, HirRunModifier,
-    HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField, HirStructFieldValue,
-    HirSwitchExpression, HirSwitchExpressionArm, HirSwitchLabel, HirSwitchPattern,
-    HirSwitchPatternKind, HirSwitchStatement, HirSwitchStatementArm, HirVerificationError,
-    HirWhile, HirWrappingArithmeticOp, LocalId, SourceAnonymousStructId, SourceEnumId,
-    SourceExternalOpId, SourceFunctionId, SourceModuleId, SourceRunId, SourceStructId,
-    SourceVariantId, ValueType, verify,
+    HirEnumVariant, HirEventHandler, HirExecutionContext, HirExecutorCapture, HirExpression,
+    HirExpressionKind, HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirIfArm,
+    HirListI32Op, HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun,
+    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField,
+    HirStructFieldValue, HirSwitchExpression, HirSwitchExpressionArm, HirSwitchLabel,
+    HirSwitchPattern, HirSwitchPatternKind, HirSwitchStatement, HirSwitchStatementArm,
+    HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId, SourceAnonymousStructId,
+    SourceEnumId, SourceExternalOpId, SourceFunctionId, SourceModuleId, SourceRunId,
+    SourceStructId, SourceVariantId, ValueType, verify,
 };
 use super::input::{ModuleDependency, ModuleKey};
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
@@ -100,6 +101,49 @@ const LITERAL_CONTEXT_REQUIRED: &str = "frontend.check.literal-context-required"
 const UNSUPPORTED_RUN_SCALAR_CAPTURE: &str = "frontend.check.unsupported-run-scalar-capture";
 const DIRTY_AST: &str = "frontend.check.dirty-ast";
 const TRUNCATED: &str = "frontend.check.truncated";
+const UNKNOWN_EVENT_TRIGGER: &str = "frontend.check.unknown-event-trigger";
+const UNKNOWN_EVENT_ARGUMENT: &str = "frontend.check.unknown-event-argument";
+const DUPLICATE_EVENT_ARGUMENT: &str = "frontend.check.duplicate-event-argument";
+const MISSING_EVENT_ARGUMENT: &str = "frontend.check.missing-event-argument";
+const INVALID_EVENT_ITEM: &str = "frontend.check.invalid-event-item";
+
+/// Closed event-trigger vocabulary (PS-15 Slice 1: one variant). Growing this
+/// to a second trigger is "add a variant", not a redesign of the argument-
+/// contract dispatch below.
+#[derive(Clone, Copy)]
+enum EventTrigger {
+    InventoryChanged,
+}
+
+impl EventTrigger {
+    fn from_source_name(name: &str) -> Option<Self> {
+        match name {
+            "inventory_changed" => Some(Self::InventoryChanged),
+            _ => None,
+        }
+    }
+}
+
+/// Validates the target-independent `namespace:path` shape vanilla resource
+/// locations use (e.g. item IDs in advancement JSON `conditions`). Mirrors
+/// `ir::minecraft::names`'s `Namespace`/`ResourcePath` character classes
+/// without depending on that target-facing type: Core (and this checker
+/// validation that feeds it) must never depend on `ir::minecraft`.
+fn is_valid_item_resource_id(text: &str) -> bool {
+    fn is_valid_namespace_char(c: char) -> bool {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-')
+    }
+    fn is_valid_path_char(c: char) -> bool {
+        is_valid_namespace_char(c) || c == '/'
+    }
+    let Some((namespace, path)) = text.split_once(':') else {
+        return false;
+    };
+    !namespace.is_empty()
+        && !path.is_empty()
+        && namespace.chars().all(is_valid_namespace_char)
+        && path.chars().all(is_valid_path_char)
+}
 
 fn is_reserved_compiler_name(name: &str) -> bool {
     matches!(name, "mc" | "List")
@@ -341,6 +385,49 @@ pub(super) fn check_package(
         functions.push(checker.check_function(ast)?);
     }
 
+    let mut event_handlers = Vec::with_capacity(
+        modules
+            .iter()
+            .map(|module| module.ast.event_handlers.len())
+            .sum(),
+    );
+    for module in modules {
+        for handler_ast in &module.ast.event_handlers {
+            let id = SourceFunctionId::from_index(functions.len()).ok_or(
+                CheckError::IdentitySpaceExhausted(CheckedEntityKind::Function),
+            )?;
+            let signature = FunctionSignature {
+                id,
+                module: module.id,
+                ast_index: 0,
+                name: Box::from(""),
+                name_span: handler_ast.trigger.span,
+                visibility: FunctionVisibility::Private,
+                parameters: Box::new([]),
+                result: FunctionResult::Void,
+                result_span: None,
+            };
+            let checker = BodyChecker::new(
+                sources,
+                &mut diagnostics,
+                &signatures,
+                &signature,
+                &mut external_ops,
+                &mut next_run_scope,
+                &mut next_run_modifier,
+            );
+            let (function, criterion) = checker.check_event_handler(handler_ast)?;
+            functions.push(function);
+            if let Some(criterion) = criterion {
+                event_handlers.push(HirEventHandler {
+                    reward: id,
+                    criterion,
+                    origin: sources.add_origin(Origin::Source(handler_ast.span))?,
+                });
+            }
+        }
+    }
+
     let hir_anonymous_structs = signatures
         .anonymous
         .borrow()
@@ -407,6 +494,7 @@ pub(super) fn check_package(
         run_scope_count: next_run_scope,
         functions,
         behaviors,
+        event_handlers: event_handlers.into_boxed_slice(),
         origin: package_origin,
     });
     let truncated = diagnostics.truncation.is_some();
@@ -1358,8 +1446,170 @@ impl<'a> BodyChecker<'a> {
             result_origin,
             bindings: self.bindings.into_boxed_slice(),
             body: checked_body.block,
+            entry_capture: None,
             origin: function_origin,
         })
+    }
+
+    /// Checks one `on <trigger>(...) |binding| { ... }` declaration into a
+    /// checked reward `HirFunction` (pushed into the same dense inventory as
+    /// every ordinary function) plus its `HirCriterion`, or `None` for the
+    /// criterion when the trigger/arguments were invalid (a diagnostic is
+    /// always recorded in that case; `valid` on the returned function's
+    /// checked block already reflects any body-level errors).
+    fn check_event_handler(
+        mut self,
+        ast: &AstEventHandler,
+    ) -> Result<(HirFunction, Option<HirCriterion>), CheckError> {
+        let mut assigned = Assigned::default();
+
+        let trigger_spelling = self.spelling(ast.trigger.span)?;
+        let trigger = EventTrigger::from_source_name(&trigger_spelling);
+        if trigger.is_none() {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    UNKNOWN_EVENT_TRIGGER,
+                    format!("`{trigger_spelling}` is not a recognized event trigger"),
+                    ast.trigger.span,
+                )
+                .primary("unrecognized trigger name"),
+            );
+        }
+        let criterion = match trigger {
+            Some(trigger) => self.check_event_handler_criterion(trigger, ast)?,
+            None => None,
+        };
+
+        let mut valid = true;
+        let proof_origin = self.origin(ast.binding.span)?;
+        let proof = HirContextStep {
+            run: SourceRunId::from_index(0).expect("run identity space always has index 0"),
+            modifier_index: 0,
+            origin: proof_origin,
+        };
+        let installed =
+            self.install_executor_capture(ast.binding.span, EntityKind::Player, proof, &mut valid)?;
+        self.execution_context = function_entry_context()
+            .establish_executor(EntityKind::Player, proof)
+            .establish_position(proof)
+            .establish_rotation(proof)
+            .establish_dimension(proof);
+
+        let checked_body = self.check_block(&ast.body, &mut assigned)?;
+        valid &= checked_body.valid;
+
+        let name_origin = self.origin(ast.trigger.span)?;
+        let function_origin = self.origin(ast.span)?;
+        let function = HirFunction {
+            id: self.signature.id,
+            module: self.signature.module,
+            visibility: FunctionVisibility::Private,
+            visibility_origin: None,
+            name_origin,
+            parameter_count: 0,
+            result: FunctionResult::Void,
+            result_origin: None,
+            bindings: self.bindings.into_boxed_slice(),
+            body: checked_body.block,
+            entry_capture: Some(installed.hir),
+            origin: function_origin,
+        };
+        Ok((function, valid.then_some(criterion).flatten()))
+    }
+
+    fn check_event_handler_criterion(
+        &mut self,
+        trigger: EventTrigger,
+        ast: &AstEventHandler,
+    ) -> Result<Option<HirCriterion>, CheckError> {
+        match trigger {
+            EventTrigger::InventoryChanged => self.check_inventory_changed_criterion(ast),
+        }
+    }
+
+    fn check_inventory_changed_criterion(
+        &mut self,
+        ast: &AstEventHandler,
+    ) -> Result<Option<HirCriterion>, CheckError> {
+        let mut valid = true;
+        let mut items: Option<(Span, &[Span])> = None;
+        for argument in &ast.arguments {
+            let name = self.spelling(argument.name.span)?;
+            if name.as_ref() != "items" {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        UNKNOWN_EVENT_ARGUMENT,
+                        format!("`inventory_changed` has no trigger argument named `{name}`"),
+                        argument.name.span,
+                    )
+                    .primary("unknown trigger argument"),
+                );
+                valid = false;
+                continue;
+            }
+            if items.is_some() {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        DUPLICATE_EVENT_ARGUMENT,
+                        "duplicate `.items` trigger argument",
+                        argument.name.span,
+                    )
+                    .primary("`.items` was already supplied"),
+                );
+                valid = false;
+                continue;
+            }
+            let AstEventHandlerArgumentValue::StringList(spans) = &argument.value;
+            items = Some((argument.span, spans));
+        }
+        let Some((items_span, spans)) = items else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    MISSING_EVENT_ARGUMENT,
+                    "`inventory_changed` requires a `.items` trigger argument",
+                    ast.trigger.span,
+                )
+                .primary("no `.items` argument supplied"),
+            );
+            return Ok(None);
+        };
+        let mut decoded_items = Vec::with_capacity(spans.len());
+        for &span in spans {
+            let decoded = decode_string_literal(self.sources, span)?;
+            let valid_item = decoded.as_deref().is_some_and(is_valid_item_resource_id);
+            if !valid_item {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        INVALID_EVENT_ITEM,
+                        "expected a `namespace:path` item resource id",
+                        span,
+                    )
+                    .primary("not a valid item resource id"),
+                );
+                valid = false;
+                continue;
+            }
+            decoded_items.push(decoded.expect("checked above"));
+        }
+        if decoded_items.is_empty() {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    MISSING_EVENT_ARGUMENT,
+                    "`.items` requires at least one item resource id",
+                    items_span,
+                )
+                .primary("empty item list"),
+            );
+            valid = false;
+        }
+        if !valid {
+            return Ok(None);
+        }
+        let items_origin = self.origin(items_span)?;
+        Ok(Some(HirCriterion::InventoryChanged {
+            items: decoded_items.into_boxed_slice(),
+            items_origin,
+        }))
     }
 
     fn check_block(
@@ -6209,15 +6459,17 @@ const fn comparison_op(op: AstComparisonOp) -> HirComparisonOp {
 #[cfg(test)]
 mod tests {
     use super::{
-        ARGUMENT_COUNT, CheckOutput, DIRTY_AST, DUPLICATE_BINDING, DUPLICATE_FUNCTION,
-        ENUM_CONTEXT_REQUIRED, ENUM_EXPORT_ABI, IMMUTABLE_ASSIGNMENT, INTEGER_OUT_OF_RANGE,
-        INVALID_ENTITY_TAG, INVALID_EXECUTOR_CAPTURE, INVALID_MESSAGE_LITERAL,
-        INVALID_MINECRAFT_METHOD_RECEIVER, INVALID_SWITCH_ELSE, INVALID_SWITCH_PATTERN,
-        INVALID_UNSAFE_COMMAND, LITERAL_CONTEXT_REQUIRED, MESSAGE_LITERAL_REQUIRED, MISSING_RETURN,
-        NON_EXHAUSTIVE_SWITCH, OVERLAPPING_SWITCH_PATTERN, RESERVED_COMPILER_NAME,
-        RETURN_IN_RUN_SCOPE, RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED,
-        SCOPED_CAPABILITY_VALUE, TRUNCATED, TYPE_MISMATCH, UNINITIALIZED_READ, UNKNOWN_MEMBER,
-        UNKNOWN_NAME, UNRESOLVED_MEMBER, UNSUPPORTED_RUN_SCALAR_CAPTURE, VOID_VALUE, check,
+        ARGUMENT_COUNT, CheckOutput, DIRTY_AST, DUPLICATE_BINDING, DUPLICATE_EVENT_ARGUMENT,
+        DUPLICATE_FUNCTION, ENUM_CONTEXT_REQUIRED, ENUM_EXPORT_ABI, IMMUTABLE_ASSIGNMENT,
+        INTEGER_OUT_OF_RANGE, INVALID_ENTITY_TAG, INVALID_EVENT_ITEM, INVALID_EXECUTOR_CAPTURE,
+        INVALID_MESSAGE_LITERAL, INVALID_MINECRAFT_METHOD_RECEIVER, INVALID_SWITCH_ELSE,
+        INVALID_SWITCH_PATTERN, INVALID_UNSAFE_COMMAND, LITERAL_CONTEXT_REQUIRED,
+        MESSAGE_LITERAL_REQUIRED, MISSING_EVENT_ARGUMENT, MISSING_RETURN, NON_EXHAUSTIVE_SWITCH,
+        OVERLAPPING_SWITCH_PATTERN, RESERVED_COMPILER_NAME, RETURN_IN_RUN_SCOPE,
+        RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED, SCOPED_CAPABILITY_VALUE, TRUNCATED,
+        TYPE_MISMATCH, UNINITIALIZED_READ, UNKNOWN_EVENT_ARGUMENT, UNKNOWN_EVENT_TRIGGER,
+        UNKNOWN_MEMBER, UNKNOWN_NAME, UNRESOLVED_MEMBER, UNSUPPORTED_RUN_SCALAR_CAPTURE,
+        VOID_VALUE, check,
     };
     use crate::frontend::FrontendLimits;
     use crate::frontend::hir::{FunctionResult, HirStatementKind, SourceFunctionId, ValueType};
@@ -6479,6 +6731,78 @@ fn bad() { target(true, missing); }
         let dump = checked.dump(&sources);
         assert!(dump.contains("as entities(ArmorStand).with_tag(\"stage7\").limit(1)"));
         assert!(dump.contains("capture speaker: Executor<ArmorStand>"));
+    }
+
+    #[test]
+    fn event_handler_seeds_player_as_an_established_executor_capture() {
+        let source = r#"on inventory_changed(.items = ["minecraft:diamond"]) |player| {
+    player.say("MDL_GOT_DIAMOND");
+}"#;
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let checked = output.checked().unwrap();
+        assert_eq!(checked.function_count(), 1);
+        assert_eq!(checked.event_handlers().len(), 1);
+        let dump = checked.dump(&sources);
+        assert!(dump.contains("entry-capture Executor<Player>"));
+        assert!(dump.contains(
+            "on reward=@0 inventory_changed items=[\"minecraft:diamond\"] items_origin="
+        ));
+        assert!(dump.contains("minecraft.Say receiver=Executor<Player>"));
+        assert!(dump.contains("message=\"MDL_GOT_DIAMOND\""));
+    }
+
+    #[test]
+    fn event_handler_rejects_an_unknown_trigger_name() {
+        let (_, _, output) =
+            check_text(r#"on nonexistent_trigger(.items = ["minecraft:diamond"]) |player| { }"#);
+        assert_eq!(codes(&output), [UNKNOWN_EVENT_TRIGGER]);
+    }
+
+    #[test]
+    fn event_handler_rejects_an_unknown_trigger_argument_name() {
+        let (_, _, output) =
+            check_text(r#"on inventory_changed(.count = ["minecraft:diamond"]) |player| { }"#);
+        assert_eq!(
+            codes(&output),
+            [UNKNOWN_EVENT_ARGUMENT, MISSING_EVENT_ARGUMENT]
+        );
+    }
+
+    #[test]
+    fn event_handler_requires_exactly_one_items_argument() {
+        let (_, _, missing) = check_text(r"on inventory_changed() |player| { }");
+        assert_eq!(codes(&missing), [MISSING_EVENT_ARGUMENT]);
+
+        let (_, _, duplicate) = check_text(
+            r#"on inventory_changed(.items = ["minecraft:diamond"], .items = ["minecraft:emerald"]) |player| { }"#,
+        );
+        assert_eq!(codes(&duplicate), [DUPLICATE_EVENT_ARGUMENT]);
+    }
+
+    #[test]
+    fn event_handler_rejects_malformed_or_empty_item_ids() {
+        let (_, _, empty_list) = check_text(r"on inventory_changed(.items = []) |player| { }");
+        assert_eq!(codes(&empty_list), [MISSING_EVENT_ARGUMENT]);
+
+        let (_, _, bad_spelling) =
+            check_text(r#"on inventory_changed(.items = ["diamond"]) |player| { }"#);
+        assert_eq!(
+            codes(&bad_spelling),
+            [INVALID_EVENT_ITEM, MISSING_EVENT_ARGUMENT]
+        );
+
+        let (_, _, one_bad_one_good) = check_text(
+            r#"on inventory_changed(.items = ["minecraft:diamond", "nope"]) |player| { }"#,
+        );
+        assert_eq!(codes(&one_bad_one_good), [INVALID_EVENT_ITEM]);
+    }
+
+    #[test]
+    fn event_handler_binding_follows_the_same_reserved_and_duplicate_name_rules() {
+        let (_, _, reserved) =
+            check_text(r#"on inventory_changed(.items = ["minecraft:diamond"]) |mc| { }"#);
+        assert_eq!(codes(&reserved), [RESERVED_COMPILER_NAME]);
     }
 
     #[test]

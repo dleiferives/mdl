@@ -865,6 +865,7 @@ mod tests {
                 closing_brace_origin: OriginId::UNKNOWN,
                 origin: OriginId::UNKNOWN,
             },
+            entry_capture: None,
             origin: OriginId::UNKNOWN,
         }
     }

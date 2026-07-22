@@ -161,6 +161,23 @@ static EQUIPMENT_SLOTS: SchemaNode = SchemaNode::Compound(&[
 static ARMOR_STAND_ROOT: SchemaNode =
     SchemaNode::Compound(&[(SchemaKey::Identifier("equipment"), EQUIPMENT_SLOTS)]);
 
+// A player's armor slots (`head`/`chest`/`legs`/`feet`) show up under
+// `equipment` exactly like an ArmorStand's (measured directly against a real
+// connected player, `ps-14-player-entity-kind.md`). `mainhand`/`offhand` do
+// not: a player's held items live in `Inventory`/`SelectedItemSlot`, not a
+// dedicated `equipment` field, which needs a match-value-sourced-from-another-
+// field mechanism this codebase doesn't have yet (see that doc's "Deferred").
+// So this is deliberately its own compound, not a reuse of `EQUIPMENT_SLOTS`.
+static PLAYER_EQUIPMENT_SLOTS: SchemaNode = SchemaNode::Compound(&[
+    (SchemaKey::Identifier("head"), ITEM_STACK),
+    (SchemaKey::Identifier("chest"), ITEM_STACK),
+    (SchemaKey::Identifier("legs"), ITEM_STACK),
+    (SchemaKey::Identifier("feet"), ITEM_STACK),
+]);
+
+static PLAYER_ROOT: SchemaNode =
+    SchemaNode::Compound(&[(SchemaKey::Identifier("equipment"), PLAYER_EQUIPMENT_SLOTS)]);
+
 /// Returns the root schema node for `.equipment`-style chains starting from
 /// the current executor, narrowed by its nominal entity kind.
 ///
@@ -173,6 +190,7 @@ static ARMOR_STAND_ROOT: SchemaNode =
 pub(super) const fn root_schema(kind: EntityKind) -> SchemaNode {
     match kind {
         EntityKind::ArmorStand => ARMOR_STAND_ROOT,
+        EntityKind::Player => PLAYER_ROOT,
     }
 }
 
@@ -287,6 +305,7 @@ mod tests {
     #[test]
     fn every_registered_table_satisfies_key_form_and_uniqueness_invariants() {
         assert_registration_is_well_formed(root_schema(EntityKind::ArmorStand));
+        assert_registration_is_well_formed(root_schema(EntityKind::Player));
         assert_registration_is_well_formed(block_root_schema(BlockEntityKind::Chest));
     }
 
@@ -323,6 +342,34 @@ mod tests {
             .field_by_name("count")
             .unwrap();
         assert_eq!(node.scalar_type(), Some(super::ValueType::Int32));
+    }
+
+    /// PS-14: a player's armor-slot equipment read, the same shape as an
+    /// `ArmorStand`'s `.equipment.chest`, but reached through a distinct table
+    /// (`PLAYER_ROOT`) that omits `mainhand`/`offhand` entirely -- proves both
+    /// the reachable slots and the deliberately-absent ones in one place.
+    #[test]
+    fn player_equipment_chain_walks_the_table_end_to_end() {
+        let equipment = root_schema(EntityKind::Player)
+            .field_by_name("equipment")
+            .unwrap();
+        let count = equipment
+            .field_by_name("chest")
+            .unwrap()
+            .field_by_name("count")
+            .unwrap();
+        assert_eq!(count.scalar_type(), Some(super::ValueType::Int32));
+        assert!(equipment.field_by_name("head").is_some());
+        assert!(equipment.field_by_name("legs").is_some());
+        assert!(equipment.field_by_name("feet").is_some());
+        assert!(
+            equipment.field_by_name("mainhand").is_none(),
+            "player mainhand is deferred (see ps-14-player-entity-kind.md) and must not resolve"
+        );
+        assert!(
+            equipment.field_by_name("offhand").is_none(),
+            "player offhand is deferred (see ps-14-player-entity-kind.md) and must not resolve"
+        );
     }
 
     /// BE-1: a chest's container contents, match-indexed by `slot`, reusing

@@ -50,6 +50,7 @@ pub(super) fn lower_static_entity_query(
         .collect();
     match query.kind() {
         EntityKind::ArmorStand => EntitySelector::armor_stands(tags, query.maximum()),
+        EntityKind::Player => EntitySelector::players(tags, query.maximum()),
     }
 }
 

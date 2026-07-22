@@ -65,6 +65,8 @@ impl fmt::Display for RuntimeValueType {
 pub enum EntityKind {
     /// A Minecraft armor stand.
     ArmorStand,
+    /// A real connected Minecraft player.
+    Player,
 }
 
 impl EntityKind {
@@ -73,6 +75,7 @@ impl EntityKind {
     pub fn from_source_name(name: &str) -> Option<Self> {
         match name {
             "ArmorStand" => Some(Self::ArmorStand),
+            "Player" => Some(Self::Player),
             _ => None,
         }
     }
@@ -82,6 +85,7 @@ impl EntityKind {
     pub const fn source_name(self) -> &'static str {
         match self {
             Self::ArmorStand => "ArmorStand",
+            Self::Player => "Player",
         }
     }
 
@@ -90,6 +94,7 @@ impl EntityKind {
     pub const fn capabilities(self) -> EntityCapabilities {
         match self {
             Self::ArmorStand => EntityCapabilities::ARMOR_STAND,
+            Self::Player => EntityCapabilities::PLAYER,
         }
     }
 }
@@ -164,6 +169,10 @@ impl EntityCapabilities {
     const COMMAND_EXECUTOR_BIT: u8 = 1 << 0;
     const INVENTORY_HOLDER_BIT: u8 = 1 << 1;
     const ARMOR_STAND: Self = Self(Self::COMMAND_EXECUTOR_BIT | Self::INVENTORY_HOLDER_BIT);
+    // Same bits as `ARMOR_STAND` today (a player is both a command executor and
+    // an inventory holder), but a distinct named constant keeps room for the
+    // two to diverge later without a silent behavior change.
+    const PLAYER: Self = Self(Self::COMMAND_EXECUTOR_BIT | Self::INVENTORY_HOLDER_BIT);
 
     /// Returns whether the set contains `capability`.
     #[must_use]

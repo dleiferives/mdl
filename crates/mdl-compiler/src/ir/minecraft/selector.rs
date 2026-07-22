@@ -62,6 +62,8 @@ impl Cardinality {
 pub enum SelectedEntityKind {
     /// `minecraft:armor_stand`.
     ArmorStand,
+    /// `minecraft:player`.
+    Player,
 }
 
 /// One owned, validated structured entity selector.
@@ -73,13 +75,31 @@ pub struct EntitySelector {
 }
 
 impl EntitySelector {
-    /// Builds a structured selector for the first supported nominal entity kind.
+    /// Builds a structured selector selecting armor stands.
     ///
     /// # Errors
     ///
     /// Rejects empty or unsafe unquoted tags, a zero limit, and limits above
     /// Minecraft's signed 32-bit selector bound.
     pub fn armor_stands(
+        tags: Vec<Box<str>>,
+        limit: Option<u32>,
+    ) -> Result<Self, EntitySelectorError> {
+        Self::with_kind(SelectedEntityKind::ArmorStand, tags, limit)
+    }
+
+    /// Builds a structured selector selecting players.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty or unsafe unquoted tags, a zero limit, and limits above
+    /// Minecraft's signed 32-bit selector bound.
+    pub fn players(tags: Vec<Box<str>>, limit: Option<u32>) -> Result<Self, EntitySelectorError> {
+        Self::with_kind(SelectedEntityKind::Player, tags, limit)
+    }
+
+    fn with_kind(
+        kind: SelectedEntityKind,
         tags: Vec<Box<str>>,
         limit: Option<u32>,
     ) -> Result<Self, EntitySelectorError> {
@@ -95,7 +115,7 @@ impl EntitySelector {
             None => None,
         };
         Ok(Self {
-            kind: SelectedEntityKind::ArmorStand,
+            kind,
             tags: tags.into_boxed_slice(),
             limit,
         })
@@ -143,6 +163,7 @@ impl fmt::Display for EntitySelector {
         formatter.write_str("@e[type=")?;
         formatter.write_str(match self.kind {
             SelectedEntityKind::ArmorStand => "minecraft:armor_stand",
+            SelectedEntityKind::Player => "minecraft:player",
         })?;
         for tag in &self.tags {
             write!(formatter, ",tag={tag}")?;

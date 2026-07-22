@@ -1851,6 +1851,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdl-compiler"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mdl-test"
 version = "0.1.0"
 dependencies = [
@@ -1865,6 +1873,7 @@ name = "mdl-test-bot"
 version = "0.1.0"
 dependencies = [
  "azalea",
+ "mdl-compiler",
  "mdl-test",
  "tokio",
 ]

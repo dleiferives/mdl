@@ -1,0 +1,22 @@
+// MDL: success
+// PS-14: a real player's armor-slot equipment read (`.chest`) -- the same
+// inline scalar-scratch route ps12e_entity_nbt_scalar_fields.mdl already
+// proves for ArmorStand, rooted at Player instead. Mainhand/offhand are
+// explicitly out of scope for this chain (see
+// notes/compiler/pre-scheduler/ps-14-player-entity-kind.md, "Deferred") --
+// a player's held items live in Inventory/SelectedItemSlot, not the
+// equipment compound the way armor does, so PLAYER_ROOT only registers the
+// four armor slots.
+// HIR: entity-nbt-read
+// HIR: result_ty=Int32
+// CORE: entity_nbt_read
+// CORE: result=i32
+
+export fn read_chest_count() {
+    run.as(mc.entities(Player).limit(1)) |reader| {
+        const count: Int32 = reader.equipment.chest.count;
+        if (count > 0) {
+            reader.say("MDL_PS14_PLAYER_CHEST_OK");
+        }
+    }
+}

@@ -34,3 +34,6 @@ mdl-test = { path = "../mdl-test" }
 # re-pin to a newer commit (or a crates.io release, once one ships) if it goes stale.
 azalea = { git = "https://github.com/azalea-rs/azalea", rev = "c35b57ebf82fa8b26ada77ab9eb795e3827d6c16", default-features = false, features = ["log"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[dev-dependencies]
+mdl-compiler = { path = "../mdl-compiler" }

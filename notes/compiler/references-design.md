@@ -326,6 +326,8 @@ enough (target_kind: `Storage | Entity | Block | Score`) to extend to:
 - **Block-entity-rooted references** — same shape as entity, different invalidation facts
   (dimension/chunk-load/block-entity-type, per §4's table); no schema table exists for block NBT
   yet and would need its own `nbt-schema-system.md`-style registration work before this is usable.
+  See [`block-entity-nbt-paths.md`](block-entity-nbt-paths.md) for a proposed design (reads only;
+  references through a block-entity path are still future work beyond that note's scope).
 - **Score-rooted references** — a `DataRef<Int32>` whose target is a scoreboard cell rather than
   an NBT path; read/write-through still lowers to a Ref-encoding bridge (`scoreboard players get`/
   `scoreboard players operation`) instead of a `data` command, but the source-level model is

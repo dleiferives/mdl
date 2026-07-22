@@ -73,7 +73,10 @@ RootSchemaTable: EntityKind -> Compound { fields: ... }
 
 Future roots (§8 of `references-design.md`'s target kinds) — a captured `EntityRef`, a
 block-entity handle, a command-storage location — each register their own entry in an analogous
-root table, reusing the same `SchemaNode` walking logic unchanged.
+root table, reusing the same `SchemaNode` walking logic unchanged. See
+[`block-entity-nbt-paths.md`](block-entity-nbt-paths.md) for the block-entity case worked out in
+detail — it confirms this claim rather than complicating it, modulo one real addition
+(match-indexed lists, for container slots).
 
 ## 4. Registration — how a new field actually gets added
 

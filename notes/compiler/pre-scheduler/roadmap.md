@@ -1,7 +1,9 @@
 # Stage 8.5 Roadmap
 
 Status: **PS-1 through PS-5 complete; PS-11A–C (generic macro engine) landed; PS-12
-(composable entity-NBT paths) complete**
+(composable entity-NBT paths) complete; BE-1 (block-entity NBT reads) complete;
+PS-13 through PS-17 (player interaction / chest-menu capstone) planned at the
+milestone level**
 
 The macro/reference work has its own architecture of record —
 [`../macro-reference-crossing-model.md`](../macro-reference-crossing-model.md) — and
@@ -15,6 +17,13 @@ replaced the one hardcoded intrinsic client
 (`main_hand_written_book_literal_page_or_empty`, now fully deleted) with a general,
 schema-typed, composable entity-NBT path expression. Tier B (first-class references /
 `DataRef<T>`) and Tier C (all-command generalization) remain later PS milestones.
+
+Block-entity NBT reads (BE-1, chest contents) landed as the entity-NBT model's second
+receiver kind. [`ps-13-17-player-interaction-roadmap.md`](ps-13-17-player-interaction-roadmap.md)
+sequences the next five milestones — bot-driven test infrastructure, `Player`, real
+push-model events (advancements), block-entity writes, and a chest-menu capstone that
+composes all of them — at the milestone level only; each gets its own plan/todo/handoff
+when its turn comes.
 
 ## Why the roadmap changes here
 
@@ -72,6 +81,14 @@ PS-5 anonymous structs, multiple results, and destructuring
   +-> structural multiple-result types over the existing struct ABI
   +-> inferred `:=` declarations and context-inferred `.{}` literals
   +-> pipe destructuring and compile-time positional indexing
+  |
+PS-13 through PS-17 player interaction / chest-menu capstone (planned)
+  |
+  +-> Azalea-backed bot test infrastructure (PS-13)
+  +-> Player entity kind (PS-14)
+  +-> advancement-triggered events, the push model (PS-15)
+  +-> block-entity NBT writes (PS-16)
+  +-> chest-menu capstone, composition only (PS-17)
   |
 Stage 9 persistent continuations and scheduling
 ```

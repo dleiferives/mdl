@@ -19,6 +19,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -94,6 +95,7 @@ impl ServerConfig {
 pub struct ServerSandbox {
     root: PathBuf,
     preserve: bool,
+    game_port: u16,
 }
 
 impl ServerSandbox {
@@ -114,7 +116,12 @@ impl ServerSandbox {
             let root = base.join(format!("mdl-test-{}-{nanos}-{id}", std::process::id()));
             match fs::create_dir(&root) {
                 Ok(()) => {
-                    let sandbox = Self { root, preserve };
+                    let game_port = reserve_ephemeral_port()?;
+                    let sandbox = Self {
+                        root,
+                        preserve,
+                        game_port,
+                    };
                     sandbox.write_server_files()?;
                     return Ok(sandbox);
                 }
@@ -131,6 +138,16 @@ impl ServerSandbox {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The concrete TCP port reserved for this sandbox's `server-port`.
+    ///
+    /// Reserved once, before `server.properties` is written, since the server's own
+    /// ephemeral-port startup log cannot be trusted to report it (see
+    /// [`reserve_ephemeral_port`]).
+    #[must_use]
+    pub fn game_port(&self) -> u16 {
+        self.game_port
     }
 
     /// Controls whether the sandbox is deleted when the server handle is dropped.
@@ -313,27 +330,30 @@ impl ServerSandbox {
         write_file(&self.root.join("eula.txt"), b"eula=true\n")?;
         write_file(
             &self.root.join("server.properties"),
-            concat!(
-                "allow-flight=true\n",
-                "difficulty=peaceful\n",
-                "enable-query=false\n",
-                "enable-rcon=false\n",
-                "enable-status=false\n",
-                "generate-structures=false\n",
-                "generator-settings={\"biome\":\"minecraft:plains\",\"features\":false,\"lakes\":false,\"layers\":[{\"block\":\"minecraft:bedrock\",\"height\":1},{\"block\":\"minecraft:dirt\",\"height\":2},{\"block\":\"minecraft:grass_block\",\"height\":1}]}\n",
-                "level-name=world\n",
-                "level-type=minecraft:flat\n",
-                "max-players=1\n",
-                "max-tick-time=-1\n",
-                "online-mode=false\n",
-                "pause-when-empty-seconds=-1\n",
-                "server-ip=127.0.0.1\n",
-                "server-port=0\n",
-                "simulation-distance=2\n",
-                "spawn-monsters=false\n",
-                "spawn-protection=0\n",
-                "sync-chunk-writes=false\n",
-                "view-distance=2\n",
+            format!(
+                concat!(
+                    "allow-flight=true\n",
+                    "difficulty=peaceful\n",
+                    "enable-query=false\n",
+                    "enable-rcon=false\n",
+                    "enable-status=false\n",
+                    "generate-structures=false\n",
+                    "generator-settings={{\"biome\":\"minecraft:plains\",\"features\":false,\"lakes\":false,\"layers\":[{{\"block\":\"minecraft:bedrock\",\"height\":1}},{{\"block\":\"minecraft:dirt\",\"height\":2}},{{\"block\":\"minecraft:grass_block\",\"height\":1}}]}}\n",
+                    "level-name=world\n",
+                    "level-type=minecraft:flat\n",
+                    "max-players=1\n",
+                    "max-tick-time=-1\n",
+                    "online-mode=false\n",
+                    "pause-when-empty-seconds=-1\n",
+                    "server-ip=127.0.0.1\n",
+                    "server-port={port}\n",
+                    "simulation-distance=2\n",
+                    "spawn-monsters=false\n",
+                    "spawn-protection=0\n",
+                    "sync-chunk-writes=false\n",
+                    "view-distance=2\n",
+                ),
+                port = self.game_port,
             )
             .as_bytes(),
         )?;
@@ -381,6 +401,12 @@ impl TestServer {
     /// Prevents deletion of this server directory on drop.
     pub fn preserve_sandbox(&mut self) {
         self.sandbox.set_preserve(true);
+    }
+
+    /// The concrete TCP port this running server is actually listening on.
+    #[must_use]
+    pub fn game_port(&self) -> u16 {
+        self.sandbox.game_port()
     }
 
     /// Sends a console command followed by a newline.
@@ -829,6 +855,22 @@ fn write_file(path: &Path, contents: &[u8]) -> Result<()> {
     fs::write(path, contents).map_err(|error| HarnessError::io("write test file", error))
 }
 
+/// Reserves a concrete ephemeral TCP port before the server starts.
+///
+/// `server.properties`'s own `server-port=0` only tells the OS to pick a free port;
+/// the server never reports which one back (its startup log echoes the configured
+/// `0`, not the resolved port — confirmed directly against the pinned server, not
+/// assumed). Binding a probe listener first and reusing its assigned port is the
+/// only way a second client (a bot) can know in advance where to connect.
+fn reserve_ephemeral_port() -> Result<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| HarnessError::io("reserve an ephemeral game port", error))?;
+    listener
+        .local_addr()
+        .map(|address| address.port())
+        .map_err(|error| HarnessError::io("read reserved game port", error))
+}
+
 /// Failures include recent server output where it helps diagnose the problem.
 #[derive(Debug)]
 pub enum HarnessError {
@@ -969,7 +1011,14 @@ mod tests {
             let properties =
                 fs::read_to_string(root.join("server.properties")).expect("read server properties");
             assert!(properties.contains("level-name=world\n"));
-            assert!(properties.contains("server-port=0\n"));
+            assert_ne!(
+                sandbox.game_port(),
+                0,
+                "a concrete port must be reserved up front -- server-port=0 would leave \
+                 nothing for a bot to connect to, since the server's own startup log \
+                 echoes the configured value back, not the OS-resolved one"
+            );
+            assert!(properties.contains(&format!("server-port={}\n", sandbox.game_port())));
         }
         assert!(!root.exists());
     }

@@ -113,23 +113,79 @@ PS-14 (proving `Player` behaves correctly against a real logged-in entity, not j
 structurally), PS-15 (the bot is the only way to satisfy `minecraft:inventory_changed`
 for real), PS-17 (the capstone's full walkthrough is bot-driven end to end).
 
-## Verify against current implementation before starting
+## Verify against current implementation before starting — updated 2026-07-22, measured
 
 `crates/mdl-test/src/lib.rs`'s `ServerSandbox` writes `server.properties` with
 `server-port=0` (confirmed at `lib.rs:331`, asserted by its own test at `lib.rs:972`).
-Port `0` tells the OS to bind an arbitrary free ephemeral port — deliberate, and
-correct for the harness's existing job, since it avoids port collisions between
-parallel test runs that never needed a second client to find the server. But it means
-**the real listening port is not known in advance**, and nothing in `ServerSandbox`
-today parses it back out of the server's own startup log (confirmed: no
-`bound_port`/`actual_port`/log-scraping-for-port code exists anywhere in the file).
-A bot has to connect over a real TCP socket, unlike the console/RCON-style command
-driving `ServerSandbox` already does — so PS-13's first real piece of work is teaching
-the harness to recover the actual bound port (Minecraft logs it at startup; the
-existing log-line-waiting infrastructle already used for `wait_for_command_log` is the
-natural place to extract it from) and expose it to whatever constructs the bot client.
-This is a small, concrete gap, not a blocker, but it's real work this note's earlier
-draft didn't call out and should be the first thing checked, not assumed solved.
+This note originally proposed recovering the real port by scraping it from the
+server's startup log. **That's wrong, and was checked directly against the real
+pinned server rather than left as an assumption:** the log prints
+
+```
+[Server thread/INFO]: Starting Minecraft server on 127.0.0.1:0
+```
+
+— it echoes the *configured* value (`0`) back verbatim, not the OS-resolved port.
+Cross-checked the real bound port with `ss -tlnp` at the same moment: `33127`,
+nothing like what the log claims. Log-scraping cannot work here; this was caught
+before writing any integration code by spinning up the real server jar and looking,
+same discipline BE-1's two real bugs were caught by.
+
+The correct fix inverts the problem: **reserve the port on the Rust side before the
+server ever starts**, instead of trying to discover it after. Bind a `TcpListener` to
+`127.0.0.1:0`, read the OS-assigned port back via `.local_addr()?.port()`, drop the
+listener, and write that concrete port number into `server.properties` as
+`server-port=<N>` before spawning `java`. This needs a small, real change to
+`ServerSandbox::write_server_files` (`lib.rs:312`, currently hardcodes
+`"server-port=0\n"` with no parameter) and `TestServer::start` (`lib.rs:245`) to
+plumb the resolved port through and expose it publicly (e.g. `TestServer::game_port()
+-> u16`) for whatever builds the bot's connection address. There is a small,
+accepted TOCTOU race between closing the probe listener and Java binding the same
+port — the same race every "reserve a free port for a subprocess" utility accepts,
+and collision odds are negligible in this harness's already-isolated, single-server-
+at-a-time sandbox.
+
+## Verified against the real client library, not just its docs
+
+Two more things this note originally left as open questions, now resolved by reading
+Azalea's actual source (`azalea/src/client_impl/mod.rs`) rather than doc summaries:
+
+- **`Client::disconnect()` vs `Client::exit()` are genuinely different, and the
+  difference matters for test teardown.** `disconnect()`'s own doc comment: "Note that
+  this will not return from your client builder. If you need that, consider using
+  [`Self::exit`] instead." `exit()`'s doc comment: "End the entire client or swarm, and
+  return from [`ClientBuilder::start`]." For a test that needs to regain control after
+  the bot is done acting, teardown must call `exit()`, not `disconnect()` — confirmed
+  directly in source, including a documented usage example matching this exact need.
+- **`Event::Spawn`** ("Fired when the player fully spawns into the world (is in a
+  loaded chunk) and is ready to interact with it... This is usually the event you
+  should listen for when waiting for the bot to be ready") is the correct hook for
+  handing the live `Client` out of the event-handler callback to the test-driving code
+  — `Client` is cheaply `Clone` (backed by `Arc<RwLock<World>>`), so the handler can
+  send it through a `tokio::sync::oneshot` channel the first time `Event::Spawn`
+  fires, and the test-driving code awaits receiving it before issuing any actions.
+- **`ClientBuilder::start(...)` is a run-forever call by design** — per Azalea's own
+  maintainer guidance, disabling auto-reconnect still "will not make `ClientBuilder::
+  start` return on disconnect, because Azalea will keep the internal swarm around
+  forever until it's forcibly exited." It must be driven from a background `tokio::
+  spawn`, never awaited directly in the test's main flow — the test regains control by
+  calling `exit()` on the `Client` it received via the channel above, then joining the
+  spawned task's `JoinHandle` to confirm clean shutdown (mirroring `TestServer`'s own
+  `Drop`/`shutdown()` teardown discipline, not best-effort).
+
+`mdl-test` has zero async/tokio dependency today (confirmed: no `tokio` anywhere in
+the workspace, `ServerSandbox`/`TestServer` are 100% thread-and-channel based). Azalea
+requires tokio plus `bevy_app`/`bevy_ecs`/`bevy_tasks` (confirmed from `azalea`'s own
+`Cargo.toml`) — real, non-trivial new dependency weight. It belongs under
+`[dev-dependencies]` in `crates/mdl-test/Cargo.toml`, mirroring how `mdl-compiler`
+itself is already a dev-dependency there — the shipped `mdl-test` library/binary
+should not need to compile Azalea at all, only test binaries that actually use a bot.
+The natural shape for test authors: a synchronous-facing `BotHandle` (returned by a
+new `TestServer::connect_bot(&self, name: &str) -> Result<BotHandle>`) that owns one
+`tokio::runtime::Runtime` internally and `.block_on()`s each of its own methods — so
+bot-driven tests keep reading top-to-bottom like every existing pinned-server test,
+freely interleaving ordinary `TestServer::command()`/`wait_for_log()` calls with bot
+actions, with no `async`/`.await` visible in test bodies at all.
 
 ## Not yet determined
 

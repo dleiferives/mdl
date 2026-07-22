@@ -1,13 +1,23 @@
 # Block-Entity NBT Paths — Reading Container Contents (Chests First)
 
 Date: 2026-07-21
-Status: **Slice 1 implemented and landed (BE-1) — literal block positions, `Chest` only, inline
-lowering, proven against the real pinned Java 26.2 server. Slices 2-4 (runtime slot matching, more
-block-entity kinds, `~`-relative positions) remain future work. Extends
+Status: **Slices 1-2 implemented and landed — literal and runtime container-slot reads, `Chest`
+only, both the inline and macro-helper lowering routes, proven against the real pinned Java 26.2
+server. Slices 3-4 (more block-entity kinds, `~`-relative positions) remain future work. Extends
 [`entity-nbt-path-composability.md`](entity-nbt-path-composability.md) and answers the deferred
 question both [`references-design.md`](references-design.md) §11 and
 [`nbt-schema-system.md`](nbt-schema-system.md) §7 left open: "block-entity-rooted references... no
 schema table exists for block NBT yet."**
+
+**Second correction (Slice 2, found by testing against the real server before trusting a
+plausible-sounding assumption):** storing a runtime macro-bridged value with a `Byte` NBT tag does
+**not** make its `$(key)` substitution render with a `b` suffix — measured directly: `$(key)`
+always substitutes as bare decimal text, regardless of the stored value's NBT tag. The `Byte`
+suffix a chest's `Slot` match needs must be a literal character in the macro command *template*,
+immediately after the substitution marker (`Items[{Slot:$(i0)b}]`), not derived from the bridged
+value at all. This is the same class of mistake as §1.2's correction below — a documented or
+"obviously true" assumption about NBT/macro behavior that turned out to be wrong on contact with
+the real server — logged here for the same reason.
 
 **Correction (found by testing against the real server, not assumed):** §1.2 and §2.1 below
 originally described container contents as living under a `minecraft:container` *data component*
@@ -155,14 +165,16 @@ is target-independent about `NbtPathKey` vs. plain `Box<str>`.
 
 ### 2.4 Minecraft-target lowering
 
-New `DataSource::Block { position: BlockPosition, path: NbtPath }` (mirrors `DataSource::Entity`
-exactly). `NbtPathSegment::Match` has a render arm in the inline path (regular `NbtPath` `Display`,
-quoting every key, matching the existing convention, plus the `value_kind` byte-suffix
-correction). The macro path (`crossings.rs::render_data_modify_as_macro`) deliberately does
-**not** have a `Match` arm yet — Slice 1 never constructs a runtime `Match` (the checker requires
-a literal slot), so the existing `DataSource::Entity`-only macro renderer is untouched, with an
-`unreachable!()` guard explaining why. This sidesteps the exact class of bug PS-12.0/PS-12E found
-in that renderer (the leading-dot bug) by not touching it at all until Slice 2 actually needs to.
+`DataSource::Block { position: BlockPosition, path: NbtPath }` (mirrors `DataSource::Entity`
+exactly). `NbtPathSegment::Match` has a render arm in both the inline path (regular `NbtPath`
+`Display`, quoting every key, matching the existing convention, plus the `value_kind` byte-suffix
+correction) and, since Slice 2, the macro path
+(`crossings.rs::build_entity_nbt_read_line`, extracted from the old `render_data_modify_as_macro`
+so both the `String` 2-line shape and the new `Bool`/`I32` 3-line scratch-conversion shape
+(`render_entity_nbt_scalar_read_as_macro`) reuse the same segment-rendering loop instead of
+duplicating it). The macro renderer's byte-suffix handling is the Slice 2 correction from the top
+of this note: the suffix is emitted as literal template text immediately after the `$(key)`
+substitution marker, never derived from the bridged value's stored NBT tag.
 
 ## Part 3 — Staging
 
@@ -172,13 +184,22 @@ in that renderer (the leading-dot bug) by not touching it at all until Slice 2 a
    lowering. No macro/runtime route (mirrors PS-12B/C's own const-first staging). Proven against
    the real pinned Java 26.2 server, both the success path (reading a real stack count out of a
    real chest) and the fail-soft path (block replaced with something that isn't a chest).
-2. **Slice 2 — runtime slot matching.** Generalize `Match`'s value operand to `Operand::Runtime`,
-   proving the macro/crossings engine handles a `Match` segment exactly as it already handles
-   `Index` — this is the real test that PS-11's engine generalizes to a second segment kind, not
-   just a second use of the same one. Also needs `crossings.rs` taught a real `Match` rendering arm
-   (removing Slice 1's `unreachable!()` guard) — apply the `index == 0` leading-separator lesson
-   from PS-12.0/E deliberately, not by rediscovering it.
-3. **Slice 3 — differential + pinned-server evidence for the runtime case**, mirroring PS-12D.
+2. **Slice 2 — runtime slot matching. Implemented and landed**, together with differential and
+   pinned-server evidence (folded into this slice rather than a separate Slice 3 — the same
+   discipline PS-12C+D used). `check.rs`'s literal-only restriction on `Match` segments was
+   removed (the checker already had every other guard `Index` needed —
+   `runtime_index_contains_forbidden`, the `Int32` type check — so nothing new was needed there).
+   `crossings.rs` gained a real `Match` rendering arm (replacing Slice 1's `unreachable!()` guard),
+   applying the `index == 0` leading-separator lesson from PS-12.0/E deliberately (both
+   `DataSource::Entity` and `DataSource::Block`'s header text are built before the segment loop
+   starts, so no segment is ever "first" inside the loop itself). Also needed a genuinely new
+   piece the design note didn't anticipate: the `Bool`/`I32` macro-helper shape needed its own
+   3-line `MacroCommand` builder (`render_entity_nbt_scalar_read_as_macro`) — default-init,
+   macro-substituted read, plain score-store conversion, all inside one helper function body —
+   since the existing 2-line `String`-shape builder didn't have a slot for the extra conversion
+   step. Confirmed against the real server that `.count`'s macro-helper route needed no
+   String-only assertion lifted incorrectly: the byte-suffix correction above was found and fixed
+   before any test was written, not after a test failed.
 4. **Slice 4 — more block-entity kinds** (`Barrel`, `Furnace`'s input/output/fuel slots, `Hopper`,
    `ShulkerBox`) as additional `BlockEntityKind` variants and schema rows — near-free once the
    mechanism is proven, the same "prove with one, generalize by table row" story `.count` already

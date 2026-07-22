@@ -410,6 +410,15 @@ pub enum SingleScoreHolder {
     Selector(AtMostOneSelector),
 }
 
+impl fmt::Display for SingleScoreHolder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fake(holder) => write!(formatter, "{holder}"),
+            Self::Selector(selector) => write!(formatter, "{selector}"),
+        }
+    }
+}
+
 impl From<FakeScoreHolder> for SingleScoreHolder {
     fn from(holder: FakeScoreHolder) -> Self {
         Self::Fake(holder)
@@ -502,6 +511,12 @@ impl ScoreRef {
     #[must_use]
     pub const fn objective(&self) -> &ObjectiveName {
         &self.objective
+    }
+}
+
+impl fmt::Display for ScoreRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} {}", self.holder, self.objective)
     }
 }
 

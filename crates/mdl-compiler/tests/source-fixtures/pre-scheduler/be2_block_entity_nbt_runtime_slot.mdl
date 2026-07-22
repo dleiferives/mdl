@@ -1,0 +1,17 @@
+// MDL: success
+// BE-1 Slice 2: a genuinely runtime container slot, closing the exact
+// untested gap that let PS-12.0's original two engine bugs (and this
+// slice's own leading-dot-class byte-suffix subtlety) ship silently --
+// neither a fully-constant fixture nor a checker-only test ever pushes a
+// runtime Match segment all the way through Minecraft-target lowering.
+// HIR: entity-nbt-read
+// HIR: result_ty=Int32
+// CORE: entity_nbt_read
+// CORE: result=i32
+
+export fn read_chest_slot(slot: Int32) {
+    const count: Int32 = mc.block(Chest, 0, 4, 0).Items[slot].count;
+    if (count > 1) {
+        unsafe minecraft("say BE2_STACK");
+    }
+}

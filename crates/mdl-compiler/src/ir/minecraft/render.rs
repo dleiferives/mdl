@@ -9,8 +9,7 @@ use super::{
     DataSource, ExecuteModifierKind, ExternalCallableRef, FunctionTagId, InternalCallableRef,
     MacroCommand, MacroSegment, McFunction, McFunctionId, MinecraftProgram, NbtValue,
     ReturnCommand, ScoreCommand, ScoreComparison, ScoreHolders, ScoreOperation, ScoreRef,
-    ScoreSelection, SingleScoreHolder, StorageNumericType, StoragePath, StoreChannel,
-    StoreDestination,
+    ScoreSelection, StorageNumericType, StoragePath, StoreChannel, StoreDestination,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -229,13 +228,7 @@ fn render_selection(selection: &ScoreSelection, sink: &mut CommandSink) -> Resul
 }
 
 fn render_score_ref(score: &ScoreRef, sink: &mut CommandSink) -> Result<(), RenderError> {
-    match score.holder() {
-        SingleScoreHolder::Fake(holder) => sink.write_arguments(format_args!("{holder}"))?,
-        SingleScoreHolder::Selector(selector) => {
-            sink.write_arguments(format_args!("{selector}"))?;
-        }
-    }
-    sink.write_arguments(format_args!(" {}", score.objective()))
+    sink.write_arguments(format_args!("{score}"))
 }
 
 const fn score_operation_token(operation: ScoreOperation) -> &'static str {

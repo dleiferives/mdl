@@ -598,35 +598,65 @@ fn define_external_helper(
                     data.origin(),
                 )
             })?;
-            // Every schema field reachable through a runtime list index today
-            // is `String` (`pages[index].raw` — no `Bool`/`I32` field sits
-            // behind a `List` step). If a future schema field changes that,
-            // this needs the same scratch/score conversion
-            // `emit_entity_nbt_read_result`'s inline path already has;
-            // assert the constraint here instead of silently mis-rendering.
-            if plan.home_type(home) != Some(CoreType::String) {
-                return Err(invariant_diagnostics(
-                    "macro-routed entity-NBT read result is not a String home; \
-                     runtime-index-reachable non-String fields are not supported yet",
-                    data.origin(),
-                ));
-            }
-            let result_target = plan.string_storage(home).ok_or_else(|| {
-                invariant_diagnostics(
-                    "macro-routed entity-NBT read result has no string storage",
-                    data.origin(),
-                )
-            })?;
-            let read_path = entity_nbt_path_from_segments(resolved.segments(), data.origin())?;
-            let base_cmd = CommandKind::Data(DataCommand::Modify {
-                target: result_target,
-                mode: DataModifyMode::Set,
-                source: entity_nbt_read_source(resolved, read_path),
-            });
-            let operands = super::crossings::collect_runtime_operands(&base_cmd);
-            let frame = super::crossings::build_frame(&operands)
-                .expect("unusable-inline entity-NBT read must have runtime operands");
-            let macro_cmd = super::crossings::render_as_macro(&base_cmd, &frame, data.origin());
+            let macro_cmd = match plan.home_type(home) {
+                Some(CoreType::String) => {
+                    let result_target = plan.string_storage(home).ok_or_else(|| {
+                        invariant_diagnostics(
+                            "macro-routed entity-NBT read result has no string storage",
+                            data.origin(),
+                        )
+                    })?;
+                    let read_path =
+                        entity_nbt_path_from_segments(resolved.segments(), data.origin())?;
+                    let base_cmd = CommandKind::Data(DataCommand::Modify {
+                        target: result_target,
+                        mode: DataModifyMode::Set,
+                        source: entity_nbt_read_source(resolved, read_path),
+                    });
+                    let operands = super::crossings::collect_runtime_operands(&base_cmd);
+                    let frame = super::crossings::build_frame(&operands)
+                        .expect("unusable-inline entity-NBT read must have runtime operands");
+                    super::crossings::render_as_macro(&base_cmd, &frame, data.origin())
+                }
+                Some(ty @ (CoreType::Bool | CoreType::I32)) => {
+                    // BE-1 Slice 2: a runtime-matched container slot (`.count`
+                    // etc.) reaches here — mirrors `emit_entity_nbt_read_result`'s
+                    // inline scratch/score conversion, one level up across the
+                    // macro-helper boundary instead of within one function.
+                    let score = plan.score(home).ok_or_else(|| {
+                        invariant_diagnostics(
+                            "macro-routed entity-NBT scalar read result has no score home",
+                            data.origin(),
+                        )
+                    })?;
+                    let scratch = plan.entity_nbt_scalar_scratch();
+                    let default = if ty == CoreType::Bool {
+                        NbtValue::byte(0)
+                    } else {
+                        NbtValue::int(0)
+                    };
+                    let read_path =
+                        entity_nbt_path_from_segments(resolved.segments(), data.origin())?;
+                    let read_source = entity_nbt_read_source(resolved, read_path);
+                    let operands = entity_nbt_runtime_operands(resolved);
+                    let frame = super::crossings::build_frame(&operands)
+                        .expect("unusable-inline entity-NBT read must have runtime operands");
+                    super::crossings::render_entity_nbt_scalar_read_as_macro(
+                        &scratch,
+                        &read_source,
+                        &default,
+                        &score,
+                        &frame,
+                        data.origin(),
+                    )
+                }
+                Some(CoreType::ListI32) | None => {
+                    return Err(invariant_diagnostics(
+                        "macro-routed entity-NBT read result has an unsupported physical type",
+                        data.origin(),
+                    ));
+                }
+            };
             let body = command(CommandKind::Macro(macro_cmd), data.origin())?;
             target.define_external_helper(helper, body)
         }

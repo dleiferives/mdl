@@ -81,6 +81,56 @@ export fn read_chest_count() {
     assert!(pack.contains("run data get storage"), "{pack}");
 }
 
+/// BE-1 Slice 2: a genuinely runtime container slot routes through the
+/// macro/crossings engine, exactly like PS-12's runtime page index did —
+/// proving the engine generalizes to a second segment kind (`Match`), not
+/// just a second use of `Index`. The one real correction Slice 2 needed
+/// (measured against the real server, not assumed): a macro `$(key)`
+/// substitution always renders as bare decimal text regardless of the NBT
+/// tag the bridged value was stored with, so the `Byte` type suffix must be
+/// a literal character in the command *template*, immediately after the
+/// substitution marker (`$(i0)b`), not derived from the stored
+/// macro-argument value.
+#[test]
+fn runtime_slot_index_routes_through_the_macro_helper_with_the_byte_suffix_in_the_template() {
+    let source = r#"
+export fn read_chest_slot(slot: Int32) {
+    const count: Int32 = mc.block(Chest, 0, 4, 0).Items[slot].count;
+    if (count > 1) {
+        unsafe minecraft("say BE2_STACK");
+    }
+}
+"#;
+    let pack = pack_text(source);
+    assert!(pack.contains("mdl:__mdl/macro"), "{pack}");
+
+    let read_line = pack
+        .lines()
+        .find(|line| line.starts_with('$') && line.contains("set from block"))
+        .expect("macro-rendered block-NBT read line must be present");
+    assert!(
+        read_line.contains("Items[{Slot:$(i0)b}]"),
+        "the byte suffix must be literal template text right after the \
+         substitution marker, not derived from the bridged value's stored \
+         NBT type (measured: $(key) always substitutes as bare decimal \
+         text): {read_line}"
+    );
+
+    assert!(
+        pack.contains("entity_nbt_scalar_scratch"),
+        "the runtime-matched Int32 result must still route through the \
+         shared scratch slot inside the macro helper, exactly like the \
+         literal-slot case: {pack}"
+    );
+    assert!(
+        pack.lines()
+            .any(|line| { line.contains("execute store result score") && !line.starts_with('$') }),
+        "the score conversion is a plain (non-macro) line inside the helper \
+         body -- it names no runtime value, only the fixed scratch \
+         location: {pack}"
+    );
+}
+
 fn options() -> CompilationOptions {
     let lowering = LoweringOptions::new(
         JavaEditionTarget::V26_2,

@@ -4615,17 +4615,6 @@ impl<'a> BodyChecker<'a> {
                     );
                     return Ok(None);
                 }
-                if match_key.is_some() && !matches!(index_expr.kind, HirExpressionKind::Int32(_)) {
-                    self.diagnostics.push(
-                        PendingDiagnostic::new(
-                            LITERAL_CONTEXT_REQUIRED,
-                            "a runtime container-slot index is not supported yet",
-                            index.span,
-                        )
-                        .primary("this release requires a compile-time-known slot number"),
-                    );
-                    return Ok(None);
-                }
                 step.node = element;
                 step.segments.push(match match_key {
                     Some(match_key) => HirEntityPathSegment::Match {

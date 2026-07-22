@@ -137,89 +137,203 @@ fn render_data_modify_as_macro(
     frame: &MacroFrame,
     origin: OriginId,
 ) -> MacroCommand {
-    use std::fmt::Write;
-
-    let target_storage = target.storage();
-    let target_path = target.path();
-
     // Line 1: empty init — data modify storage <target> <path> set value ""
     let empty_init = MacroLine {
         segments: vec![MacroSegment::Literal(format!(
-            "data modify storage {target_storage} {target_path} set value \"\""
+            "data modify storage {} {} set value \"\"",
+            target.storage(),
+            target.path()
         ))],
     };
 
     // Line 2: the actual read, with path segments substituted
-    let read_line = match source {
+    let read_line = build_entity_nbt_read_line(target.storage(), target.path(), source, frame);
+
+    MacroCommand::new(vec![empty_init, read_line], frame.arguments.clone(), origin)
+        .expect("auto-generated macro command is valid")
+}
+
+/// Builds the `data modify storage <target> <path> set from entity/block ...
+/// <source path, with any runtime Index/Match segment substituted>` line
+/// shared by every entity-NBT macro read shape (BE-1's `Chest`, PS-12's
+/// `written_book_content`). Split out of `render_data_modify_as_macro` so
+/// the scalar (`Bool`/`I32`) scratch-conversion shape
+/// (`render_entity_nbt_scalar_read_as_macro`) can reuse it for its own
+/// middle line instead of duplicating the segment-rendering loop.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive per-segment-kind match keeps every path-rendering case (both \
+              DataSource variants, both Index and Match, const and runtime) local and easy to \
+              audit together, rather than split across smaller functions that would each need \
+              the same frame/literal-buffer threading"
+)]
+fn build_entity_nbt_read_line(
+    target_storage: &StorageId,
+    target_path: &NbtPath,
+    source: &DataSource,
+    frame: &MacroFrame,
+) -> MacroLine {
+    use std::fmt::Write;
+
+    let mut segments: Vec<MacroSegment> = Vec::new();
+    let mut literal_buf = String::new();
+    let path = match source {
         DataSource::Entity { selector, path } => {
-            let mut segments: Vec<MacroSegment> = Vec::new();
-            let mut literal_buf = String::new();
             write!(
                 literal_buf,
                 "data modify storage {target_storage} {target_path} set from entity {selector} "
             )
             .unwrap();
-
-            for (index, segment) in path.segments().iter().enumerate() {
-                match segment {
-                    NbtPathSegment::Key(key) => {
-                        let key_str = key.as_str();
-                        let separator = if index == 0 { "" } else { "." };
-                        if key_str
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                        {
-                            write!(literal_buf, "{separator}{key_str}").unwrap();
-                        } else {
-                            write!(
-                                literal_buf,
-                                "{separator}\"{}\"",
-                                key_str.replace('\\', "\\\\").replace('"', "\\\"")
-                            )
-                            .unwrap();
-                        }
-                    }
-                    NbtPathSegment::Index(crate::ir::core::Operand::Runtime(value)) => {
-                        // Flush accumulated literal
-                        if !literal_buf.is_empty() {
-                            segments.push(MacroSegment::Literal(std::mem::take(&mut literal_buf)));
-                        }
-                        let var_id = frame
-                            .variables
-                            .iter()
-                            .find(|(v, _, _)| *v == *value)
-                            .map(|(_, _, id)| *id)
-                            .expect("runtime operand not found in macro frame");
-                        segments.push(MacroSegment::Literal("[".to_owned()));
-                        segments.push(MacroSegment::Variable(var_id));
-                        segments.push(MacroSegment::Literal("]".to_owned()));
-                    }
-                    NbtPathSegment::Index(crate::ir::core::Operand::Const(n)) => {
-                        write!(literal_buf, "[{n}]").unwrap();
-                    }
-                    NbtPathSegment::AllElements => {
-                        literal_buf.push_str("[]");
-                    }
-                    NbtPathSegment::Match { .. } => unreachable!(
-                        "a Match segment only appears under DataSource::Block (BE-1), which \
-                         never reaches this DataSource::Entity-only macro renderer; runtime \
-                         container-slot matching is explicit future work \
-                         (block-entity-nbt-paths.md's deferred slice 2)"
-                    ),
-                }
-            }
-
-            if !literal_buf.is_empty() {
-                segments.push(MacroSegment::Literal(std::mem::take(&mut literal_buf)));
-            }
-
-            MacroLine { segments }
+            path
+        }
+        DataSource::Block { position, path } => {
+            write!(
+                literal_buf,
+                "data modify storage {target_storage} {target_path} set from block {} {} {} ",
+                position.x, position.y, position.z
+            )
+            .unwrap();
+            path
         }
         _ => panic!("unsupported data source for macro rendering"),
     };
 
-    MacroCommand::new(vec![empty_init, read_line], frame.arguments.clone(), origin)
-        .expect("auto-generated macro command is valid")
+    for (index, segment) in path.segments().iter().enumerate() {
+        match segment {
+            NbtPathSegment::Key(key) => {
+                let key_str = key.as_str();
+                let separator = if index == 0 { "" } else { "." };
+                if key_str
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    write!(literal_buf, "{separator}{key_str}").unwrap();
+                } else {
+                    write!(
+                        literal_buf,
+                        "{separator}\"{}\"",
+                        key_str.replace('\\', "\\\\").replace('"', "\\\"")
+                    )
+                    .unwrap();
+                }
+            }
+            NbtPathSegment::Index(crate::ir::core::Operand::Runtime(value)) => {
+                // Flush accumulated literal
+                if !literal_buf.is_empty() {
+                    segments.push(MacroSegment::Literal(std::mem::take(&mut literal_buf)));
+                }
+                let var_id = frame
+                    .variables
+                    .iter()
+                    .find(|(v, _, _)| *v == *value)
+                    .map(|(_, _, id)| *id)
+                    .expect("runtime operand not found in macro frame");
+                segments.push(MacroSegment::Literal("[".to_owned()));
+                segments.push(MacroSegment::Variable(var_id));
+                segments.push(MacroSegment::Literal("]".to_owned()));
+            }
+            NbtPathSegment::Index(crate::ir::core::Operand::Const(n)) => {
+                write!(literal_buf, "[{n}]").unwrap();
+            }
+            NbtPathSegment::AllElements => {
+                literal_buf.push_str("[]");
+            }
+            NbtPathSegment::Match {
+                key,
+                value: crate::ir::core::Operand::Const(n),
+                value_kind,
+            } => {
+                write!(
+                    literal_buf,
+                    "[{{{}:{n}{}}}]",
+                    key.as_str(),
+                    match_value_suffix(*value_kind)
+                )
+                .unwrap();
+            }
+            NbtPathSegment::Match {
+                key,
+                value: crate::ir::core::Operand::Runtime(value),
+                value_kind,
+            } => {
+                // A macro `$(key)` substitution always renders as bare
+                // decimal text regardless of the NBT tag the bridged value
+                // was stored with (measured against the real server, not
+                // assumed — see `block-entity-nbt-paths.md`'s Slice 2 note):
+                // the type suffix must be a literal character in the
+                // command *template*, immediately after the substitution
+                // marker, not derived from the stored macro-argument value.
+                if !literal_buf.is_empty() {
+                    segments.push(MacroSegment::Literal(std::mem::take(&mut literal_buf)));
+                }
+                let var_id = frame
+                    .variables
+                    .iter()
+                    .find(|(v, _, _)| *v == *value)
+                    .map(|(_, _, id)| *id)
+                    .expect("runtime operand not found in macro frame");
+                segments.push(MacroSegment::Literal(format!("[{{{}:", key.as_str())));
+                segments.push(MacroSegment::Variable(var_id));
+                segments.push(MacroSegment::Literal(format!(
+                    "{}}}]",
+                    match_value_suffix(*value_kind)
+                )));
+            }
+        }
+    }
+
+    if !literal_buf.is_empty() {
+        segments.push(MacroSegment::Literal(literal_buf));
+    }
+
+    MacroLine { segments }
+}
+
+const fn match_value_suffix(value_kind: crate::ir::minecraft::NbtMatchValueKind) -> &'static str {
+    match value_kind {
+        crate::ir::minecraft::NbtMatchValueKind::Byte => "b",
+        crate::ir::minecraft::NbtMatchValueKind::Int32 => "",
+    }
+}
+
+/// Builds the macro-routed `Bool`/`I32` entity-NBT read shape (BE-1 Slice 2):
+/// a type-appropriate default write to the shared scratch slot, the
+/// macro-substituted read attempt into that same slot (reusing
+/// `build_entity_nbt_read_line`, exactly like the `String` shape does), and
+/// a plain (non-macro — it names no runtime value, only the fixed scratch
+/// location) score-store conversion, all three lines in one macro command
+/// so the whole read stays inside a single helper-function body. Mirrors
+/// `emit_entity_nbt_read_result`'s inline scalar shape one level up, across
+/// the macro-helper boundary instead of within one function.
+pub(crate) fn render_entity_nbt_scalar_read_as_macro(
+    scratch: &StoragePath,
+    source: &DataSource,
+    default: &crate::ir::minecraft::NbtValue,
+    score: &crate::ir::minecraft::ScoreRef,
+    frame: &MacroFrame,
+    origin: OriginId,
+) -> MacroCommand {
+    let default_init = MacroLine {
+        segments: vec![MacroSegment::Literal(format!(
+            "data modify storage {} {} set value {default}",
+            scratch.storage(),
+            scratch.path()
+        ))],
+    };
+    let read_attempt = build_entity_nbt_read_line(scratch.storage(), scratch.path(), source, frame);
+    let convert = MacroLine {
+        segments: vec![MacroSegment::Literal(format!(
+            "execute store result score {score} run data get storage {} {}",
+            scratch.storage(),
+            scratch.path()
+        ))],
+    };
+    MacroCommand::new(
+        vec![default_init, read_attempt, convert],
+        frame.arguments.clone(),
+        origin,
+    )
+    .expect("auto-generated macro command is valid")
 }
 
 // ── BRIDGE ──

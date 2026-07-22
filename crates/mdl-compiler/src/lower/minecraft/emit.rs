@@ -351,9 +351,7 @@ fn lower_instruction(
             Ok(None)
         }
         InstructionPlan::Minecraft {
-            external,
-            recipe,
-            results,
+            external, recipe, ..
         } => {
             let CoreOp::External(actual) = data.op() else {
                 return Err(invariant_diagnostics(
@@ -379,48 +377,9 @@ fn lower_instruction(
                     data.origin(),
                 ));
             }
-            if let Some(page_index) = selected.book_page_index() {
-                let [result] = results.as_ref() else {
-                    return Err(invariant_diagnostics(
-                        "written-book page recipe requires exactly one result home",
-                        data.origin(),
-                    ));
-                };
-                let target = context
-                    .plan()
-                    .string_storage(result.home())
-                    .ok_or_else(|| {
-                        invariant_diagnostics(
-                            "written-book page result has no string storage",
-                            data.origin(),
-                        )
-                    })?;
-                context.push(command(
-                    CommandKind::Data(DataCommand::Modify {
-                        target: target.clone(),
-                        mode: DataModifyMode::Set,
-                        source: DataSource::Value(NbtValue::string("")),
-                    }),
-                    data.origin(),
-                )?)?;
-                let read = CommandKind::Data(DataCommand::Modify {
-                    target,
-                    mode: DataModifyMode::Set,
-                    source: DataSource::Entity {
-                        selector: Selector::from(
-                            crate::ir::minecraft::AtMostOneSelector::SelfExecutor,
-                        ),
-                        path: super::preflight::written_book_literal_page_path(page_index),
-                    },
-                });
-                context
-                    .push_correlated(command(read, data.origin())?)
-                    .map(Some)
-            } else {
-                context
-                    .push_correlated(command(selected.command_kind(), data.origin())?)
-                    .map(Some)
-            }
+            context
+                .push_correlated(command(selected.command_kind(), data.origin())?)
+                .map(Some)
         }
         InstructionPlan::EntityNbtRead { external, results } => {
             let CoreOp::External(actual) = data.op() else {
@@ -3268,154 +3227,5 @@ mod tests {
             SingleScoreHolder::Fake(holder.clone()),
             selection.objective().clone(),
         )
-    }
-
-    fn runtime_book_page_core(sources: &SourceContext) -> (CoreProgram, FunctionId) {
-        use crate::entity::EntityId;
-
-        let mut core = CoreProgram::new();
-        let operation = core
-            .declare_minecraft_operation(
-                crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
-                crate::ir::semantic::EntityKind::ArmorStand,
-                crate::ir::core::MinecraftOperationAttributes::BookPage {
-                    page_index: crate::ir::core::Operand::Runtime(
-                        crate::ir::core::ValueId::from_index(0),
-                    ),
-                    page_origin: OriginId::UNKNOWN,
-                },
-                crate::ir::core::MinecraftOperationOrigins::new(
-                    OriginId::UNKNOWN,
-                    OriginId::UNKNOWN,
-                    OriginId::UNKNOWN,
-                ),
-            )
-            .unwrap();
-        let external = core
-            .declare_external_op(
-                crate::ir::core::ExternalSemanticBinding::MinecraftOperation(operation),
-                vec![CoreType::I32],
-                vec![CoreType::String],
-                OriginId::UNKNOWN,
-            )
-            .unwrap();
-        let function = core
-            .declare_function(
-                Some("book_runtime"),
-                vec![CoreType::I32],
-                vec![CoreType::String],
-                OriginId::UNKNOWN,
-            )
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&core, sources, function).unwrap();
-        let entry = builder.entry_block();
-        let page = parameter(&builder, entry, 0);
-        let (_instruction, results) = builder
-            .external_with_identity(external, vec![page], OriginId::UNKNOWN)
-            .unwrap();
-        builder
-            .terminate(Terminator::new(
-                TerminatorKind::Return(results),
-                OriginId::UNKNOWN,
-            ))
-            .unwrap();
-        core.define_function(function, builder.finish().unwrap())
-            .unwrap();
-        (core, function)
-    }
-
-    fn assert_macro_bridge_in_rendered(rendered: &str) {
-        let unquoted = rendered.replace('"', "");
-        assert!(
-            unquoted.contains("data modify storage mdl:__mdl/macro args set value {}"),
-            "missing frame seed in:\n{rendered}"
-        );
-        assert!(
-            unquoted.contains("execute store result storage mdl:__mdl/macro args.i0 int 1 run")
-                && unquoted.contains("scoreboard players get"),
-            "missing score→storage bridge for key 'i0' in:\n{rendered}"
-        );
-        assert!(
-            unquoted.contains("function ")
-                && unquoted.contains(" with storage mdl:__mdl/macro args"),
-            "missing function-with-storage call in:\n{rendered}"
-        );
-        assert!(
-            rendered.lines().any(|line| line.starts_with('$')),
-            "missing $-prefixed macro line in:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn runtime_book_page_emits_generic_bridge_and_macro_call() {
-        let sources = SourceContext::new();
-        let (core, _function) = runtime_book_page_core(&sources);
-        let output = lower_to_minecraft(
-            &core,
-            &sources,
-            &options().with_optimization_level(MinecraftOptimizationLevel::None),
-        )
-        .unwrap();
-        let rendered = render_all(output.program());
-        assert_macro_bridge_in_rendered(&rendered);
-    }
-
-    #[test]
-    fn static_book_page_does_not_emit_macro_infrastructure() {
-        let sources = SourceContext::new();
-        let mut core = CoreProgram::new();
-        let operation = core
-            .declare_minecraft_operation(
-                crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
-                crate::ir::semantic::EntityKind::ArmorStand,
-                crate::ir::core::MinecraftOperationAttributes::BookPage {
-                    page_index: crate::ir::core::Operand::Const(3),
-                    page_origin: OriginId::UNKNOWN,
-                },
-                crate::ir::core::MinecraftOperationOrigins::new(
-                    OriginId::UNKNOWN,
-                    OriginId::UNKNOWN,
-                    OriginId::UNKNOWN,
-                ),
-            )
-            .unwrap();
-        let external = core
-            .declare_external_op(
-                crate::ir::core::ExternalSemanticBinding::MinecraftOperation(operation),
-                vec![],
-                vec![CoreType::String],
-                OriginId::UNKNOWN,
-            )
-            .unwrap();
-        let function = core
-            .declare_function(
-                Some("book_static"),
-                vec![],
-                vec![CoreType::String],
-                OriginId::UNKNOWN,
-            )
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
-        let (_instruction, results) = builder
-            .external_with_identity(external, vec![], OriginId::UNKNOWN)
-            .unwrap();
-        builder
-            .terminate(Terminator::new(
-                TerminatorKind::Return(results),
-                OriginId::UNKNOWN,
-            ))
-            .unwrap();
-        core.define_function(function, builder.finish().unwrap())
-            .unwrap();
-        let output = lower_to_minecraft(
-            &core,
-            &sources,
-            &options().with_optimization_level(MinecraftOptimizationLevel::None),
-        )
-        .unwrap();
-        let rendered = render_all(output.program());
-        assert!(!rendered.contains(" with storage mdl:__mdl/macro"));
-        assert!(!rendered.lines().any(|line| line.starts_with('$')));
-        assert!(!rendered.contains("execute store result storage mdl:__mdl/macro"));
     }
 }

@@ -1,6 +1,6 @@
 //! Program-owned, target-independent typed Minecraft operations.
 
-use super::{CoreProgram, MinecraftOperationId, Operand, ProgramError};
+use super::{CoreProgram, MinecraftOperationId, ProgramError};
 use crate::entity::EntityLimitError;
 use crate::ir::semantic::{
     AmbientContextRequirements, ContextRequirement, EntityCapability, EntityKind, MessageLiteral,
@@ -28,11 +28,6 @@ pub enum MinecraftOperationAttributes {
         offset: RelativeWorldOffset,
         component_origins: [OriginId; 3],
     },
-    /// Static or dynamic-index main-hand written-book literal-page read.
-    BookPage {
-        page_index: Operand<u8>,
-        page_origin: OriginId,
-    },
 }
 
 impl MinecraftOperationAttributes {
@@ -43,7 +38,6 @@ impl MinecraftOperationAttributes {
             Self::Say { .. } => MinecraftSemanticKey::Say,
             Self::Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
             Self::MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
-            Self::BookPage { .. } => MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
         }
     }
 
@@ -52,7 +46,7 @@ impl MinecraftOperationAttributes {
     pub const fn say_message(&self) -> Option<&MessageLiteral> {
         match self {
             Self::Say { message, .. } => Some(message),
-            Self::Teleport { .. } | Self::MoveBy { .. } | Self::BookPage { .. } => None,
+            Self::Teleport { .. } | Self::MoveBy { .. } => None,
         }
     }
 
@@ -67,7 +61,6 @@ impl MinecraftOperationAttributes {
             | Self::MoveBy {
                 component_origins, ..
             } => component_origins[0],
-            Self::BookPage { page_origin, .. } => *page_origin,
         }
     }
 
@@ -77,7 +70,7 @@ impl MinecraftOperationAttributes {
         let base = AmbientContextRequirements::NONE
             .with_executor(ContextRequirement::Required(receiver_kind));
         match self {
-            Self::Say { .. } | Self::MoveBy { .. } | Self::BookPage { .. } => base,
+            Self::Say { .. } | Self::MoveBy { .. } => base,
             Self::Teleport { position, .. } => {
                 let mut requirements = base.with_dimension(ContextRequirement::Required(()));
                 match position {
@@ -210,24 +203,6 @@ impl CoreProgram {
         self.minecraft_operations
             .push(declaration)
             .map_err(|EntityLimitError| ProgramError::EntityLimit)
-    }
-
-    /// Replaces the page index of a previously declared `BookPage` operation
-    /// with a dynamically resolved `ValueId`.
-    #[allow(dead_code, reason = "used by Stage 10 macro lowering when fully wired")]
-    pub(crate) fn patch_book_page_index(
-        &mut self,
-        operation: MinecraftOperationId,
-        value: super::ValueId,
-    ) {
-        let decl = self
-            .minecraft_operations
-            .get_mut(operation)
-            .expect("patch_book_page_index called with valid operation id");
-        let MinecraftOperationAttributes::BookPage { page_index, .. } = &mut decl.attributes else {
-            panic!("patch_book_page_index called on non-BookPage operation");
-        };
-        *page_index = Operand::Runtime(value);
     }
 
     /// Returns a typed Minecraft operation, or `None` for a foreign identity.

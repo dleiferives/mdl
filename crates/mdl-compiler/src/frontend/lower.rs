@@ -1177,23 +1177,6 @@ fn declare_external_operations(
                         offset: offset.clone(),
                         component_origins: *component_origins,
                     },
-                    HirMinecraftOperationAttributes::BookPage {
-                        page_index,
-                        page_origin,
-                    } => MinecraftOperationAttributes::BookPage {
-                        page_index: Operand::Const(*page_index),
-                        page_origin: *page_origin,
-                    },
-                    HirMinecraftOperationAttributes::BookPageRuntime { page_origin, .. } => {
-                        // Placeholder — the real runtime index flows as the External
-                        // instruction's operand, not through this attribute. The
-                        // `Macro(_)` variant only signals "is dynamic" for preflight.
-                        // See ps-11-implementation-handoff.md §2.
-                        MinecraftOperationAttributes::BookPage {
-                            page_index: Operand::Runtime(ValueId::from_index(0)),
-                            page_origin: *page_origin,
-                        }
-                    }
                 };
                 let operation = program
                     .declare_minecraft_operation(
@@ -1214,19 +1197,11 @@ fn declare_external_operations(
             }
         };
         let results = match &external.semantic {
-            HirExternalSemantic::MinecraftOperation {
-                key: crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
-                ..
-            } => vec![CoreType::String],
             HirExternalSemantic::UnsafeMinecraftCommand { .. }
             | HirExternalSemantic::MinecraftOperation { .. } => vec![],
             HirExternalSemantic::EntityNbtRead { result_ty, .. } => vec![core_type(*result_ty)],
         };
         let parameters = match &external.semantic {
-            HirExternalSemantic::MinecraftOperation {
-                attributes: HirMinecraftOperationAttributes::BookPageRuntime { .. },
-                ..
-            } => vec![CoreType::I32],
             HirExternalSemantic::EntityNbtRead { segments, .. } => {
                 let runtime_indices = segments
                     .iter()
@@ -1443,23 +1418,6 @@ fn verify_source_semantic_correlation(
                         component_origins: core_origins,
                     },
                 ) => offset == core_offset && component_origins == core_origins,
-                (
-                    HirMinecraftOperationAttributes::BookPage {
-                        page_index,
-                        page_origin,
-                    },
-                    MinecraftOperationAttributes::BookPage {
-                        page_index: Operand::Const(core_n),
-                        page_origin: core_origin,
-                    },
-                ) => *page_index == *core_n && page_origin == core_origin,
-                (
-                    HirMinecraftOperationAttributes::BookPageRuntime { page_origin, .. },
-                    MinecraftOperationAttributes::BookPage {
-                        page_index: Operand::Runtime(_),
-                        page_origin: core_origin,
-                    },
-                ) => page_origin == core_origin,
                 _ => false,
             };
             if operation.key() != *key
@@ -2427,13 +2385,6 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 ))?;
         let sem = self.checked.external_op(external).map(|op| &op.semantic);
         let operands = match sem {
-            Some(HirExternalSemantic::MinecraftOperation {
-                attributes: HirMinecraftOperationAttributes::BookPageRuntime { page_index, .. },
-                ..
-            }) => {
-                let bundle = self.lower_expression(block, environment, page_index)?;
-                bundle.into_values()
-            }
             Some(HirExternalSemantic::EntityNbtRead { segments, .. }) => {
                 let mut operands = Vec::new();
                 for segment in segments {

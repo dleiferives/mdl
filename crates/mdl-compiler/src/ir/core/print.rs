@@ -565,14 +565,6 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             MinecraftOperationAttributes::MoveBy { offset, .. } => {
                 let _ = writeln!(output, "offset={offset:?}");
             }
-            MinecraftOperationAttributes::BookPage { page_index, .. } => match page_index {
-                Operand::Const(n) => {
-                    let _ = writeln!(output, "page_index={n}");
-                }
-                Operand::Runtime(v) => {
-                    let _ = writeln!(output, "page_index=@{}", v.index());
-                }
-            },
         }
     }
     for (read, data) in program.entity_nbt_reads() {

@@ -145,9 +145,7 @@ fn reconcile_semantic_commands(
                                 "direct semantic command lost its exact occurrence origin",
                             ));
                         }
-                        reconcile_selected_semantic_command(
-                            core, selected, program, location, command,
-                        )?;
+                        reconcile_selected_semantic_command(core, selected, command)?;
                     }
                     InstructionPlan::EntityNbtRead { external, .. } => {
                         if !matches!(data.op(), CoreOp::External(actual) if actual == external) {
@@ -344,8 +342,6 @@ fn preceding_command(
 fn reconcile_selected_semantic_command(
     core: &CoreProgram,
     selected: &crate::lower::minecraft::SelectedSemanticRecipe,
-    program: &MinecraftProgram,
-    location: crate::lower::minecraft::emit::ConstructedCommandLocation,
     command: &crate::ir::minecraft::CommandNode,
 ) -> Result<(), Diagnostics> {
     let declaration = core
@@ -384,22 +380,6 @@ fn reconcile_selected_semantic_command(
             if matches!(modifier.kind(), crate::ir::minecraft::ExecuteModifierKind::At(_)))
             && matches!(execute.run().kind(), CommandKind::Teleport(command) if command.destination() == destination) =>
             {}
-        (
-            crate::lower::minecraft::SelectedSemanticRecipe::Java26_2BookPage {
-                page_index, ..
-            },
-            CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
-                mode: crate::ir::minecraft::DataModifyMode::Set,
-                source: crate::ir::minecraft::DataSource::Entity { selector, path },
-                ..
-            }),
-        ) if selector
-            == &crate::ir::minecraft::Selector::from(
-                crate::ir::minecraft::AtMostOneSelector::SelfExecutor,
-            )
-            && page_index.as_const().is_some_and(|n| {
-                path == &super::super::preflight::written_book_literal_page_path(*n)
-            }) => {}
         _ => {
             return Err(recipe_mismatch(
                 "constructed semantic command differs from its exact selected recipe",
@@ -417,72 +397,6 @@ fn reconcile_selected_semantic_command(
     if !projection.matches_local_cost(&cost) {
         return Err(recipe_mismatch(
             "constructed semantic command cost differs from the selected recipe",
-        ));
-    }
-    if matches!(
-        selected,
-        crate::lower::minecraft::SelectedSemanticRecipe::Java26_2BookPage { .. }
-    ) {
-        reconcile_book_empty_fallback(program, location, command)?;
-    }
-    Ok(())
-}
-
-fn reconcile_book_empty_fallback(
-    program: &MinecraftProgram,
-    read_location: crate::lower::minecraft::emit::ConstructedCommandLocation,
-    read: &crate::ir::minecraft::CommandNode,
-) -> Result<(), Diagnostics> {
-    let CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
-        target: read_target,
-        mode: crate::ir::minecraft::DataModifyMode::Set,
-        source: crate::ir::minecraft::DataSource::Entity { .. },
-    }) = read.kind()
-    else {
-        return Err(recipe_mismatch(
-            "written-book primary command is not an entity data read",
-        ));
-    };
-    let fallback_index = read_location
-        .command()
-        .index()
-        .checked_sub(1)
-        .ok_or_else(|| {
-            recipe_mismatch("written-book read has no preceding empty-result initialization")
-        })?;
-    let fallback_id = crate::ir::minecraft::CommandId::from_index(fallback_index);
-    let fallback = program
-        .function(read_location.function())
-        .and_then(|function| function.body().command(fallback_id))
-        .ok_or_else(|| {
-            recipe_mismatch("written-book empty-result initialization does not exist")
-        })?;
-    if fallback.origin() != read.origin() {
-        return Err(recipe_mismatch(
-            "written-book empty-result initialization lost its occurrence origin",
-        ));
-    }
-    match fallback.kind() {
-        CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
-            target,
-            mode: crate::ir::minecraft::DataModifyMode::Set,
-            source: crate::ir::minecraft::DataSource::Value(value),
-        }) if target == read_target && value == &crate::ir::minecraft::NbtValue::string("") => {}
-        _ => {
-            return Err(recipe_mismatch(
-                "written-book read is not preceded by an empty initialization of its result home",
-            ));
-        }
-    }
-    let fallback_cost = classify_constructed_command(fallback.kind()).ok_or_else(|| {
-        recipe_mismatch("written-book empty-result initialization has no local cost classification")
-    })?;
-    if fallback_cost.counts() != CommandStepCounts::new(1, 0, 0, 1)
-        || fallback_cost.maximum_chain_expansion()
-            != crate::analysis::minecraft::CountBound::exact(0)
-    {
-        return Err(recipe_mismatch(
-            "written-book empty-result initialization cost changed",
         ));
     }
     Ok(())
@@ -815,17 +729,14 @@ mod tests {
     use super::{reconcile_selected_cost, tail_target, verify_constructed_control_recipes};
     use crate::entity::EntityId;
     use crate::ir::core::{
-        BlockId, BlockTarget, CoreProgram, CoreType, ExternalSemanticBinding, FunctionBuilder,
-        FunctionId, InstId, MinecraftOperationAttributes, MinecraftOperationOrigins, Operand,
-        Terminator, TerminatorKind,
+        BlockId, BlockTarget, CoreProgram, CoreType, FunctionBuilder, FunctionId, Terminator,
+        TerminatorKind,
     };
     use crate::ir::minecraft::{
-        CommandKind, CommandNode, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
-        ExecuteModifier, ExecuteModifiers, FunctionCall, InternalCallableRef, McFunctionId,
-        MinecraftProgram, MinecraftProgramBuilder, NbtValue, ObjectiveName, PackNamespace,
-        ReturnCommand,
+        CommandKind, CommandNode, ExecuteCommand, ExecuteModifier, ExecuteModifiers, FunctionCall,
+        InternalCallableRef, McFunctionId, MinecraftProgram, MinecraftProgramBuilder,
+        ObjectiveName, PackNamespace, ReturnCommand,
     };
-    use crate::ir::semantic::{EntityKind, MinecraftSemanticKey};
     use crate::lower::minecraft::analysis::SemanticInventory;
     use crate::lower::minecraft::assignment::HomeAssignment;
     use crate::lower::minecraft::demand::{RuntimeDemand, RuntimeDemandLimits};
@@ -973,48 +884,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_a_book_read_without_its_exact_empty_fallback() {
-        let (core, function, instruction) = book_page_core();
-        let plan = selected_baseline_plan(&core);
-        let (target, construction) = construct_program(&core, &plan).unwrap().into_parts();
-        verify_constructed_control_recipes(&core, &plan, &target, &construction).unwrap();
-        let read = construction
-            .location(function, instruction)
-            .expect("book read must retain its primary correlation");
-        let read_index = usize::try_from(read.command().index()).unwrap();
-        let fallback = target
-            .function(read.function())
-            .unwrap()
-            .body()
-            .command(crate::ir::minecraft::CommandId::from_index(
-                u32::try_from(read_index - 1).unwrap(),
-            ))
-            .unwrap();
-        let CommandKind::Data(DataCommand::Modify { target: home, .. }) = fallback.kind() else {
-            panic!("book fallback must initialize command storage")
-        };
-        let corrupted = rebuild_with_replaced_command(
-            &target,
-            read.function(),
-            read_index - 1,
-            CommandNode::new(
-                CommandKind::Data(DataCommand::Modify {
-                    target: home.clone(),
-                    mode: DataModifyMode::Set,
-                    source: DataSource::Value(NbtValue::string("stale")),
-                }),
-                fallback.origin(),
-            )
-            .unwrap(),
-        );
-
-        assert_reconciliation_error(
-            verify_constructed_control_recipes(&core, &plan, &corrupted, &construction),
-            "not preceded by an empty initialization",
-        );
-    }
-
     fn selected_terminal_call_fixture() -> Fixture {
         let (core, dispatcher, source, wrong_origin) = terminal_call_core();
         let plan = selected_baseline_plan(&core);
@@ -1095,55 +964,6 @@ mod tests {
             .unwrap();
 
         (core, dispatcher, source, wrong_origin)
-    }
-
-    fn book_page_core() -> (CoreProgram, FunctionId, InstId) {
-        let sources = SourceContext::new();
-        let mut core = CoreProgram::new();
-        let operation = core
-            .declare_minecraft_operation(
-                MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
-                EntityKind::ArmorStand,
-                MinecraftOperationAttributes::BookPage {
-                    page_index: Operand::Const(0),
-                    page_origin: OriginId::UNKNOWN,
-                },
-                MinecraftOperationOrigins::new(
-                    OriginId::UNKNOWN,
-                    OriginId::UNKNOWN,
-                    OriginId::UNKNOWN,
-                ),
-            )
-            .unwrap();
-        let external = core
-            .declare_external_op(
-                ExternalSemanticBinding::MinecraftOperation(operation),
-                vec![],
-                vec![CoreType::String],
-                OriginId::UNKNOWN,
-            )
-            .unwrap();
-        let function = core
-            .declare_function(
-                Some("book"),
-                vec![],
-                vec![CoreType::String],
-                OriginId::UNKNOWN,
-            )
-            .unwrap();
-        let mut builder = FunctionBuilder::new(&core, &sources, function).unwrap();
-        let (instruction, results) = builder
-            .external_with_identity(external, vec![], OriginId::UNKNOWN)
-            .unwrap();
-        builder
-            .terminate(Terminator::new(
-                TerminatorKind::Return(results),
-                OriginId::UNKNOWN,
-            ))
-            .unwrap();
-        core.define_function(function, builder.finish().unwrap())
-            .unwrap();
-        (core, function, instruction)
     }
 
     fn selected_baseline_plan(core: &CoreProgram) -> LoweringPlan {

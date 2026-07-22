@@ -5189,8 +5189,7 @@ impl<'a> BodyChecker<'a> {
         let descriptor = minecraft_descriptor(rule.semantic_key());
         let _signature = descriptor.signature();
         let expected_arguments = match rule.semantic_key() {
-            crate::ir::semantic::MinecraftSemanticKey::Say
-            | crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage => 1,
+            crate::ir::semantic::MinecraftSemanticKey::Say => 1,
             crate::ir::semantic::MinecraftSemanticKey::TeleportCurrentExecutor
             | crate::ir::semantic::MinecraftSemanticKey::MoveCurrentExecutorBy => 3,
         };
@@ -5324,73 +5323,6 @@ impl<'a> BodyChecker<'a> {
                             ),
                         );
                         valid = false;
-                    }
-                }
-            }
-            crate::ir::semantic::MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage => {
-                if let [argument] = call.arguments.as_slice() {
-                    match argument.kind {
-                        AstExpressionKind::DecimalInteger(literal) => {
-                            let spelling = self.spelling(literal)?;
-                            match spelling.parse::<u8>() {
-                                Ok(page_index) if page_index < 100 => {
-                                    attributes = Some(HirMinecraftOperationAttributes::BookPage {
-                                        page_index,
-                                        page_origin: self.origin(literal)?,
-                                    });
-                                }
-                                _ => {
-                                    self.diagnostics.push(
-                                        PendingDiagnostic::new(
-                                            LITERAL_CONTEXT_REQUIRED,
-                                            "written-book page index must be from 0 through 99",
-                                            literal,
-                                        )
-                                        .primary("index exceeds the pinned book page boundary"),
-                                    );
-                                    valid = false;
-                                }
-                            }
-                        }
-                        _ => {
-                            let checked = self.check_expression(argument, assigned)?;
-                            match (checked.expression, checked.ty) {
-                                (Some(page_index), Some(ValueType::Int32)) => {
-                                    if Self::runtime_index_contains_forbidden(&page_index) {
-                                        self.diagnostics.push(
-                                            PendingDiagnostic::new(
-                                                LITERAL_CONTEXT_REQUIRED,
-                                                "a runtime book-page index may not contain a function call yet",
-                                                argument.span,
-                                            )
-                                            .primary("this expression contains a call or external operation"),
-                                        );
-                                        valid = false;
-                                    } else {
-                                        attributes = Some(
-                                            HirMinecraftOperationAttributes::BookPageRuntime {
-                                                page_index: Box::new(page_index),
-                                                page_origin: self.origin(argument.span)?,
-                                            },
-                                        );
-                                    }
-                                }
-                                (_, Some(_)) => {
-                                    self.diagnostics.push(
-                                        PendingDiagnostic::new(
-                                            TYPE_MISMATCH,
-                                            "written-book page index must be an Int32",
-                                            argument.span,
-                                        )
-                                        .primary("this page-index expression is not an Int32"),
-                                    );
-                                    valid = false;
-                                }
-                                (_, None) => {
-                                    valid = false;
-                                }
-                            }
-                        }
                     }
                 }
             }

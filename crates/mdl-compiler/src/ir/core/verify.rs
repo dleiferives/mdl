@@ -3,9 +3,9 @@
 use super::analysis::definition_block;
 use super::{
     BlockId, CoreProgram, CoreType, Dominance, DominatorTree, EntityNbtPathSegment,
-    EntityQueryStep, FunctionBody, FunctionId, MinecraftOperationAttributes, Operand,
-    PlacementIndex, RunModifierInstance, TargetFragment, TerminatorKind,
-    UnsafeMinecraftCommandFragment, UseIndex, UseSite, ValueDef, ValueId,
+    EntityQueryStep, FunctionBody, FunctionId, MinecraftOperationAttributes, PlacementIndex,
+    RunModifierInstance, TargetFragment, TerminatorKind, UnsafeMinecraftCommandFragment, UseIndex,
+    UseSite, ValueDef, ValueId,
 };
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityId;
@@ -213,10 +213,6 @@ fn verify_linked_inventories(
             }
             MinecraftOperationAttributes::Teleport { .. }
             | MinecraftOperationAttributes::MoveBy { .. } => true,
-            MinecraftOperationAttributes::BookPage { page_index, .. } => match page_index {
-                Operand::Const(n) => *n < 100,
-                Operand::Runtime(_) => true,
-            },
         };
         if !declaration.is_well_formed() || !attributes_are_valid {
             findings.push(Diagnostic::new(

@@ -27,8 +27,6 @@ define_minecraft_semantic_keys! {
     TeleportCurrentExecutor,
     /// Move the current executor by an offset relative to the executor itself.
     MoveCurrentExecutorBy,
-    /// Read one static literal-text page from the current executor's main-hand written book.
-    ReadMainHandWrittenBookLiteralPage,
 }
 
 /// A target-independent compile-time attribute carried by a Minecraft operation.
@@ -40,8 +38,6 @@ pub enum MinecraftAttributeKind {
     PositionSpec,
     /// One exact receiver-relative world offset.
     RelativeWorldOffset,
-    /// One statically validated zero-based written-book page index.
-    WrittenBookPageIndex,
 }
 
 /// Complete target-independent value and attribute shape of an operation.
@@ -122,7 +118,6 @@ pub enum MinecraftValidatorKind {
     PositionSpec,
     /// Validate one exact relative offset attribute.
     RelativeWorldOffset,
-    WrittenBookPageIndex,
 }
 
 /// Shared target-independent meaning of one normalized Minecraft operation.
@@ -219,9 +214,6 @@ const SAY_ATTRIBUTES: &[MinecraftAttributeKind] = &[MinecraftAttributeKind::Mess
 const TELEPORT_ATTRIBUTES: &[MinecraftAttributeKind] = &[MinecraftAttributeKind::PositionSpec];
 const MOVE_BY_ATTRIBUTES: &[MinecraftAttributeKind] =
     &[MinecraftAttributeKind::RelativeWorldOffset];
-const BOOK_PAGE_ATTRIBUTES: &[MinecraftAttributeKind] =
-    &[MinecraftAttributeKind::WrittenBookPageIndex];
-const STRING_RESULT: &[SemanticType] = &[SemanticType::Runtime(super::RuntimeValueType::String)];
 
 const SAY_DESCRIPTOR: MinecraftSemanticDescriptor = MinecraftSemanticDescriptor {
     key: MinecraftSemanticKey::Say,
@@ -262,19 +254,6 @@ const MOVE_BY_DESCRIPTOR: MinecraftSemanticDescriptor = MinecraftSemanticDescrip
     documentation: "Move the current executor by a receiver-relative world offset.",
 };
 
-const BOOK_PAGE_DESCRIPTOR: MinecraftSemanticDescriptor = MinecraftSemanticDescriptor {
-    key: MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
-    signature: MinecraftSemanticSignature::new(&[], BOOK_PAGE_ATTRIBUTES, STRING_RESULT),
-    ambient_context: MinecraftAmbientContextRule::CurrentExecutorKind,
-    world_effect: WorldEffect::Read,
-    observable_effect: ObservableEffect::None,
-    fork_behavior: ForkBound::None,
-    work_behavior: TransitiveWork::Finite,
-    outcome_behavior: MinecraftCommandOutcomeBehavior::Discarded,
-    validator: MinecraftValidatorKind::WrittenBookPageIndex,
-    documentation: "Read one static literal-text page from the current executor's main-hand written book; missing or unsupported content yields an empty string.",
-};
-
 /// Returns the authoritative descriptor for `key`.
 ///
 /// The exhaustive match intentionally prevents a new semantic key from compiling
@@ -287,7 +266,6 @@ pub const fn minecraft_descriptor(
         MinecraftSemanticKey::Say => &SAY_DESCRIPTOR,
         MinecraftSemanticKey::TeleportCurrentExecutor => &TELEPORT_DESCRIPTOR,
         MinecraftSemanticKey::MoveCurrentExecutorBy => &MOVE_BY_DESCRIPTOR,
-        MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage => &BOOK_PAGE_DESCRIPTOR,
     }
 }
 
@@ -366,13 +344,6 @@ const SOURCE_METHODS: &[MinecraftSourceMethodRule] = &[
             required_capability: EntityCapability::CommandExecutor,
         },
         semantic_key: MinecraftSemanticKey::MoveCurrentExecutorBy,
-    },
-    MinecraftSourceMethodRule {
-        name: "main_hand_written_book_literal_page_or_empty",
-        receiver: SourceReceiverRule::CurrentExecutor {
-            required_capability: EntityCapability::InventoryHolder,
-        },
-        semantic_key: MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
     },
 ];
 
@@ -460,7 +431,7 @@ mod tests {
 
     #[test]
     fn source_method_is_separate_and_requires_a_capable_executor() {
-        assert_eq!(minecraft_source_methods().len(), 4);
+        assert_eq!(minecraft_source_methods().len(), 3);
         let executor = SemanticType::Executor(ExecutorType::new(EntityKind::ArmorStand));
         let rule = resolve_minecraft_method(executor, "say").unwrap();
         assert_eq!(rule.semantic_key(), MinecraftSemanticKey::Say);
@@ -479,11 +450,6 @@ mod tests {
         assert_eq!(
             resolve_minecraft_method(executor, "move_by").map(|rule| rule.semantic_key()),
             Some(MinecraftSemanticKey::MoveCurrentExecutorBy)
-        );
-        assert_eq!(
-            resolve_minecraft_method(executor, "main_hand_written_book_literal_page_or_empty")
-                .map(|rule| rule.semantic_key()),
-            Some(MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage)
         );
         assert_eq!(
             resolve_minecraft_method(

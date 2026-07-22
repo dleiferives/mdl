@@ -583,17 +583,6 @@ pub(super) enum HirMinecraftOperationAttributes {
         offset: RelativeWorldOffset,
         component_origins: [OriginId; 3],
     },
-    BookPage {
-        page_index: u8,
-        page_origin: OriginId,
-    },
-    BookPageRuntime {
-        /// The runtime Int32 expression selecting the page. Lowered to a Core
-        /// value that becomes the external op's operand and, ultimately, the
-        /// macro `$(index)` substitution.
-        page_index: Box<HirExpression>,
-        page_origin: OriginId,
-    },
 }
 
 impl HirMinecraftOperationAttributes {
@@ -602,9 +591,6 @@ impl HirMinecraftOperationAttributes {
             Self::Say { .. } => MinecraftSemanticKey::Say,
             Self::Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
             Self::MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
-            Self::BookPage { .. } | Self::BookPageRuntime { .. } => {
-                MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage
-            }
         }
     }
 }
@@ -1172,12 +1158,6 @@ impl<'a> Dumper<'a> {
                         }
                         HirMinecraftOperationAttributes::MoveBy { offset, .. } => {
                             format!("offset={offset:?}")
-                        }
-                        HirMinecraftOperationAttributes::BookPage { page_index, .. } => {
-                            format!("page_index={page_index}")
-                        }
-                        HirMinecraftOperationAttributes::BookPageRuntime { .. } => {
-                            "page_index=<runtime>".to_string()
                         }
                     };
                     self.line(
@@ -1839,31 +1819,6 @@ impl Verifier<'_> {
                         } => {
                             for origin in component_origins {
                                 self.origin(*origin, "Minecraft spatial component")?;
-                            }
-                        }
-                        HirMinecraftOperationAttributes::BookPage {
-                            page_index,
-                            page_origin,
-                        } => {
-                            self.origin(*page_origin, "Minecraft written-book page index")?;
-                            if *page_index >= 100 {
-                                return Err(HirVerificationError::new(
-                                    "written-book page index exceeds the pinned maximum",
-                                ));
-                            }
-                        }
-                        HirMinecraftOperationAttributes::BookPageRuntime {
-                            page_index,
-                            page_origin,
-                        } => {
-                            self.origin(
-                                *page_origin,
-                                "Minecraft written-book page index (runtime)",
-                            )?;
-                            if page_index.ty != ValueType::Int32 {
-                                return Err(HirVerificationError::new(
-                                    "runtime written-book page index must be an Int32",
-                                ));
                             }
                         }
                     }
@@ -2829,11 +2784,6 @@ impl Verifier<'_> {
                     HirVerificationError::new(format!("invalid external identity {operation:?}"))
                 })?;
                 match &external.semantic {
-                    HirExternalSemantic::MinecraftOperation { key, .. }
-                        if *key == MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage =>
-                    {
-                        ValueType::String
-                    }
                     HirExternalSemantic::EntityNbtRead { result_ty, .. } => *result_ty,
                     _ => {
                         return Err(HirVerificationError::new(

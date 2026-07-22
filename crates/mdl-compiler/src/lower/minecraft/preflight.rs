@@ -11,12 +11,11 @@ use crate::ir::core::{
     MinecraftOperationId, Operand, RunModifierInstance, RunScopeId, ValueId,
 };
 use crate::ir::minecraft::{
-    CommandContract, CommandKind, ContextMask, ContextSummary, DataCommand, DataModifyMode,
-    DataSource, EffectCategories, EffectSummary, ExecuteCommand, ExecuteModifier,
-    ExecuteModifierKind, ExecuteModifiers, ForkClass, JavaDecimal, NativeCommandOutcome, NbtPath,
-    NbtPathKey, NbtPathSegment, SayCommand, SayMessage, Selector, StorageId, StoragePath,
-    TargetAnchor, TargetAxes, TargetLocalPosition, TargetPosition, TargetRotation,
-    TargetRotationAxis, TargetWorldAxis, TargetWorldPosition, TeleportCommand,
+    CommandContract, CommandKind, ContextMask, ContextSummary, EffectCategories, EffectSummary,
+    ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, ForkClass, JavaDecimal,
+    NativeCommandOutcome, SayCommand, SayMessage, TargetAnchor, TargetAxes, TargetLocalPosition,
+    TargetPosition, TargetRotation, TargetRotationAxis, TargetWorldAxis, TargetWorldPosition,
+    TeleportCommand,
 };
 use crate::ir::semantic::{
     AmbientContextRequirements, ContextRequirement, EntityKind, ForkBound, FunctionBehavior,
@@ -102,8 +101,6 @@ pub enum MinecraftRecipeId {
     Java26_2TeleportCurrentExecutor,
     /// Java Edition 26.2 `execute at @s run teleport @s ~...`.
     Java26_2MoveCurrentExecutorBy,
-    /// Java Edition 26.2 main-hand literal written-book page read.
-    Java26_2ReadMainHandWrittenBookLiteralPage,
 }
 
 impl MinecraftRecipeId {
@@ -121,10 +118,6 @@ impl MinecraftRecipeId {
             (JavaEditionTarget::V26_2, MinecraftSemanticKey::MoveCurrentExecutorBy) => {
                 Self::Java26_2MoveCurrentExecutorBy
             }
-            (
-                JavaEditionTarget::V26_2,
-                MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
-            ) => Self::Java26_2ReadMainHandWrittenBookLiteralPage,
         }
     }
 
@@ -213,31 +206,6 @@ impl MinecraftRecipeId {
                     .expect("zero-to-one is a valid finite cost interval"),
                 local_outcomes: TELEPORT_LOCAL_OUTCOMES,
             },
-            Self::Java26_2ReadMainHandWrittenBookLiteralPage => RecipeContractProjection {
-                semantic_key: MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage,
-                semantic_behavior: FunctionBehavior::new(
-                    AmbientContextRequirements::NONE
-                        .with_executor(ContextRequirement::Required(receiver_kind)),
-                    WorldEffect::Read,
-                    ObservableEffect::None,
-                    ForkBound::None,
-                    TransitiveWork::Finite,
-                    false,
-                ),
-                semantic_outcome: MinecraftCommandOutcomeBehavior::Discarded,
-                target_effects: EffectSummary::Known(
-                    EffectCategories::ENTITY_QUERY.union(EffectCategories::STORAGE_WRITE),
-                ),
-                target_context: ContextSummary::Known {
-                    reads: ContextMask::EXECUTOR,
-                    changes: ContextMask::NONE,
-                },
-                target_fork: ForkClass::NEVER,
-                target_native_outcome: NativeCommandOutcome::Unknown,
-                local_counts: CommandStepCounts::new(1, 0, 0, 1),
-                local_maximum_chain_expansion: CountBound::exact(0),
-                local_outcomes: SAY_LOCAL_OUTCOMES,
-            },
         }
     }
 }
@@ -264,10 +232,6 @@ pub(crate) enum SelectedSemanticRecipe {
     Java26_2MoveBy {
         operation: MinecraftOperationId,
         destination: TargetPosition,
-    },
-    Java26_2BookPage {
-        operation: MinecraftOperationId,
-        page_index: Operand<u8>,
     },
 }
 
@@ -360,9 +324,6 @@ impl SelectedSemanticRecipe {
             Self::Java26_2Say { .. } => MinecraftRecipeId::Java26_2Say,
             Self::Java26_2Teleport { .. } => MinecraftRecipeId::Java26_2TeleportCurrentExecutor,
             Self::Java26_2MoveBy { .. } => MinecraftRecipeId::Java26_2MoveCurrentExecutorBy,
-            Self::Java26_2BookPage { .. } => {
-                MinecraftRecipeId::Java26_2ReadMainHandWrittenBookLiteralPage
-            }
         }
     }
 
@@ -370,7 +331,6 @@ impl SelectedSemanticRecipe {
     pub(crate) const fn operation(&self) -> MinecraftOperationId {
         match self {
             Self::Java26_2Say { operation, .. }
-            | Self::Java26_2BookPage { operation, .. }
             | Self::Java26_2Teleport { operation, .. }
             | Self::Java26_2MoveBy { operation, .. } => *operation,
         }
@@ -382,9 +342,6 @@ impl SelectedSemanticRecipe {
             Self::Java26_2Say { .. } => MinecraftSemanticKey::Say,
             Self::Java26_2Teleport { .. } => MinecraftSemanticKey::TeleportCurrentExecutor,
             Self::Java26_2MoveBy { .. } => MinecraftSemanticKey::MoveCurrentExecutorBy,
-            Self::Java26_2BookPage { .. } => {
-                MinecraftSemanticKey::ReadMainHandWrittenBookLiteralPage
-            }
         }
     }
 
@@ -392,9 +349,7 @@ impl SelectedSemanticRecipe {
     pub(crate) const fn say_message(&self) -> Option<&SayMessage> {
         match self {
             Self::Java26_2Say { message, .. } => Some(message),
-            Self::Java26_2Teleport { .. }
-            | Self::Java26_2MoveBy { .. }
-            | Self::Java26_2BookPage { .. } => None,
+            Self::Java26_2Teleport { .. } | Self::Java26_2MoveBy { .. } => None,
         }
     }
 
@@ -423,64 +378,22 @@ impl SelectedSemanticRecipe {
                     nested,
                 ))
             }
-            Self::Java26_2BookPage { page_index, .. } => CommandKind::Data(DataCommand::Modify {
-                target: StoragePath::new(
-                    StorageId::parse("mdl:preflight").expect("static ID is valid"),
-                    NbtPath::new(
-                        NbtPathSegment::Key(
-                            NbtPathKey::new("book_page").expect("static key is valid"),
-                        ),
-                        vec![],
-                    ),
-                ),
-                mode: DataModifyMode::Set,
-                source: DataSource::Entity {
-                    selector: Selector::from(crate::ir::minecraft::AtMostOneSelector::SelfExecutor),
-                    path: written_book_page_path(*page_index),
-                },
-            }),
         }
     }
 
-    pub(crate) const fn book_page_index(&self) -> Option<u8> {
-        match self {
-            Self::Java26_2BookPage { page_index, .. } => page_index.as_const().copied(),
-            _ => None,
-        }
-    }
-
+    /// Every remaining semantic recipe (`Say`/`Teleport`/`MoveBy`) has a fixed
+    /// all-constant command shape and is always usable inline — only the
+    /// retired `BookPage` recipe could carry a runtime index. Kept (rather
+    /// than removed) so call sites stay structurally parallel to
+    /// `ResolvedEntityNbtRead::is_unusable_inline`, which is the analogous,
+    /// genuinely conditional check for the schema-typed path family.
+    #[allow(
+        clippy::unused_self,
+        reason = "parallels ResolvedEntityNbtRead's shape"
+    )]
     pub(crate) const fn is_unusable_inline(&self) -> bool {
-        matches!(
-            self,
-            Self::Java26_2BookPage {
-                page_index: Operand::Runtime(_),
-                ..
-            }
-        )
+        false
     }
-}
-
-/// Builds the NBT path for the written-book page entity source, embedding the
-/// concrete page index as a static `NbtPathSegment::Index`.
-fn written_book_page_path(page_index: Operand<u8>) -> NbtPath {
-    NbtPath::new(
-        NbtPathSegment::Key(NbtPathKey::new("equipment").expect("static key is valid")),
-        vec![
-            NbtPathSegment::Key(NbtPathKey::new("mainhand").expect("static key is valid")),
-            NbtPathSegment::Key(NbtPathKey::new("components").expect("static key is valid")),
-            NbtPathSegment::Key(
-                NbtPathKey::new("minecraft:written_book_content").expect("static key is valid"),
-            ),
-            NbtPathSegment::Key(NbtPathKey::new("pages").expect("static key is valid")),
-            NbtPathSegment::Index(page_index.map(i32::from)),
-            NbtPathSegment::Key(NbtPathKey::new("raw").expect("static key is valid")),
-        ],
-    )
-}
-
-/// Deprecated compatibility alias for `written_book_page_path`.
-pub(crate) fn written_book_literal_page_path(page_index: u8) -> NbtPath {
-    written_book_page_path(Operand::Const(page_index))
 }
 
 fn target_position_reads(position: &TargetPosition) -> ContextMask {
@@ -799,12 +712,7 @@ fn select_reachable_recipes(
                 ));
                 continue;
             };
-            match select_recipe(
-                target,
-                operation,
-                operation_declaration,
-                instruction_data.operands(),
-            ) {
+            match select_recipe(target, operation, operation_declaration) {
                 Ok(recipe) => *slot = Some(recipe),
                 Err(finding) => findings.push(finding),
             }
@@ -854,10 +762,10 @@ impl ResolvedEntityNbtRead {
 }
 
 /// Resolves every reachable entity-NBT path read's runtime index placeholders
-/// against their real per-occurrence instruction operands — the same
-/// discard-the-placeholder / resolve-from-instruction-operands mechanics
-/// `select_recipe`'s `BookPage` arm already uses, generalized from at most one
-/// runtime index to any number of runtime index segments.
+/// against their real per-occurrence instruction operands — discard the
+/// placeholder written during Core generation, then resolve the real value
+/// from this occurrence's actual instruction operands, generalized from at
+/// most one runtime index to any number of runtime index segments.
 fn select_reachable_entity_nbt_reads(
     core: &CoreProgram,
     inventory: &SemanticInventory,
@@ -1133,7 +1041,6 @@ fn select_recipe(
     target: JavaEditionTarget,
     operation: MinecraftOperationId,
     declaration: &MinecraftOperationDecl,
-    operands: &[ValueId],
 ) -> Result<SelectedSemanticRecipe, Diagnostic> {
     let recipe = MinecraftRecipeId::for_semantic_key(target, declaration.key());
     let projection = recipe.contract_projection(declaration.receiver_kind());
@@ -1248,32 +1155,6 @@ fn select_recipe(
                 destination,
             };
             validate_selected_recipe(&selected, declaration)?;
-            Ok(selected)
-        }
-        (
-            MinecraftRecipeId::Java26_2ReadMainHandWrittenBookLiteralPage,
-            MinecraftOperationAttributes::BookPage { page_index, .. },
-        ) => {
-            let resolved = match page_index {
-                Operand::Const(n) => Operand::Const(*n),
-                Operand::Runtime(_) => {
-                    let &index_value = operands.first().ok_or_else(|| {
-                        Diagnostic::new(
-                            "lower.preflight.missing-macro-operand",
-                            "runtime book-page external is missing its index operand",
-                            declaration.origins().call(),
-                        )
-                    })?;
-                    Operand::Runtime(index_value)
-                }
-            };
-            let selected = SelectedSemanticRecipe::Java26_2BookPage {
-                operation,
-                page_index: resolved,
-            };
-            if resolved.is_const() {
-                validate_selected_recipe(&selected, declaration)?;
-            }
             Ok(selected)
         }
         _ => Err(Diagnostic::new(

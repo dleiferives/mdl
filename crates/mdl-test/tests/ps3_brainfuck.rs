@@ -210,11 +210,11 @@ fn package_boundary_and_book_case_schema_are_complete() {
             .iter()
             .all(|source| !source.contains("unsafe minecraft"))
     );
-    let page_call = "main_hand_written_book_literal_page_or_empty(";
+    let page_call = "components.\"minecraft:written_book_content\".pages[";
     assert_eq!(INTERPRETER.matches(page_call).count(), 100);
     for page in 0..100 {
         assert!(
-            INTERPRETER.contains(&format!("{page_call}{page})")),
+            INTERPRETER.contains(&format!("{page_call}{page}].raw")),
             "missing static page {page}"
         );
     }

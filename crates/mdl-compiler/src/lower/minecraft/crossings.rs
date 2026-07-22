@@ -160,19 +160,20 @@ fn render_data_modify_as_macro(
             )
             .unwrap();
 
-            for segment in path.segments() {
+            for (index, segment) in path.segments().iter().enumerate() {
                 match segment {
                     NbtPathSegment::Key(key) => {
                         let key_str = key.as_str();
+                        let separator = if index == 0 { "" } else { "." };
                         if key_str
                             .chars()
                             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                         {
-                            write!(literal_buf, ".{key_str}").unwrap();
+                            write!(literal_buf, "{separator}{key_str}").unwrap();
                         } else {
                             write!(
                                 literal_buf,
-                                ".\"{}\"",
+                                "{separator}\"{}\"",
                                 key_str.replace('\\', "\\\\").replace('"', "\\\"")
                             )
                             .unwrap();
@@ -380,6 +381,69 @@ mod tests {
         assert!(
             !rendered.contains("@s"),
             "rendered macro text still hardcodes `@s`: {rendered}"
+        );
+    }
+
+    // Real-server regression, found manually while verifying PS-12E: a
+    // multi-segment path's root key must not carry a leading `.` (invalid
+    // NBT path syntax; Minecraft's parser rejects `.equipment...` with
+    // "Invalid NBT path element", but accepts `equipment...`). The prior
+    // loop always wrote `.{key}` for every `Key` segment including the
+    // first, which no earlier test caught since every earlier fixture's
+    // multi-segment path was only ever checked by substring pattern
+    // (`contains("pages[$(i0)]")`), never by an execution-validity check,
+    // and this unit test's own sibling above uses a single-segment path
+    // that can't expose an extra leading separator on the root.
+    #[test]
+    fn render_data_modify_as_macro_does_not_prefix_the_root_key_with_a_dot() {
+        let value = ValueId::from_index(0);
+        let target = StoragePath::new(
+            StorageId::parse("mdl:test").unwrap(),
+            NbtPath::new(
+                NbtPathSegment::Key(NbtPathKey::new("result").unwrap()),
+                vec![],
+            ),
+        );
+        let source = DataSource::Entity {
+            selector: Selector::from(AtMostOneSelector::SelfExecutor),
+            path: NbtPath::new(
+                NbtPathSegment::Key(NbtPathKey::new("equipment").unwrap()),
+                vec![
+                    NbtPathSegment::Key(NbtPathKey::new("mainhand").unwrap()),
+                    NbtPathSegment::Key(NbtPathKey::new("pages").unwrap()),
+                    NbtPathSegment::Index(Operand::Runtime(value)),
+                ],
+            ),
+        };
+        let base_cmd = CommandKind::Data(DataCommand::Modify {
+            target,
+            mode: DataModifyMode::Set,
+            source,
+        });
+        let operands = vec![RuntimeOperand {
+            value_id: value,
+            slot: SyntaxSlot::NbtIndex,
+        }];
+        let frame = build_frame(&operands).expect("one runtime operand builds a frame");
+        let macro_cmd = render_as_macro(&base_cmd, &frame, OriginId::UNKNOWN);
+
+        let rendered = macro_cmd
+            .lines
+            .iter()
+            .flat_map(|line| line.segments.iter())
+            .filter_map(|segment| match segment {
+                MacroSegment::Literal(text) => Some(text.as_str()),
+                MacroSegment::Variable(_) => None,
+            })
+            .collect::<String>();
+
+        assert!(
+            rendered.contains("entity @s equipment.mainhand.pages["),
+            "root key must not be preceded by a separator dot: {rendered}"
+        );
+        assert!(
+            !rendered.contains(".equipment"),
+            "root key still carries an invalid leading dot: {rendered}"
         );
     }
 }

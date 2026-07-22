@@ -526,6 +526,7 @@ fn identifier_kind(identifier: &str) -> TokenKind {
         "unsafe" => TokenKind::KeywordUnsafe,
         "minecraft" => TokenKind::KeywordMinecraft,
         "run" => TokenKind::KeywordRun,
+        "on" => TokenKind::KeywordOn,
         "const" => TokenKind::KeywordConst,
         "var" => TokenKind::KeywordVar,
         "if" => TokenKind::KeywordIf,

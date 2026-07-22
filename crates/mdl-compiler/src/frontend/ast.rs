@@ -16,6 +16,7 @@ pub(super) struct AstModule {
     pub(super) structs: Vec<AstStruct>,
     pub(super) enums: Vec<AstEnum>,
     pub(super) functions: Vec<AstFunction>,
+    pub(super) event_handlers: Vec<AstEventHandler>,
     pub(super) span: Span,
 }
 
@@ -293,6 +294,36 @@ pub(super) struct AstRunStatement {
     pub(super) span: Span,
 }
 
+/// One `.name = value` trigger argument in an `on` event-handler header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstEventHandlerArgument {
+    pub(super) name: AstName,
+    pub(super) value: AstEventHandlerArgumentValue,
+    pub(super) span: Span,
+}
+
+/// Closed value vocabulary accepted by an event-handler trigger argument.
+///
+/// A general expression is deliberately not accepted here: S-027 named
+/// arguments and S-031 bracket list literals have no other implementation in
+/// this grammar to reuse, so this stays a narrow, closed shape rather than a
+/// wrapper cut across unimplemented general machinery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum AstEventHandlerArgumentValue {
+    /// `[ StringLiteral,* ]`, each element a validated resource-id spelling.
+    StringList(Vec<Span>),
+}
+
+/// One top-level `on <trigger>(...) |binding| { ... }` push-model declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstEventHandler {
+    pub(super) trigger: AstName,
+    pub(super) arguments: Vec<AstEventHandlerArgument>,
+    pub(super) binding: AstName,
+    pub(super) body: AstBlock,
+    pub(super) span: Span,
+}
+
 /// Statements accepted by the first scalar grammar.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum AstStatement {
@@ -497,6 +528,9 @@ pub(super) fn dump(module: &AstModule, sources: &SourceContext) -> String {
     for function in &module.functions {
         printer.function(function);
     }
+    for event_handler in &module.event_handlers {
+        printer.event_handler(event_handler);
+    }
     printer.output
 }
 
@@ -567,6 +601,45 @@ impl AstPrinter<'_> {
             None => self.line(2, format_args!("result Void (omitted)")),
         }
         self.block(&function.body, 2);
+    }
+
+    fn event_handler(&mut self, event_handler: &AstEventHandler) {
+        self.line(
+            1,
+            format_args!(
+                "on {} {}",
+                self.spelling(event_handler.trigger.span),
+                location(event_handler.span)
+            ),
+        );
+        for argument in &event_handler.arguments {
+            match &argument.value {
+                AstEventHandlerArgumentValue::StringList(items) => {
+                    let items = items
+                        .iter()
+                        .map(|item| self.spelling(*item))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.line(
+                        2,
+                        format_args!(
+                            "argument {} = [{items}] {}",
+                            self.spelling(argument.name.span),
+                            location(argument.span)
+                        ),
+                    );
+                }
+            }
+        }
+        self.line(
+            2,
+            format_args!(
+                "binding {} {}",
+                self.spelling(event_handler.binding.span),
+                location(event_handler.binding.span)
+            ),
+        );
+        self.block(&event_handler.body, 2);
     }
 
     fn block(&mut self, block: &AstBlock, indent: usize) {

@@ -63,6 +63,7 @@ the constructs that remain deferred.
 - [S-040 — Enums, Switches, and Inclusive Range Patterns](enum-switch-range-patterns.md)
 - [S-041 — Anonymous Structs, Multiple Results, and Pipe Destructuring](anonymous-structs-and-destructuring.md)
 - [S-042 — Entity-NBT Path Member/Index Access and General Bracket Indexing](entity-paths-and-general-indexing.md)
+- [S-043 — Advancement Event-Handler Declarations](event-handlers.md)
 
 ## S-001 — Explicit declarations
 

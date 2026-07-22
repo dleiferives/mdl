@@ -18,6 +18,7 @@ pub(crate) enum TokenKind {
     KeywordUnsafe,
     KeywordMinecraft,
     KeywordRun,
+    KeywordOn,
     KeywordConst,
     KeywordVar,
     KeywordIf,

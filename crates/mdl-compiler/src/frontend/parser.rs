@@ -8,9 +8,10 @@ use super::ast::{
     AstAnonymousStructType, AstAnonymousStructTypeKind, AstAssignment, AstBindingKind, AstBlock,
     AstCall, AstCallStatement, AstComparisonOp, AstCoordinateSigil, AstDeclaration,
     AstDestructureTarget, AstDestructureTargetKind, AstDestructuringStatement, AstEnum,
-    AstEnumVariant, AstExpression, AstExpressionKind, AstFunction, AstFunctionVisibility, AstIfArm,
-    AstIfStatement, AstImport, AstInferredStructEntries, AstInferredStructLiteral, AstModule,
-    AstName, AstParameter, AstResultType, AstResultTypeKind, AstReturnStatement, AstRunModifier,
+    AstEnumVariant, AstEventHandler, AstEventHandlerArgument, AstEventHandlerArgumentValue,
+    AstExpression, AstExpressionKind, AstFunction, AstFunctionVisibility, AstIfArm, AstIfStatement,
+    AstImport, AstInferredStructEntries, AstInferredStructLiteral, AstModule, AstName,
+    AstParameter, AstResultType, AstResultTypeKind, AstReturnStatement, AstRunModifier,
     AstRunStatement, AstSignedInteger, AstStatement, AstStruct, AstStructField,
     AstStructFieldInitializer, AstStructLiteral, AstSwitchExpression, AstSwitchExpressionArm,
     AstSwitchLabel, AstSwitchPattern, AstSwitchPatternKind, AstSwitchStatement,
@@ -174,6 +175,7 @@ impl<'a> Parser<'a> {
         let mut structs = vec![];
         let mut enums = vec![];
         let mut functions = vec![];
+        let mut event_handlers = vec![];
         while !self.at(TokenKind::EndOfFile) {
             let before = self.index;
             match self.current().kind() {
@@ -195,6 +197,11 @@ impl<'a> Parser<'a> {
                         functions.push(function);
                     }
                 }
+                TokenKind::KeywordOn => {
+                    if let Some(event_handler) = self.parse_event_handler()? {
+                        event_handlers.push(event_handler);
+                    }
+                }
                 _ => {
                     self.error(
                         EXPECTED_ITEM,
@@ -212,6 +219,7 @@ impl<'a> Parser<'a> {
             structs,
             enums,
             functions,
+            event_handlers,
             span: self.cover(start, end)?,
         })
     }
@@ -525,6 +533,193 @@ impl<'a> Parser<'a> {
             self.ensure_progress(before);
         }
         Ok((parameters, clean))
+    }
+
+    fn parse_event_handler(&mut self) -> Result<Option<AstEventHandler>, SourceError> {
+        self.item_boundary = false;
+        let start = self.bump().span();
+        let Some(trigger_token) = self.expect_identifier("expected a trigger name after `on`")
+        else {
+            self.recover_item_body();
+            return Ok(None);
+        };
+        let trigger = AstName {
+            span: trigger_token.span(),
+        };
+        if self
+            .expect(
+                TokenKind::LeftParenthesis,
+                "expected `(` after the trigger name",
+            )
+            .is_none()
+        {
+            self.recover_item_body();
+            return Ok(None);
+        }
+        let mut clean = true;
+        let (arguments, arguments_clean) = self.parse_event_handler_arguments()?;
+        clean &= arguments_clean;
+        clean &= self
+            .expect(
+                TokenKind::RightParenthesis,
+                "expected `)` after the trigger arguments",
+            )
+            .is_some();
+        clean &= self
+            .expect(TokenKind::Pipe, "expected `|` to begin the event binding")
+            .is_some();
+        let binding = self
+            .expect_identifier("expected an event binding name after `|`")
+            .map(|token| AstName { span: token.span() });
+        clean &= binding.is_some();
+        clean &= self
+            .expect(TokenKind::Pipe, "expected `|` after the event binding")
+            .is_some();
+        let Some(body) = self.parse_block()? else {
+            self.item_boundary = false;
+            self.recover_item();
+            return Ok(None);
+        };
+        let span = self.cover(start, body.span)?;
+        if clean {
+            Ok(binding.map(|binding| AstEventHandler {
+                trigger,
+                arguments,
+                binding,
+                body,
+                span,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_event_handler_arguments(
+        &mut self,
+    ) -> Result<(Vec<AstEventHandlerArgument>, bool), SourceError> {
+        let mut arguments = vec![];
+        let mut clean = true;
+        if self.at(TokenKind::RightParenthesis) || self.at(TokenKind::EndOfFile) {
+            return Ok((arguments, clean));
+        }
+        loop {
+            let before = self.index;
+            let Some(dot) = self.expect(TokenKind::Dot, "expected `.` to begin a trigger argument")
+            else {
+                clean = false;
+                self.recover_list(TokenKind::RightParenthesis);
+                if self.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
+                break;
+            };
+            let Some(name_token) =
+                self.expect_identifier("expected a trigger argument name after `.`")
+            else {
+                clean = false;
+                self.recover_list(TokenKind::RightParenthesis);
+                if self.eat(TokenKind::Comma).is_some() {
+                    continue;
+                }
+                break;
+            };
+            let name = AstName {
+                span: name_token.span(),
+            };
+            let mut argument_clean = self
+                .expect(
+                    TokenKind::Equal,
+                    "expected `=` after the trigger argument name",
+                )
+                .is_some();
+            let (value, value_clean) = self.parse_event_handler_argument_value();
+            argument_clean &= value_clean;
+            clean &= argument_clean;
+            if let Some(value) = value {
+                let end = self.previous_or_current_span();
+                arguments.push(AstEventHandlerArgument {
+                    name,
+                    value,
+                    span: self.cover(dot.span(), end)?,
+                });
+            }
+            if self.eat(TokenKind::Comma).is_some() {
+                if self.at(TokenKind::RightParenthesis) {
+                    break;
+                }
+            } else if self.at(TokenKind::RightParenthesis) || self.at(TokenKind::EndOfFile) {
+                break;
+            } else {
+                clean = false;
+                self.error(
+                    EXPECTED_TOKEN,
+                    "expected `,` or `)` after the trigger argument",
+                    self.current().span(),
+                );
+                self.recover_list(TokenKind::RightParenthesis);
+                if self.eat(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+            self.ensure_progress(before);
+        }
+        Ok((arguments, clean))
+    }
+
+    fn parse_event_handler_argument_value(
+        &mut self,
+    ) -> (Option<AstEventHandlerArgumentValue>, bool) {
+        if self
+            .expect(TokenKind::LeftBracket, "expected `[` to begin an item list")
+            .is_none()
+        {
+            return (None, false);
+        }
+        let mut items = vec![];
+        let mut clean = true;
+        if !self.at(TokenKind::RightBracket) {
+            loop {
+                let before = self.index;
+                if self.at(TokenKind::StringLiteral) {
+                    items.push(self.bump().span());
+                } else {
+                    self.error(
+                        EXPECTED_TOKEN,
+                        "expected an item-id string literal",
+                        self.current().span(),
+                    );
+                    clean = false;
+                    self.recover_list(TokenKind::RightBracket);
+                    if self.eat(TokenKind::Comma).is_some() {
+                        continue;
+                    }
+                    break;
+                }
+                if self.eat(TokenKind::Comma).is_some() {
+                    if self.at(TokenKind::RightBracket) {
+                        break;
+                    }
+                } else if self.at(TokenKind::RightBracket) || self.at(TokenKind::EndOfFile) {
+                    break;
+                } else {
+                    clean = false;
+                    self.error(
+                        EXPECTED_TOKEN,
+                        "expected `,` or `]` after the item-id literal",
+                        self.current().span(),
+                    );
+                    self.recover_list(TokenKind::RightBracket);
+                    if self.eat(TokenKind::Comma).is_none() {
+                        break;
+                    }
+                }
+                self.ensure_progress(before);
+            }
+        }
+        clean &= self
+            .expect(TokenKind::RightBracket, "expected `]` after the item list")
+            .is_some();
+        (Some(AstEventHandlerArgumentValue::StringList(items)), clean)
     }
 
     fn parse_value_type(&mut self) -> Option<AstValueType> {
@@ -1717,6 +1912,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::KeywordFn
                         | TokenKind::KeywordPub
                         | TokenKind::KeywordExport
+                        | TokenKind::KeywordOn
                         | TokenKind::EndOfFile
                 ) {
                     self.bump();
@@ -2024,7 +2220,10 @@ impl<'a> Parser<'a> {
     fn at_function_item_start(&self) -> bool {
         matches!(
             self.current().kind(),
-            TokenKind::KeywordFn | TokenKind::KeywordPub | TokenKind::KeywordExport
+            TokenKind::KeywordFn
+                | TokenKind::KeywordPub
+                | TokenKind::KeywordExport
+                | TokenKind::KeywordOn
         )
     }
 
@@ -2112,6 +2311,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {
             self.bump();
@@ -2126,6 +2326,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {
             self.bump();
@@ -2173,6 +2374,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOn
                 | TokenKind::Identifier
                 | TokenKind::EndOfFile
         ) {
@@ -2192,6 +2394,7 @@ impl<'a> Parser<'a> {
             && !self.at(TokenKind::KeywordExport)
             && !self.at(TokenKind::KeywordRun)
             && !self.at(TokenKind::KeywordUnsafe)
+            && !self.at(TokenKind::KeywordOn)
             && !self.at(TokenKind::EndOfFile)
         {
             self.bump();
@@ -2215,6 +2418,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {
             self.bump();
@@ -2305,8 +2509,8 @@ mod tests {
     use super::{CHAINED_COMPARISON, ParseOutput, TRUNCATED, parse};
     use crate::frontend::FrontendLimits;
     use crate::frontend::ast::{
-        AstBindingKind, AstExpressionKind, AstFunctionVisibility, AstResultTypeKind, AstStatement,
-        AstValueTypeKind, dump,
+        AstBindingKind, AstEventHandlerArgumentValue, AstExpressionKind, AstFunctionVisibility,
+        AstResultTypeKind, AstStatement, AstValueTypeKind, dump,
     };
     use crate::frontend::lexer::lex;
     use crate::source::{FileId, SourceContext};
@@ -2578,6 +2782,59 @@ export fn run(value: Int32) -> Int32 {
             spelling(&sources, run.span),
             text[text.find("run.as").unwrap()..text.rfind('\n').unwrap()].trim_end()
         );
+    }
+
+    #[test]
+    fn parses_event_handler_trigger_arguments_and_binding() {
+        let text = r#"on inventory_changed(.items = ["minecraft:diamond"]) |player| {
+    player.say("MDL_GOT_DIAMOND");
+}"#;
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        assert_eq!(output.module().functions.len(), 0);
+        assert_eq!(output.module().event_handlers.len(), 1);
+        let handler = &output.module().event_handlers[0];
+        assert_eq!(
+            spelling(&sources, handler.trigger.span),
+            "inventory_changed"
+        );
+        assert_eq!(handler.arguments.len(), 1);
+        assert_eq!(spelling(&sources, handler.arguments[0].name.span), "items");
+        let AstEventHandlerArgumentValue::StringList(items) = &handler.arguments[0].value;
+        assert_eq!(items.len(), 1);
+        assert_eq!(spelling(&sources, items[0]), r#""minecraft:diamond""#);
+        assert_eq!(spelling(&sources, handler.binding.span), "player");
+        assert!(matches!(
+            handler.body.statements.as_slice(),
+            [AstStatement::Call(_)]
+        ));
+    }
+
+    #[test]
+    fn event_handler_accepts_multiple_comma_separated_item_ids() {
+        let text = r#"on inventory_changed(.items = ["minecraft:diamond", "minecraft:emerald",]) |player| {}"#;
+        let (sources, _, output) = parse_text(text);
+        assert_eq!(output.diagnostics(), None);
+        let handler = &output.module().event_handlers[0];
+        let AstEventHandlerArgumentValue::StringList(items) = &handler.arguments[0].value;
+        assert_eq!(items.len(), 2);
+        assert_eq!(spelling(&sources, items[0]), r#""minecraft:diamond""#);
+        assert_eq!(spelling(&sources, items[1]), r#""minecraft:emerald""#);
+    }
+
+    #[test]
+    fn malformed_event_handler_headers_produce_diagnostics() {
+        for malformed in [
+            "on inventory_changed(.items = [\"minecraft:diamond\"]) player| {}",
+            "on inventory_changed(.items = [\"minecraft:diamond\"]) |player {}",
+            "on inventory_changed(.items [\"minecraft:diamond\"]) |player| {}",
+            "on inventory_changed(.items = [\"minecraft:diamond\") |player| {}",
+            "on inventory_changed(items = [\"minecraft:diamond\"]) |player| {}",
+            "on (.items = [\"minecraft:diamond\"]) |player| {}",
+        ] {
+            let (_, _, output) = parse_text(malformed);
+            assert!(output.diagnostics().is_some(), "{malformed}");
+        }
     }
 
     #[test]

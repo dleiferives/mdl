@@ -1,8 +1,9 @@
 # PS-13 through PS-17 — Player Interaction and the Chest-Menu Capstone
 
-Status: **planned at the milestone level.** Each milestone now has its own document;
-this file is the index and the shared dependency rationale, mirroring how `roadmap.md`
-itself indexes PS-1 through PS-5 rather than containing their full detail inline.
+Status: **PS-13 complete; PS-14 through PS-17 planned at the milestone level.** Each
+milestone has its own document; this file is the index and the shared dependency
+rationale, mirroring how `roadmap.md` itself indexes PS-1 through PS-5 rather than
+containing their full detail inline.
 
 ## Why this sequence exists
 
@@ -27,7 +28,7 @@ now; PS-13 crosses it.
 
 | Milestone | Scope | Document |
 |---|---|---|
-| PS-13 | Azalea-backed bot test infrastructure in `mdl-test` — no compiler changes | [ps-13-bot-driven-test-infrastructure.md](ps-13-bot-driven-test-infrastructure.md) |
+| PS-13 ✅ | Azalea-backed bot test infrastructure, `crates/mdl-test-bot/` — no compiler changes | [ps-13-bot-driven-test-infrastructure.md](ps-13-bot-driven-test-infrastructure.md) |
 | PS-14 | `EntityKind::Player` | [ps-14-player-entity-kind.md](ps-14-player-entity-kind.md) |
 | PS-15 | Advancement-triggered events (the push model) | [ps-15-advancement-triggered-events.md](ps-15-advancement-triggered-events.md) |
 | PS-16 | Block-entity NBT writes (BE-2) | [ps-16-block-entity-nbt-writes.md](ps-16-block-entity-nbt-writes.md) |

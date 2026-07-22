@@ -1,9 +1,15 @@
 # PS-14 — `Player` Entity Kind
 
-Status: **planned, mechanically researched (2026-07-22).** Depends on
-[PS-13](ps-13-bot-driven-test-infrastructure.md) (complete). This document is written
-as an implementation handoff — a fresh agent with no memory of this session should be
-able to execute it directly from what's here, without re-deriving the research.
+Status: **implemented (2026-07-22).** `EntityKind::Player` landed exactly as scoped
+below: the four production-code sites, `PLAYER_ROOT` scoped to armor slots only
+(`mainhand`/`offhand` deferred), a unit test in `entity_schema.rs`, a structural/
+differential test (`crates/mdl-compiler/tests/ps14_player_entity_kind.rs`), and a
+pinned-server test (`crates/mdl-test-bot/tests/ps14_player_equipment_read.rs`) —
+this compiler's first genuinely player-backed proof, run live against the pinned
+26.2 server. Depends on [PS-13](ps-13-bot-driven-test-infrastructure.md) (complete).
+This document is written as an implementation handoff — a fresh agent with no
+memory of this session should be able to execute it directly from what's here,
+without re-deriving the research.
 
 ## Why this exists
 

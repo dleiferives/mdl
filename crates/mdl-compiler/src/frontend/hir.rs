@@ -9,9 +9,10 @@ use super::context::{apply_run_modifiers, function_entry_context};
 use super::input::ModuleKey;
 use crate::ir::command_line::validate_command_line_shape;
 use crate::ir::semantic::{
-    Axes, DimensionKey, EntityAnchor, EntityCapability, EntityKind, EntityTag, ExecutionContext,
-    ExecutorType, FunctionBehavior, MessageLiteral, MinecraftSemanticKey, PositionSpec,
-    RelativeWorldOffset, RotationSpec, StaticEntityQuery, minecraft_descriptor,
+    Axes, BlockEntityKind, BlockPosition, DimensionKey, EntityAnchor, EntityCapability, EntityKind,
+    EntityTag, ExecutionContext, ExecutorType, FunctionBehavior, MessageLiteral,
+    MinecraftSemanticKey, PositionSpec, RelativeWorldOffset, RotationSpec, StaticEntityQuery,
+    minecraft_descriptor,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -551,21 +552,50 @@ pub(super) enum HirExternalSemantic {
     /// (`entity_schema.rs`) is the only source of path-step validity, and
     /// version-dependence belongs to schema table selection, not a recipe.
     EntityNbtRead {
-        receiver_kind: EntityKind,
-        executor_proof: HirContextStep,
+        receiver: HirEntityNbtReceiver,
         segments: Box<[HirEntityPathSegment]>,
         result_ty: ValueType,
         receiver_origin: OriginId,
     },
 }
 
+/// The root of a checked entity-NBT path chain (BE-1,
+/// `block-entity-nbt-paths.md` §2.3). An entity receiver still carries only
+/// its kind — the real selector is resolved from ambient executor context at
+/// lowering time, unchanged from PS-12. A block receiver carries its kind
+/// *and* its position, since there is no ambient context to resolve it from
+/// and it needs no `executor_proof`: a block position is self-contained in
+/// the command it lowers to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HirEntityNbtReceiver {
+    Entity {
+        kind: EntityKind,
+        executor_proof: HirContextStep,
+    },
+    Block {
+        kind: BlockEntityKind,
+        position: BlockPosition,
+    },
+}
+
 /// One step of a checked entity-NBT path, after the root. A `Key` step is
 /// always compile-time-constant (`nbt-schema-system.md` §7 — schema keys are
-/// never runtime-derived); an `Index` step may be const or runtime.
+/// never runtime-derived); `Index`/`Match` steps may be const or runtime.
+/// `Match` (BE-1) selects a list element by a schema-known compound-field
+/// match (e.g. a container slot) instead of by position — same source
+/// syntax as `Index` (`[Expression]`), distinguished by the schema node kind
+/// at check time, not by new grammar.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum HirEntityPathSegment {
     Key(Box<str>),
     Index(Box<HirExpression>),
+    /// `match_key` is the schema-known compound field matched against
+    /// (e.g. `"slot"`), fixed by the `SchemaNode::MatchList` this step
+    /// narrowed through — never source syntax, so it carries no span.
+    Match {
+        match_key: Box<str>,
+        value: Box<HirExpression>,
+    },
 }
 
 /// Closed static attributes of one checked Minecraft operation occurrence.
@@ -1175,8 +1205,7 @@ impl<'a> Dumper<'a> {
                     );
                 }
                 HirExternalSemantic::EntityNbtRead {
-                    receiver_kind,
-                    executor_proof,
+                    receiver,
                     segments,
                     result_ty,
                     receiver_origin,
@@ -1189,15 +1218,33 @@ impl<'a> Dumper<'a> {
                                 HirExpressionKind::Int32(value) => format!("[{value}]"),
                                 _ => "[<runtime>]".to_string(),
                             },
+                            HirEntityPathSegment::Match { match_key, value } => match &value.kind {
+                                HirExpressionKind::Int32(n) => {
+                                    format!("[{{{match_key}:{n}}}]")
+                                }
+                                _ => format!("[{{{match_key}:<runtime>}}]"),
+                            },
                         })
                         .collect::<String>();
+                    let receiver_text = match receiver {
+                        HirEntityNbtReceiver::Entity {
+                            kind,
+                            executor_proof,
+                        } => format!(
+                            "Executor<{kind}> proof=run@{}:modifier{}",
+                            executor_proof.run.index(),
+                            executor_proof.modifier_index
+                        ),
+                        HirEntityNbtReceiver::Block { kind, position } => format!(
+                            "Block<{kind}> position={} {} {}",
+                            position.x, position.y, position.z
+                        ),
+                    };
                     self.line(
                         1,
                         &format!(
-                            "external @{} entity-nbt-read receiver=Executor<{receiver_kind}> proof=run@{}:modifier{} path={path} result_ty={result_ty} receiver_origin={} {}",
+                            "external @{} entity-nbt-read receiver={receiver_text} path={path} result_ty={result_ty} receiver_origin={} {}",
                             external.id.index(),
-                            executor_proof.run.index(),
-                            executor_proof.modifier_index,
                             self.location(*receiver_origin),
                             self.location(external.origin),
                         ),
@@ -1824,22 +1871,29 @@ impl Verifier<'_> {
                     }
                 }
                 HirExternalSemantic::EntityNbtRead {
-                    receiver_kind,
-                    executor_proof,
+                    receiver,
                     segments,
                     result_ty: _,
                     receiver_origin,
                 } => {
                     self.origin(*receiver_origin, "entity-NBT path receiver")?;
-                    self.origin(executor_proof.origin, "entity-NBT path executor proof")?;
-                    if !receiver_kind
-                        .capabilities()
-                        .contains(EntityCapability::CommandExecutor)
-                    {
-                        return Err(HirVerificationError::new(format!(
-                            "entity-NBT path {:?} has a receiver kind without executor capability",
-                            external.id
-                        )));
+                    match receiver {
+                        HirEntityNbtReceiver::Entity {
+                            kind,
+                            executor_proof,
+                        } => {
+                            self.origin(executor_proof.origin, "entity-NBT path executor proof")?;
+                            if !kind
+                                .capabilities()
+                                .contains(EntityCapability::CommandExecutor)
+                            {
+                                return Err(HirVerificationError::new(format!(
+                                    "entity-NBT path {:?} has a receiver kind without executor capability",
+                                    external.id
+                                )));
+                            }
+                        }
+                        HirEntityNbtReceiver::Block { .. } => {}
                     }
                     if segments.is_empty() {
                         return Err(HirVerificationError::new(format!(
@@ -1848,7 +1902,12 @@ impl Verifier<'_> {
                         )));
                     }
                     for segment in segments {
-                        if let HirEntityPathSegment::Index(index) = segment {
+                        let index = match segment {
+                            HirEntityPathSegment::Index(index) => Some(index),
+                            HirEntityPathSegment::Match { value, .. } => Some(value),
+                            HirEntityPathSegment::Key(_) => None,
+                        };
+                        if let Some(index) = index {
                             if index.ty != ValueType::Int32 {
                                 return Err(HirVerificationError::new(format!(
                                     "entity-NBT path {:?} has a non-Int32 index segment",

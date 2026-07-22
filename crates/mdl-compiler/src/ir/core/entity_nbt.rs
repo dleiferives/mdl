@@ -6,14 +6,18 @@
 //! because a schema-driven path has no single fixed command shape to verify
 //! against. See `notes/compiler/entity-nbt-path-composability.md` §2.5.
 
+use std::fmt;
+
 use super::{CoreProgram, CoreType, Operand, ProgramError};
 use crate::entity::EntityLimitError;
-use crate::ir::semantic::{EntityCapability, EntityKind};
+use crate::ir::semantic::{BlockEntityKind, BlockPosition, EntityCapability, EntityKind};
 use crate::source::OriginId;
 
 /// One step of a checked entity-NBT path, after the root. A `Key` step is
 /// always compile-time-constant (schema keys are never runtime-derived,
-/// `nbt-schema-system.md` §7); an `Index` step may be const or runtime.
+/// `nbt-schema-system.md` §7); `Index`/`Match` steps may be const or
+/// runtime. `Match` (BE-1) selects a list element by a schema-known
+/// compound-field match (e.g. a container slot) instead of by position.
 ///
 /// Plain `Box<str>` keys, not `ir::minecraft::NbtPathKey`: Core stays
 /// target-independent (matching `MinecraftOperationAttributes`, which uses
@@ -23,22 +27,56 @@ use crate::source::OriginId;
 pub enum EntityNbtPathSegment {
     Key(Box<str>),
     Index(Operand<i32>),
+    /// `match_key` is the schema-known compound field matched against
+    /// (e.g. `"slot"`) — always a plain string, same target-independence
+    /// rationale as `Key`.
+    Match {
+        match_key: Box<str>,
+        value: Operand<i32>,
+    },
+}
+
+/// The root of an entity-NBT path read (BE-1,
+/// `notes/compiler/block-entity-nbt-paths.md` §2.3). An entity receiver
+/// resolves its real selector from ambient executor context at lowering
+/// time, unchanged from PS-12. A block receiver carries its position
+/// directly — it is self-contained in the command it lowers to and needs no
+/// ambient context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityNbtReceiver {
+    Entity(EntityKind),
+    Block(BlockEntityKind, BlockPosition),
+}
+
+impl fmt::Display for EntityNbtReceiver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Entity(kind) => write!(formatter, "Entity<{kind}>"),
+            Self::Block(kind, position) => {
+                write!(
+                    formatter,
+                    "Block<{kind}>@{} {} {}",
+                    position.x, position.y, position.z
+                )
+            }
+        }
+    }
 }
 
 /// One normalized entity-NBT path read declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntityNbtReadDecl {
-    receiver_kind: EntityKind,
+    receiver: EntityNbtReceiver,
     segments: Box<[EntityNbtPathSegment]>,
     result_ty: CoreType,
     receiver_origin: OriginId,
 }
 
 impl EntityNbtReadDecl {
-    /// Returns the nominal kind required of Minecraft's current executor.
+    /// Returns the read's root receiver.
     #[must_use]
-    pub const fn receiver_kind(&self) -> EntityKind {
-        self.receiver_kind
+    pub const fn receiver(&self) -> EntityNbtReceiver {
+        self.receiver
     }
 
     /// Returns the checked path steps, root-relative.
@@ -59,22 +97,36 @@ impl EntityNbtReadDecl {
         self.receiver_origin
     }
 
-    /// Returns the number of `Index` segments carrying a runtime `ValueId` —
-    /// exactly the number of instruction operands this declaration expects.
+    /// Returns the number of `Index`/`Match` segments carrying a runtime
+    /// `ValueId` — exactly the number of instruction operands this
+    /// declaration expects.
     #[must_use]
     pub fn runtime_index_count(&self) -> usize {
         self.segments
             .iter()
-            .filter(|segment| matches!(segment, EntityNbtPathSegment::Index(Operand::Runtime(_))))
+            .filter(|segment| {
+                matches!(
+                    segment,
+                    EntityNbtPathSegment::Index(Operand::Runtime(_))
+                        | EntityNbtPathSegment::Match {
+                            value: Operand::Runtime(_),
+                            ..
+                        }
+                )
+            })
             .count()
     }
 
     pub(crate) fn is_well_formed(&self) -> bool {
-        !self.segments.is_empty()
-            && self
-                .receiver_kind
+        if self.segments.is_empty() {
+            return false;
+        }
+        match self.receiver {
+            EntityNbtReceiver::Entity(kind) => kind
                 .capabilities()
-                .contains(EntityCapability::CommandExecutor)
+                .contains(EntityCapability::CommandExecutor),
+            EntityNbtReceiver::Block(..) => true,
+        }
     }
 }
 
@@ -87,13 +139,13 @@ impl CoreProgram {
     /// exhaustion of the declaration identity space.
     pub fn declare_entity_nbt_read(
         &mut self,
-        receiver_kind: EntityKind,
+        receiver: EntityNbtReceiver,
         segments: Vec<EntityNbtPathSegment>,
         result_ty: CoreType,
         receiver_origin: OriginId,
     ) -> Result<super::EntityNbtReadId, ProgramError> {
         let declaration = EntityNbtReadDecl {
-            receiver_kind,
+            receiver,
             segments: segments.into_boxed_slice(),
             result_ty,
             receiver_origin,
@@ -123,10 +175,10 @@ impl CoreProgram {
 
 #[cfg(test)]
 mod tests {
-    use super::EntityNbtPathSegment;
+    use super::{EntityNbtPathSegment, EntityNbtReceiver};
     use crate::entity::EntityId;
     use crate::ir::core::{CoreProgram, CoreType, Operand, ProgramError, ValueId};
-    use crate::ir::semantic::EntityKind;
+    use crate::ir::semantic::{BlockEntityKind, BlockPosition, EntityKind};
     use crate::source::OriginId;
 
     fn book_page_segments() -> Vec<EntityNbtPathSegment> {
@@ -141,23 +193,58 @@ mod tests {
         ]
     }
 
+    fn container_segments() -> Vec<EntityNbtPathSegment> {
+        vec![
+            EntityNbtPathSegment::Key("Items".into()),
+            EntityNbtPathSegment::Match {
+                match_key: "Slot".into(),
+                value: Operand::Const(0),
+            },
+            EntityNbtPathSegment::Key("count".into()),
+        ]
+    }
+
     #[test]
     fn well_formed_declarations_round_trip() {
         let mut program = CoreProgram::new();
         let read = program
             .declare_entity_nbt_read(
-                EntityKind::ArmorStand,
+                EntityNbtReceiver::Entity(EntityKind::ArmorStand),
                 book_page_segments(),
                 CoreType::String,
                 OriginId::UNKNOWN,
             )
             .unwrap();
         let declaration = program.entity_nbt_read(read).unwrap();
-        assert_eq!(declaration.receiver_kind(), EntityKind::ArmorStand);
+        assert_eq!(
+            declaration.receiver(),
+            EntityNbtReceiver::Entity(EntityKind::ArmorStand)
+        );
         assert_eq!(declaration.result_ty(), CoreType::String);
         assert_eq!(declaration.segments().len(), 7);
         assert_eq!(declaration.runtime_index_count(), 0);
         assert_eq!(program.entity_nbt_reads().len(), 1);
+    }
+
+    #[test]
+    fn well_formed_block_declarations_round_trip() {
+        let mut program = CoreProgram::new();
+        let position = BlockPosition { x: 0, y: 4, z: 0 };
+        let read = program
+            .declare_entity_nbt_read(
+                EntityNbtReceiver::Block(BlockEntityKind::Chest, position),
+                container_segments(),
+                CoreType::I32,
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let declaration = program.entity_nbt_read(read).unwrap();
+        assert_eq!(
+            declaration.receiver(),
+            EntityNbtReceiver::Block(BlockEntityKind::Chest, position)
+        );
+        assert_eq!(declaration.result_ty(), CoreType::I32);
+        assert_eq!(declaration.runtime_index_count(), 0);
     }
 
     #[test]
@@ -167,9 +254,34 @@ mod tests {
         segments[5] = EntityNbtPathSegment::Index(Operand::Runtime(ValueId::from_index(0)));
         let read = program
             .declare_entity_nbt_read(
-                EntityKind::ArmorStand,
+                EntityNbtReceiver::Entity(EntityKind::ArmorStand),
                 segments,
                 CoreType::String,
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        assert_eq!(
+            program.entity_nbt_read(read).unwrap().runtime_index_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn runtime_match_segments_are_counted() {
+        let mut program = CoreProgram::new();
+        let mut segments = container_segments();
+        segments[1] = EntityNbtPathSegment::Match {
+            match_key: "Slot".into(),
+            value: Operand::Runtime(ValueId::from_index(0)),
+        };
+        let read = program
+            .declare_entity_nbt_read(
+                EntityNbtReceiver::Block(
+                    BlockEntityKind::Chest,
+                    BlockPosition { x: 0, y: 4, z: 0 },
+                ),
+                segments,
+                CoreType::I32,
                 OriginId::UNKNOWN,
             )
             .unwrap();
@@ -184,7 +296,7 @@ mod tests {
         let mut program = CoreProgram::new();
         assert_eq!(
             program.declare_entity_nbt_read(
-                EntityKind::ArmorStand,
+                EntityNbtReceiver::Entity(EntityKind::ArmorStand),
                 vec![],
                 CoreType::String,
                 OriginId::UNKNOWN,

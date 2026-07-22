@@ -18,14 +18,14 @@ use super::ast::{
     AstSwitchStatement, AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::context::{apply_run_modifiers, function_entry_context};
-use super::entity_schema::{SchemaNode, root_schema};
+use super::entity_schema::{SchemaNode, block_root_schema, root_schema};
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirAnonymousStruct,
     HirAnonymousStructField, HirAnonymousStructKind, HirBinding, HirBindingKind, HirBlock, HirCall,
     HirComparisonOp, HirContextStep, HirDestructureTarget, HirDestructureTargetRole,
-    HirEntityPathSegment, HirEntityQuery, HirEntityQueryStep, HirEnum, HirEnumVariant,
-    HirExecutionContext, HirExecutorCapture, HirExpression, HirExpressionKind, HirExternalOp,
-    HirExternalSemantic, HirFunction, HirIf, HirIfArm, HirListI32Op,
+    HirEntityNbtReceiver, HirEntityPathSegment, HirEntityQuery, HirEntityQueryStep, HirEnum,
+    HirEnumVariant, HirExecutionContext, HirExecutorCapture, HirExpression, HirExpressionKind,
+    HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirIfArm, HirListI32Op,
     HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun, HirRunModifier,
     HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField, HirStructFieldValue,
     HirSwitchExpression, HirSwitchExpressionArm, HirSwitchLabel, HirSwitchPattern,
@@ -38,11 +38,11 @@ use super::input::{ModuleDependency, ModuleKey};
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
 use crate::ir::command_line::validate_command_line_shape;
 use crate::ir::semantic::{
-    Axes, ContextFact, DimensionKey, EntityAnchor, EntityCapability, EntityKind, EntityTag,
-    ExecutorType, FiniteDecimal, LocalPosition, MAX_PACKAGE_RUN_MODIFIERS,
-    MAX_RUN_MODIFIERS_PER_SCOPE, MessageLiteral, PositionSpec, RotationAxis, RotationSpec,
-    SemanticType, SourceReceiverRule, StaticEntityQuery, WorldAxis, WorldPosition,
-    minecraft_descriptor, minecraft_source_methods, resolve_minecraft_method,
+    Axes, BlockEntityKind, BlockPosition, ContextFact, DimensionKey, EntityAnchor,
+    EntityCapability, EntityKind, EntityTag, ExecutorType, FiniteDecimal, LocalPosition,
+    MAX_PACKAGE_RUN_MODIFIERS, MAX_RUN_MODIFIERS_PER_SCOPE, MessageLiteral, PositionSpec,
+    RotationAxis, RotationSpec, SemanticType, SourceReceiverRule, StaticEntityQuery, WorldAxis,
+    WorldPosition, minecraft_descriptor, minecraft_source_methods, resolve_minecraft_method,
 };
 use crate::source::{Origin, OriginError, SourceContext, SourceError, Span};
 
@@ -102,7 +102,9 @@ const DIRTY_AST: &str = "frontend.check.dirty-ast";
 const TRUNCATED: &str = "frontend.check.truncated";
 
 fn is_reserved_compiler_name(name: &str) -> bool {
-    matches!(name, "mc" | "List") || EntityKind::from_source_name(name).is_some()
+    matches!(name, "mc" | "List")
+        || EntityKind::from_source_name(name).is_some()
+        || BlockEntityKind::from_source_name(name).is_some()
 }
 
 fn reserved_compiler_name_diagnostic(name: &str, span: Span) -> PendingDiagnostic {
@@ -3526,13 +3528,13 @@ impl<'a> BodyChecker<'a> {
             AstExpressionKind::Member {
                 receiver, member, ..
             } => {
-                if self.expression_roots_in_executor_capture(expression) {
+                if self.expression_roots_in_nbt_path_receiver(expression) {
                     return self.check_entity_nbt_path_expression(expression, assigned);
                 }
                 self.check_member_expression(receiver, member.span, expression.span, assigned)
             }
             AstExpressionKind::MemberKey { .. } => {
-                if self.expression_roots_in_executor_capture(expression) {
+                if self.expression_roots_in_nbt_path_receiver(expression) {
                     return self.check_entity_nbt_path_expression(expression, assigned);
                 }
                 self.diagnostics.push(
@@ -3601,7 +3603,7 @@ impl<'a> BodyChecker<'a> {
                 self.check_comparison(*op, left, right, expression.span, assigned)
             }
             AstExpressionKind::Index { aggregate, index } => {
-                if self.expression_roots_in_executor_capture(expression) {
+                if self.expression_roots_in_nbt_path_receiver(expression) {
                     return self.check_entity_nbt_path_expression(expression, assigned);
                 }
                 self.check_index_expression(aggregate, index, expression.span, assigned)
@@ -4250,26 +4252,49 @@ impl<'a> BodyChecker<'a> {
     /// schema chain (PS-12, S-042) instead of ordinary struct/tuple
     /// checking. An executor capture is never an ordinary `ValueType`
     /// binding, so this can never misfire against a real struct/tuple value.
-    fn expression_roots_in_executor_capture(&self, expression: &AstExpression) -> bool {
+    fn expression_roots_in_nbt_path_receiver(&self, expression: &AstExpression) -> bool {
         match &expression.kind {
             AstExpressionKind::Name(name) => self.spelling(name.span).is_ok_and(|spelling| {
                 self.active_executor_captures
                     .contains_key(spelling.as_ref())
             }),
+            AstExpressionKind::Call(call) => self.call_is_block_ref_root_shape(call),
             AstExpressionKind::Member { receiver, .. }
             | AstExpressionKind::MemberKey { receiver, .. } => {
-                self.expression_roots_in_executor_capture(receiver)
+                self.expression_roots_in_nbt_path_receiver(receiver)
             }
             AstExpressionKind::Index { aggregate, .. } => {
-                self.expression_roots_in_executor_capture(aggregate)
+                self.expression_roots_in_nbt_path_receiver(aggregate)
             }
             _ => false,
         }
     }
 
+    /// Cheap, diagnostic-free shape check: does `call` look like `mc.block(
+    /// ...)`, regardless of whether its arguments are actually valid? Real
+    /// argument validation (kind name, literal integer positions) is
+    /// `check_block_ref_root`'s job, run only once this gate has already
+    /// decided the expression should be checked as an entity-NBT path.
+    fn call_is_block_ref_root_shape(&self, call: &AstCall) -> bool {
+        let AstExpressionKind::Member {
+            receiver, member, ..
+        } = &call.callee.kind
+        else {
+            return false;
+        };
+        let AstExpressionKind::Name(namespace) = receiver.kind else {
+            return false;
+        };
+        self.spelling(namespace.span)
+            .is_ok_and(|spelling| spelling.as_ref() == "mc")
+            && self
+                .spelling(member.span)
+                .is_ok_and(|spelling| spelling.as_ref() == "block")
+    }
+
     /// Checks the whole entity-NBT path chain rooted at `expression` and, on
     /// success, produces a checked value from its terminal `Scalar` schema
-    /// node. Only call when `expression_roots_in_executor_capture` returned
+    /// node. Only call when `expression_roots_in_nbt_path_receiver` returned
     /// true. Reaching a non-terminal (`Compound`/`List`) node is rejected —
     /// binding an in-progress chain to an intermediate variable
     /// (`const item := reader.equipment.mainhand;`) is explicit deferred
@@ -4304,8 +4329,7 @@ impl<'a> BodyChecker<'a> {
         self.external_ops.push(HirExternalOp {
             id,
             semantic: HirExternalSemantic::EntityNbtRead {
-                receiver_kind: step.receiver_kind,
-                executor_proof: step.executor_proof,
+                receiver: step.receiver,
                 segments: step.segments.into_boxed_slice(),
                 result_ty,
                 receiver_origin: step.receiver_origin,
@@ -4318,6 +4342,118 @@ impl<'a> BodyChecker<'a> {
             origin,
             expression.span,
         ))
+    }
+
+    /// Validates a `mc.block(Kind, x, y, z)` call as an entity-NBT path root
+    /// (BE-1). Only call once `expression_roots_in_nbt_path_receiver` has
+    /// already recognized the shape via `call_is_block_ref_root_shape` — from
+    /// here on, a shape mismatch is diagnosed, not silently ignored, mirroring
+    /// `check_entity_query_root`'s own commitment discipline.
+    fn check_block_ref_root(
+        &mut self,
+        call: &AstCall,
+    ) -> Result<Option<(BlockEntityKind, BlockPosition)>, CheckError> {
+        let [kind_arg, x_arg, y_arg, z_arg] = call.arguments.as_slice() else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INVALID_ENTITY_QUERY,
+                    "`mc.block` requires one nominal block-entity kind and 3 absolute integer coordinates",
+                    call.span,
+                )
+                .primary("expected `mc.block(Kind, x, y, z)`"),
+            );
+            return Ok(None);
+        };
+        let AstExpressionKind::Name(kind_name) = kind_arg.kind else {
+            self.invalid_entity_query(
+                kind_arg.span,
+                "expected the nominal block-entity kind `Chest`",
+            );
+            return Ok(None);
+        };
+        let spelling = self.spelling(kind_name.span)?;
+        let Some(kind) = BlockEntityKind::from_source_name(&spelling) else {
+            self.invalid_entity_query(
+                kind_name.span,
+                format!("block-entity kind `{spelling}` is not supported by this slice"),
+            );
+            return Ok(None);
+        };
+        let Some(x) = self.check_block_axis(x_arg)? else {
+            return Ok(None);
+        };
+        let Some(y) = self.check_block_axis(y_arg)? else {
+            return Ok(None);
+        };
+        let Some(z) = self.check_block_axis(z_arg)? else {
+            return Ok(None);
+        };
+        Ok(Some((kind, BlockPosition { x, y, z })))
+    }
+
+    /// Checks one `mc.block(...)` coordinate argument. Absolute integers
+    /// only in this release (`block-entity-nbt-paths.md` §1.4/§2.2): a
+    /// `~`/`^`-relative or fractional coordinate is a diagnosed rejection,
+    /// not a silent truncation.
+    fn check_block_axis(&mut self, expression: &AstExpression) -> Result<Option<i32>, CheckError> {
+        let (spelling, negative) = match &expression.kind {
+            AstExpressionKind::DecimalInteger(span) => (self.spelling(*span)?, false),
+            AstExpressionKind::StaticDecimal {
+                sigil: None,
+                negative,
+                digits: Some(span),
+            } => (self.spelling(*span)?, *negative),
+            AstExpressionKind::StaticDecimal { sigil: Some(_), .. } => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        LITERAL_CONTEXT_REQUIRED,
+                        "block positions must be absolute in this release",
+                        expression.span,
+                    )
+                    .primary("`~`/`^`-relative block coordinates are not supported yet"),
+                );
+                return Ok(None);
+            }
+            _ => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        LITERAL_CONTEXT_REQUIRED,
+                        "expected a compiler-known absolute integer coordinate",
+                        expression.span,
+                    )
+                    .primary("runtime expressions are not block-position coordinates yet"),
+                );
+                return Ok(None);
+            }
+        };
+        if spelling.contains('.') {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    TYPE_MISMATCH,
+                    "block coordinates must be whole integers",
+                    expression.span,
+                )
+                .primary("this coordinate has a fractional part"),
+            );
+            return Ok(None);
+        }
+        let signed = if negative {
+            format!("-{spelling}")
+        } else {
+            spelling.into()
+        };
+        if let Ok(value) = signed.parse::<i32>() {
+            return Ok(Some(value));
+        }
+        self.diagnostics.push(
+            PendingDiagnostic::new(
+                INTEGER_OUT_OF_RANGE,
+                "block coordinate is outside the Int32 range",
+                expression.span,
+            )
+            .primary("expected a value from -2147483648 through 2147483647"),
+        );
+        Ok(None)
     }
 
     /// Recursive worker behind `check_entity_nbt_path_expression`. Returns
@@ -4365,8 +4501,21 @@ impl<'a> BodyChecker<'a> {
                 }
                 Ok(Some(EntityPathStep {
                     node: root_schema(capture.ty.kind()),
-                    receiver_kind: capture.ty.kind(),
-                    executor_proof: capture.proof,
+                    receiver: HirEntityNbtReceiver::Entity {
+                        kind: capture.ty.kind(),
+                        executor_proof: capture.proof,
+                    },
+                    receiver_origin: self.origin(expression.span)?,
+                    segments: vec![],
+                }))
+            }
+            AstExpressionKind::Call(call) => {
+                let Some((kind, position)) = self.check_block_ref_root(call)? else {
+                    return Ok(None);
+                };
+                Ok(Some(EntityPathStep {
+                    node: block_root_schema(kind),
+                    receiver: HirEntityNbtReceiver::Block { kind, position },
                     receiver_origin: self.origin(expression.span)?,
                     segments: vec![],
                 }))
@@ -4425,6 +4574,7 @@ impl<'a> BodyChecker<'a> {
                 let Some(mut step) = self.check_entity_nbt_path_step(aggregate, assigned)? else {
                     return Ok(None);
                 };
+                let match_key = step.node.match_key();
                 let Some(element) = step.node.list_element() else {
                     self.diagnostics.push(
                         PendingDiagnostic::new(
@@ -4465,9 +4615,25 @@ impl<'a> BodyChecker<'a> {
                     );
                     return Ok(None);
                 }
+                if match_key.is_some() && !matches!(index_expr.kind, HirExpressionKind::Int32(_)) {
+                    self.diagnostics.push(
+                        PendingDiagnostic::new(
+                            LITERAL_CONTEXT_REQUIRED,
+                            "a runtime container-slot index is not supported yet",
+                            index.span,
+                        )
+                        .primary("this release requires a compile-time-known slot number"),
+                    );
+                    return Ok(None);
+                }
                 step.node = element;
-                step.segments
-                    .push(HirEntityPathSegment::Index(Box::new(index_expr)));
+                step.segments.push(match match_key {
+                    Some(match_key) => HirEntityPathSegment::Match {
+                        match_key: match_key.into(),
+                        value: Box::new(index_expr),
+                    },
+                    None => HirEntityPathSegment::Index(Box::new(index_expr)),
+                });
                 Ok(Some(step))
             }
             _ => Ok(None),
@@ -5697,8 +5863,7 @@ struct InstalledExecutorCapture {
 /// is the HIR path built alongside it.
 struct EntityPathStep {
     node: SchemaNode,
-    receiver_kind: EntityKind,
-    executor_proof: HirContextStep,
+    receiver: HirEntityNbtReceiver,
     receiver_origin: crate::source::OriginId,
     segments: Vec<HirEntityPathSegment>,
 }

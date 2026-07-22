@@ -43,6 +43,7 @@ pub enum DataCommandClass {
     ModifyFrom,
     ModifyString,
     ModifyEntity,
+    ModifyBlock,
 }
 
 impl DataCommandClass {
@@ -68,6 +69,10 @@ impl DataCommandClass {
                 source: DataSource::Entity { .. },
                 ..
             } => Self::ModifyEntity,
+            DataCommand::Modify {
+                source: DataSource::Block { .. },
+                ..
+            } => Self::ModifyBlock,
         }
     }
 }

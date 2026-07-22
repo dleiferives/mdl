@@ -185,6 +185,14 @@ fn write_data(data: &DataCommand, output: &mut impl fmt::Write) -> fmt::Result {
             output,
             "data.modify target={target:?} mode={mode:?} entity={selector:?} path={path:?}"
         ),
+        DataCommand::Modify {
+            target,
+            mode,
+            source: DataSource::Block { position, path },
+        } => write!(
+            output,
+            "data.modify target={target:?} mode={mode:?} block={position:?} path={path:?}"
+        ),
     }
 }
 

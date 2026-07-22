@@ -6,7 +6,7 @@ use crate::analysis::minecraft::{
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
 use crate::entity::{EntityLimitError, EntityVec};
 use crate::ir::core::{
-    CoreOp, CoreProgram, EntityNbtPathSegment, EntityNbtReadDecl, ExternalOpId,
+    CoreOp, CoreProgram, EntityNbtPathSegment, EntityNbtReadDecl, EntityNbtReceiver, ExternalOpId,
     ExternalSemanticBinding, MinecraftOperationAttributes, MinecraftOperationDecl,
     MinecraftOperationId, Operand, RunModifierInstance, RunScopeId, ValueId,
 };
@@ -731,6 +731,10 @@ fn select_reachable_recipes(
 pub(crate) enum ResolvedEntityNbtSegment {
     Key(Box<str>),
     Index(Operand<i32>),
+    Match {
+        match_key: Box<str>,
+        value: Operand<i32>,
+    },
 }
 
 /// One fully resolved entity-NBT path read, independent of
@@ -739,11 +743,15 @@ pub(crate) enum ResolvedEntityNbtSegment {
 /// §2.5).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedEntityNbtRead {
-    receiver_kind: EntityKind,
+    receiver: EntityNbtReceiver,
     segments: Box<[ResolvedEntityNbtSegment]>,
 }
 
 impl ResolvedEntityNbtRead {
+    pub(crate) const fn receiver(&self) -> EntityNbtReceiver {
+        self.receiver
+    }
+
     pub(crate) fn segments(&self) -> &[ResolvedEntityNbtSegment] {
         &self.segments
     }
@@ -756,6 +764,10 @@ impl ResolvedEntityNbtRead {
             matches!(
                 segment,
                 ResolvedEntityNbtSegment::Index(Operand::Runtime(_))
+                    | ResolvedEntityNbtSegment::Match {
+                        value: Operand::Runtime(_),
+                        ..
+                    }
             )
         })
     }
@@ -876,11 +888,41 @@ fn resolve_entity_nbt_read(
                 })?;
                 ResolvedEntityNbtSegment::Index(Operand::Runtime(value))
             }
+            EntityNbtPathSegment::Match {
+                match_key,
+                value: Operand::Const(n),
+            } => ResolvedEntityNbtSegment::Match {
+                match_key: match_key.clone(),
+                value: Operand::Const(*n),
+            },
+            EntityNbtPathSegment::Match {
+                match_key,
+                value: Operand::Runtime(_),
+            } => {
+                // No schema field reachable through a runtime-matched list
+                // is registered yet (BE-1 requires a literal container slot
+                // — see `frontend/check.rs`'s match-key literal-only guard).
+                // Kept structurally parallel to the `Index` arm above rather
+                // than silently omitted, so this stops compiling loudly
+                // instead of miscompiling quietly once a future slice lifts
+                // that restriction.
+                let value = operands.next().ok_or_else(|| {
+                    Diagnostic::new(
+                        "lower.preflight.missing-macro-operand",
+                        "runtime entity-NBT match external is missing a match-value operand",
+                        declaration.receiver_origin(),
+                    )
+                })?;
+                ResolvedEntityNbtSegment::Match {
+                    match_key: match_key.clone(),
+                    value: Operand::Runtime(value),
+                }
+            }
         };
         segments.push(resolved);
     }
     Ok(ResolvedEntityNbtRead {
-        receiver_kind: declaration.receiver_kind(),
+        receiver: declaration.receiver(),
         segments: segments.into_boxed_slice(),
     })
 }

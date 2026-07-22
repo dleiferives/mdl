@@ -42,8 +42,8 @@ pub use names::{
     Namespace, PackNamespace, PackPath, PackResourcePath, ResourcePath, StorageId,
 };
 pub use nbt::{
-    EmptyNbtPath, MAX_NBT_DEPTH, NbtBuildError, NbtKey, NbtPath, NbtPathKey, NbtPathKeyError,
-    NbtPathKeyErrorReason, NbtPathSegment, NbtValue, NbtValueRef, StoragePath,
+    EmptyNbtPath, MAX_NBT_DEPTH, NbtBuildError, NbtKey, NbtMatchValueKind, NbtPath, NbtPathKey,
+    NbtPathKeyError, NbtPathKeyErrorReason, NbtPathSegment, NbtValue, NbtValueRef, StoragePath,
 };
 pub use number::{FiniteF32, FiniteF64, FloatWidth, NonFiniteFloat, NonFiniteKind};
 pub use program::{

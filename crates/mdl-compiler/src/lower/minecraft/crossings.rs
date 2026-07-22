@@ -200,6 +200,12 @@ fn render_data_modify_as_macro(
                     NbtPathSegment::AllElements => {
                         literal_buf.push_str("[]");
                     }
+                    NbtPathSegment::Match { .. } => unreachable!(
+                        "a Match segment only appears under DataSource::Block (BE-1), which \
+                         never reaches this DataSource::Entity-only macro renderer; runtime \
+                         container-slot matching is explicit future work \
+                         (block-entity-nbt-paths.md's deferred slice 2)"
+                    ),
                 }
             }
 

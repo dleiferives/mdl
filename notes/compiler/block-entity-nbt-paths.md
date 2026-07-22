@@ -1,11 +1,25 @@
 # Block-Entity NBT Paths — Reading Container Contents (Chests First)
 
 Date: 2026-07-21
-Status: **proposed design, not yet scheduled as a milestone. Extends
+Status: **Slice 1 implemented and landed (BE-1) — literal block positions, `Chest` only, inline
+lowering, proven against the real pinned Java 26.2 server. Slices 2-4 (runtime slot matching, more
+block-entity kinds, `~`-relative positions) remain future work. Extends
 [`entity-nbt-path-composability.md`](entity-nbt-path-composability.md) and answers the deferred
 question both [`references-design.md`](references-design.md) §11 and
 [`nbt-schema-system.md`](nbt-schema-system.md) §7 left open: "block-entity-rooted references... no
 schema table exists for block NBT yet."**
+
+**Correction (found by testing against the real server, not assumed):** §1.2 and §2.1 below
+originally described container contents as living under a `minecraft:container` *data component*
+(`components."minecraft:container"[{slot:N}].item...`), based on documentation describing item
+stack encoding. That shape is wrong for a *placed* block entity's own storage. Measured directly:
+a chest's real NBT is `{Items: [{Slot: 0b, id: "...", count: N, components: {...}}], components:
+{}, ...}` — a flat top-level `Items` list (no wrapper), matched by a **`Byte`-typed** `Slot` field
+(not `Int32` — Minecraft's compound-match NBT syntax requires the match value's type tag to agree
+exactly, or the match silently finds nothing), with `id`/`count`/`components` flat on each element
+(no nested `item` compound). The text below is left as originally written where it's still
+accurate (the architectural shape: new schema root, `MatchList`, `Match` segment, no ambient
+context) and corrected inline where the *NBT facts* were wrong.
 
 ## Why this note exists
 
@@ -33,15 +47,16 @@ empty) read target.
 ### 1.2 Container contents are match-indexed, not position-indexed
 
 This is the one genuinely new piece of grammar needed. A chest's inventory is *not* a dense,
-positionally-ordered list the way a book's `pages` is. Per the measured Java Edition data-component
-format: the `minecraft:container` component is a list where **only occupied slots appear**, each
-entry a compound `{slot: <0-255>, item: {id, count, components}}` — you find an entry by matching
-its `slot` field, not by list position. Minecraft's own NBT path grammar supports this directly
-(`components."minecraft:container"[{slot:0}].item`), via a predicate-matching list-element
-selector. MDL's `NbtPathSegment` (`ir/minecraft/nbt.rs`) has exactly three variants today —
+positionally-ordered list the way a book's `pages` is — **measured** (see the correction above,
+not the data-component documentation this section originally cited): `Items` is a list where
+**only occupied slots appear**, each entry a flat compound `{Slot: <byte>, id, count, components}`
+— you find an entry by matching its `Slot` field (a `Byte`), not by list position. Minecraft's own
+NBT path grammar supports this directly (`Items[{Slot:0b}].count`), via a predicate-matching
+list-element selector whose match value's NBT type tag must agree with the real field's stored
+type. MDL's `NbtPathSegment` (`ir/minecraft/nbt.rs`) had exactly three variants before this —
 `Key`, `Index(Operand<i32>)` (plain positional `[n]`), `AllElements` (`[]`) — and none of them
-express "the element whose `slot` field equals N." A real new segment variant is required; this
-cannot be expressed as a table row the way `.count` was.
+express "the element whose `Slot` field equals N, typed as a Byte." A real new segment variant
+was required; this cannot be expressed as a table row the way `.count` was.
 
 ### 1.3 Block coordinates are a different value shape than entity spatial args
 
@@ -76,10 +91,11 @@ before generalizing to runtime ones.
   segment carry a runtime operand") and the whole `crossings.rs` macro engine — both are already
   written generically over "some number of runtime index/match segments," not "one runtime page
   index."
-- **`ItemStack`'s existing schema node, verbatim.** A container slot's `item` field is structurally
-  the same shape already registered for equipment (`id`/`count`/`components`). This is a genuine,
-  unplanned composability win: the same `ITEM_STACK` static can be the element type of the new
-  container match-list, with zero duplication.
+- **`COMPONENTS`' existing schema node, verbatim** (not the whole `ITEM_STACK` node — see the
+  correction above: there is no nested `item` wrapper to reuse `ITEM_STACK` as). A container
+  slot's own `components` field (for e.g. a written book placed in a chest) reuses the exact same
+  `COMPONENTS` static equipment already registers, since item-level component data is identical
+  regardless of which container holds the stack — a smaller but still real, unplanned reuse win.
 
 ### 2.2 Genuinely new
 
@@ -91,68 +107,83 @@ before generalizing to runtime ones.
   invalidation facts (§1.4 of `references-design.md`'s table already keeps them as separate rows),
   and conflating them would force irrelevant entity concepts (capabilities like
   `CommandExecutor`/`InventoryHolder`) onto blocks, which are never executors.
-- **`SchemaNode::MatchList { element: &'static SchemaNode, match_key: SchemaKey }`** — a list whose
-  elements are found by one compound-field match instead of position. `match_key` names the field
-  used for matching (`"slot"` for containers); the checker's list-index-step handling grows one new
-  case (`MatchList` behaves like `List` for "what does `[expr]` narrow to," but the expr's *role* at
-  lowering time is "the match value," not "the position").
-- **`EntityNbtPathSegment::Match(Box<str> /* match key */, Operand<i32>)`** in Core (parallel to
-  the existing `Index(Operand<i32>)`), and a matching `NbtPathSegment`-level addition
-  (`ir::minecraft::nbt.rs`) for Minecraft-target rendering. Scope the match *value* to `Int32` only
-  for v1 — `slot` is the only field MDL needs to match on for containers, and general
-  arbitrary-compound-predicate matching is exactly the kind of open-ended surface this codebase
-  consistently declines to build until a second real use case demands it (same discipline as the
-  closed `SchemaKey`/`MinecraftSemanticKey` tables everywhere else).
-- **A block position value.** A new `BlockPos { x: TargetIntegerAxis, y: ..., z: ... }` (integer,
-  `~`-relative, no decimals — distinct from `TargetWorldPosition`). Source-level: `mc.block(x, y,
-  z)` — literal-only in v1 per §1.4 — producing a typed value analogous to `EntityRefType` (a
-  `SemanticType::BlockRef(BlockRefType::new(BlockEntityKind::Chest))`, say), **not** an
-  `Executor<T>`. This is a real simplification versus entities: a block position is
-  self-contained in the command it lowers to, so reading through it needs **no ambient context
-  capture at all** — no `run.at(...) |chest| { ... }` construct is required the way `run.as(...)
-  |reader|` is required for entities. `mc.block(0, 4, 0).components."minecraft:container"[{slot:
-  0}].item.id` can be an ordinary expression anywhere a value is expected.
+- **`SchemaNode::MatchList { element: &'static SchemaNode, match_key: &'static str }`** — a list
+  whose elements are found by one compound-field match instead of position. `match_key` names the
+  field used for matching (`"Slot"` for containers); the checker's list-index-step handling grows
+  one new case (`MatchList` behaves like `List` for "what does `[expr]` narrow to," but the expr's
+  *role* at lowering time is "the match value," not "the position"). **MDL source syntax needs no
+  change at all** — `[expr]` on a `MatchList` uses the exact same S-042 bracket-index grammar as an
+  ordinary `List`; the schema node kind, not new grammar, decides which segment kind gets emitted.
+- **`EntityNbtPathSegment::Match { match_key: Box<str>, value: Operand<i32> }`** in Core (parallel
+  to the existing `Index(Operand<i32>)`), and a matching `ir::minecraft::NbtPathSegment::Match {
+  key: NbtPathKey, value: Operand<i32>, value_kind: NbtMatchValueKind }` for Minecraft-target
+  rendering — `value_kind` (`Byte | Int32`) is the real correction from measurement: the match
+  value's NBT type tag must agree with the real field's stored type (a chest's `Slot` is `Byte`),
+  resolved by a small closed lookup keyed on `match_key` at render time
+  (`lower/minecraft/emit.rs::match_value_kind`), not threaded as source-level type information —
+  MDL's `[expr]` index is always `Int32` regardless of which NBT tag the match ultimately renders
+  as. Scope the match *value* to `Int32`-typed-in-MDL only for v1 — `Slot` is the only field MDL
+  needs to match on for containers, and general arbitrary-compound-predicate matching is exactly
+  the kind of open-ended surface this codebase consistently declines to build until a second real
+  use case demands it (same discipline as the closed `SchemaKey`/`MinecraftSemanticKey` tables
+  everywhere else).
+- **A block position value.** A new `BlockPosition { x: i32, y: i32, z: i32 }`
+  (`ir/semantic/spatial.rs`) — absolute-only, no `~`-relative or fractional form, distinct from
+  `TargetWorldPosition`/`JavaDecimal` (built for *entity* teleport/positioned targets, which accept
+  decimals). Source-level: `mc.block(Chest, x, y, z)` (kind first, mirroring `mc.entities(kind)`)
+  — literal-only in v1 per §1.4 — checked by `frontend/check.rs::check_block_ref_root`, producing
+  an `HirEntityNbtReceiver::Block { kind, position }` root, **not** an `Executor<T>`/ambient
+  capture. This is a real simplification versus entities: a block position is self-contained in
+  the command it lowers to, so reading through it needs **no ambient context capture at all** — no
+  `run.at(...) |chest| { ... }` construct is required the way `run.as(...) |reader|` is required
+  for entities. `mc.block(Chest, 0, 4, 0).Items[0].count` is an ordinary expression anywhere a
+  value is expected; whether the block at that position really is a chest is never proven at
+  compile time (no selector-style type filter exists for positions) — an incorrect kind is simply
+  the existing fail-soft case, not a new verification story.
 
 ### 2.3 HIR/Core representation
 
-Generalize `EntityNbtReadDecl.receiver_kind: EntityKind` to a small closed sum,
-`EntityNbtReceiver { Entity(EntityKind), Block(BlockEntityKind, BlockPos) }` — an entity receiver
-still carries only its kind (the real selector is resolved from ambient executor context at
-lowering time, unchanged); a block receiver carries its kind *and* its position, since there is no
-ambient context to resolve it from. `EntityNbtPathSegment` gains `Match`, as above. Everything else
-in `EntityNbtReadDecl` (segments after the root, `result_ty`, well-formedness checking) is
-unchanged — Core stays representation-agnostic about which physical addressing mode a `Key`/`Index`/
-`Match` segment will become, exactly as it already is target-independent about `NbtPathKey` vs.
-plain `Box<str>`.
+Generalized `EntityNbtReadDecl.receiver_kind: EntityKind` to a small closed sum,
+`EntityNbtReceiver { Entity(EntityKind), Block(BlockEntityKind, BlockPosition) }` — an entity
+receiver still carries only its kind (the real selector is resolved from ambient executor context
+at lowering time, unchanged); a block receiver carries its kind *and* its position, since there is
+no ambient context to resolve it from. `EntityNbtPathSegment` gained `Match { match_key: Box<str>,
+value: Operand<i32> }`. Everything else in `EntityNbtReadDecl` (segments after the root,
+`result_ty`, well-formedness checking) is unchanged — Core stays representation-agnostic about
+which physical addressing mode a `Key`/`Index`/`Match` segment will become, exactly as it already
+is target-independent about `NbtPathKey` vs. plain `Box<str>`.
 
 ### 2.4 Minecraft-target lowering
 
-New `DataSource::Block { position: BlockPos, path: NbtPath }` (mirrors `DataSource::Entity`
-exactly). `NbtPathSegment::Match` needs a render arm in both the inline path (regular `NbtPath`
-`Display`, quoting every key, matching the existing convention) and the macro path
-(`crossings.rs::render_data_modify_as_macro`) — **whoever implements this must not repeat this
-session's leading-dot bug**: the macro renderer's loop must treat the *first* path segment specially
-(no separator before it) regardless of whether that segment is `Key`, `Index`, or the new `Match`,
-since the bug was exactly a missing `index == 0` check, and a new segment kind is a new place for
-the same mistake to recur if the guard isn't structured to cover it generically.
+New `DataSource::Block { position: BlockPosition, path: NbtPath }` (mirrors `DataSource::Entity`
+exactly). `NbtPathSegment::Match` has a render arm in the inline path (regular `NbtPath` `Display`,
+quoting every key, matching the existing convention, plus the `value_kind` byte-suffix
+correction). The macro path (`crossings.rs::render_data_modify_as_macro`) deliberately does
+**not** have a `Match` arm yet — Slice 1 never constructs a runtime `Match` (the checker requires
+a literal slot), so the existing `DataSource::Entity`-only macro renderer is untouched, with an
+`unreachable!()` guard explaining why. This sidesteps the exact class of bug PS-12.0/PS-12E found
+in that renderer (the leading-dot bug) by not touching it at all until Slice 2 actually needs to.
 
 ## Part 3 — Staging
 
-1. **Slice 1 — inline, literal-only, `Chest` only.** `BlockPos` + literal `mc.block(x,y,z)` syntax
-   + `BlockEntityKind::Chest` + the container schema (`MatchList` keyed on `slot`, element =
-   existing `ITEM_STACK`) + `DataSource::Block` inline lowering. No macro/runtime route yet (mirrors
-   PS-12B/C's own const-first staging).
+1. **Slice 1 — inline, literal-only, `Chest` only. Implemented and landed.** `BlockPosition` +
+   literal `mc.block(Chest, x, y, z)` syntax + `BlockEntityKind::Chest` + the container schema
+   (`MatchList` keyed on the real `Slot` field, `Byte`-typed) + `DataSource::Block` inline
+   lowering. No macro/runtime route (mirrors PS-12B/C's own const-first staging). Proven against
+   the real pinned Java 26.2 server, both the success path (reading a real stack count out of a
+   real chest) and the fail-soft path (block replaced with something that isn't a chest).
 2. **Slice 2 — runtime slot matching.** Generalize `Match`'s value operand to `Operand::Runtime`,
    proving the macro/crossings engine handles a `Match` segment exactly as it already handles
    `Index` — this is the real test that PS-11's engine generalizes to a second segment kind, not
-   just a second use of the same one.
-3. **Slice 3 — differential + pinned-server evidence**, mirroring PS-12D exactly: a fixture with a
-   summoned chest (`setblock`/`data merge block`) and a genuinely runtime slot number, four-policy
-   differential, one `#[ignore]`d pinned-server test.
+   just a second use of the same one. Also needs `crossings.rs` taught a real `Match` rendering arm
+   (removing Slice 1's `unreachable!()` guard) — apply the `index == 0` leading-separator lesson
+   from PS-12.0/E deliberately, not by rediscovering it.
+3. **Slice 3 — differential + pinned-server evidence for the runtime case**, mirroring PS-12D.
 4. **Slice 4 — more block-entity kinds** (`Barrel`, `Furnace`'s input/output/fuel slots, `Hopper`,
    `ShulkerBox`) as additional `BlockEntityKind` variants and schema rows — near-free once the
    mechanism is proven, the same "prove with one, generalize by table row" story `.count` already
-   demonstrated for entities.
+   demonstrated for entities. Re-measure each against the real server before trusting documentation
+   — this note's own §1.2 correction is exactly why.
 
 ### Non-goals (explicit, matching PS-12's own discipline)
 
@@ -161,7 +192,9 @@ the same mistake to recur if the guard isn't structured to cover it generically.
   — literal position only, matching the existing Stage 7.5 spatial-literal restriction. Lifting
   this is a language-wide decision (does MDL get first-class position values at all?), not scoped
   to this feature.
-- General compound-predicate matching beyond one `Int32`-valued field — `slot` only.
+- General compound-predicate matching beyond one field — `Slot` only, and only the one NBT type
+  tag (`Byte`) that field actually needs; the `NbtMatchValueKind` lookup is a two-line closed
+  table, not a general per-field type registry.
 - Any block-entity type beyond what a real client program needs; do not pre-populate the table.
 - Detecting *when* a player interacts with a chest — that is
   [`advancement-triggers.md`](advancement-triggers.md), a wholly separate subsystem. This note
@@ -170,10 +203,16 @@ the same mistake to recur if the guard isn't structured to cover it generically.
 
 ## Sources
 
+- **The real pinned Java 26.2 server, queried directly** (`data get block <pos>` against a real
+  placed chest) — the authoritative source once actually available; this is what found and fixed
+  §1.2's original documentation-sourced error. Prefer this over documentation for any future
+  block-entity kind added under Slice 4.
 - [Data component format/container – Minecraft Wiki](https://minecraft.wiki/w/Data_component_format/container)
-  — exact `minecraft:container` NBT shape (`slot`/`item` per entry, only occupied slots present).
+  — describes item-stack-scoped `minecraft:container` component encoding; **does not apply** to a
+  placed block entity's own storage (see the correction at the top of this note) — kept as a
+  citation of what turned out to be the wrong shape, not a recommendation.
 - [Block entity format – Minecraft Wiki](https://minecraft.wiki/w/Block_entity_format) — common
-  block-entity NBT fields, `components` compound.
+  block-entity NBT fields, `components` compound (confirmed present but empty for a plain chest).
 - [Chest – Minecraft Wiki](https://minecraft.wiki/w/Chest) — chest-specific slot numbering (0-26).
 - [`references-design.md`](references-design.md) §4, §11 — the block-rooted-reference invalidation
   row and the original "no schema table exists for block NBT yet" deferral this note resolves.

@@ -137,8 +137,32 @@ pub enum NbtPathSegment {
     /// is produced by `extract_crossings` (PS-11C) where the macro frame
     /// context is available.
     Index(Operand<i32>),
+    /// Select the list element whose compound `key` field equals `value`
+    /// (BE-1, e.g. a chest's `Items[{Slot:0b}]`) — a different addressing
+    /// mode from `Index`: container-style lists are sparse and keyed by an
+    /// explicit field, not densely ordered by position. Renders as
+    /// `[{key:value}]`, with `value`'s NBT type tag (`value_kind`) matching
+    /// whatever the real key expects — Minecraft's compound-match NBT
+    /// syntax requires the match value's type to match exactly (measured:
+    /// a chest's `Slot` field is a `Byte`, not an `Int`; `Items[{Slot:0}]`
+    /// — an implicit `Int` — silently matches nothing).
+    Match {
+        key: NbtPathKey,
+        value: Operand<i32>,
+        value_kind: NbtMatchValueKind,
+    },
     /// Select every element of a list.
     AllElements,
+}
+
+/// The NBT primitive type tag a `Match` value renders with. A schema fact,
+/// not a rendering choice — Minecraft's own NBT compound-match syntax
+/// requires the match value's tag to agree with the real field's stored
+/// type, or the match silently finds nothing.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum NbtMatchValueKind {
+    Byte,
+    Int32,
 }
 
 /// An attempted empty static NBT path.
@@ -207,6 +231,23 @@ impl fmt::Display for NbtPath {
                     Operand::Const(n) => write!(formatter, "[{n}]")?,
                     Operand::Runtime(_) => panic!(
                         "runtime NBT index rendered outside a macro context; \
+                         PS-11C extract_crossings handles $(key) substitution"
+                    ),
+                },
+                NbtPathSegment::Match {
+                    key,
+                    value,
+                    value_kind,
+                } => match value {
+                    Operand::Const(n) => {
+                        let suffix = match value_kind {
+                            NbtMatchValueKind::Byte => "b",
+                            NbtMatchValueKind::Int32 => "",
+                        };
+                        write!(formatter, "[{{{}:{n}{suffix}}}]", key.as_str())?;
+                    }
+                    Operand::Runtime(_) => panic!(
+                        "runtime NBT match rendered outside a macro context; \
                          PS-11C extract_crossings handles $(key) substitution"
                     ),
                 },

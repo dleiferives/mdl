@@ -6,7 +6,7 @@
 //! growing it is "add a table row," never a new checker branch.
 
 use super::hir::ValueType;
-use crate::ir::semantic::EntityKind;
+use crate::ir::semantic::{BlockEntityKind, EntityKind};
 
 /// One key a `Compound` schema node is reachable by.
 ///
@@ -33,6 +33,17 @@ pub(super) enum SchemaNode {
     Compound(&'static [(SchemaKey, SchemaNode)]),
     /// Reachable by `[Expression]` steps (const or runtime `Int32`).
     List(&'static SchemaNode),
+    /// Reachable by the same `[Expression]` step syntax as `List`, but the
+    /// expression selects an element by matching one named compound field
+    /// (e.g. a chest's `Items` list, matched by `Slot`) rather than by
+    /// position. See `notes/compiler/block-entity-nbt-paths.md` §2.2 — MDL
+    /// source syntax does not distinguish this from an ordinary list index;
+    /// this node kind is what tells HIR construction which segment kind to
+    /// emit.
+    MatchList {
+        element: &'static SchemaNode,
+        match_key: &'static str,
+    },
 }
 
 impl SchemaNode {
@@ -61,11 +72,21 @@ impl SchemaNode {
     }
 
     /// Narrows through a `[Expression]` step. `None` if this node isn't a
-    /// `List`.
+    /// `List` or `MatchList`.
     pub(super) fn list_element(self) -> Option<Self> {
         match self {
-            Self::List(element) => Some(*element),
+            Self::List(element) | Self::MatchList { element, .. } => Some(*element),
             Self::Compound(_) | Self::Scalar(_) => None,
+        }
+    }
+
+    /// Returns the compound field name a `[Expression]` step matches on, if
+    /// this node is a `MatchList`. `None` for every other node kind,
+    /// including plain `List` (positionally indexed, no match key).
+    pub(super) const fn match_key(self) -> Option<&'static str> {
+        match self {
+            Self::MatchList { match_key, .. } => Some(match_key),
+            Self::Scalar(_) | Self::Compound(_) | Self::List(_) => None,
         }
     }
 
@@ -73,7 +94,7 @@ impl SchemaNode {
     pub(super) const fn scalar_type(self) -> Option<ValueType> {
         match self {
             Self::Scalar(ty) => Some(ty),
-            Self::Compound(_) | Self::List(_) => None,
+            Self::Compound(_) | Self::List(_) | Self::MatchList { .. } => None,
         }
     }
 
@@ -82,7 +103,7 @@ impl SchemaNode {
         match self {
             Self::Scalar(_) => "a scalar value",
             Self::Compound(_) => "a compound with known fields",
-            Self::List(_) => "a list",
+            Self::List(_) | Self::MatchList { .. } => "a list",
         }
     }
 }
@@ -155,10 +176,57 @@ pub(super) const fn root_schema(kind: EntityKind) -> SchemaNode {
     }
 }
 
+// ── The V26_2 / Chest block-entity table (`block-entity-nbt-paths.md` §2.2) ──
+//
+// One block-entity kind, one list: `Items`, match-indexed by `Slot`. Measured
+// against the real pinned server (not assumed from documentation, which
+// describes a different, item-stack-scoped `minecraft:container` *data
+// component* that does not apply to a placed block entity's own storage):
+// `{Items: [{Slot: 0b, id: "...", count: N, components: {...}}], ...}` — a
+// flat compound per slot, no nested "item" wrapper, and `Slot` is a `Byte`,
+// not an `Int32` (see `NbtMatchValueKind` in `ir::minecraft::nbt`). Each
+// entry's own `components` field reuses `COMPONENTS` verbatim — an item
+// placed in a chest carries the same item-level component data (e.g. a
+// written book) as one held in equipment.
+
+static CHEST_ITEM_ENTRY: SchemaNode = SchemaNode::Compound(&[
+    (
+        SchemaKey::Identifier("Slot"),
+        SchemaNode::Scalar(ValueType::Int32),
+    ),
+    (
+        SchemaKey::Identifier("id"),
+        SchemaNode::Scalar(ValueType::String),
+    ),
+    (
+        SchemaKey::Identifier("count"),
+        SchemaNode::Scalar(ValueType::Int32),
+    ),
+    (SchemaKey::Identifier("components"), COMPONENTS),
+]);
+
+static CHEST_ROOT: SchemaNode = SchemaNode::Compound(&[(
+    SchemaKey::Identifier("Items"),
+    SchemaNode::MatchList {
+        element: &CHEST_ITEM_ENTRY,
+        match_key: "Slot",
+    },
+)]);
+
+/// Returns the root schema node for `.components`-style chains starting from
+/// a `mc.block(...)`-named block position, narrowed by its nominal
+/// block-entity kind. See `root_schema`'s doc comment for why target-version
+/// selection is not wired here either.
+pub(super) const fn block_root_schema(kind: BlockEntityKind) -> SchemaNode {
+    match kind {
+        BlockEntityKind::Chest => CHEST_ROOT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SchemaKey, SchemaNode, root_schema};
-    use crate::ir::semantic::EntityKind;
+    use super::{SchemaKey, SchemaNode, block_root_schema, root_schema};
+    use crate::ir::semantic::{BlockEntityKind, EntityKind};
 
     fn is_valid_identifier_spelling(name: &str) -> bool {
         let mut chars = name.chars();
@@ -171,6 +239,21 @@ mod tests {
     /// registered as `Identifier`, and would be unreachable via `."string"`
     /// disambiguation by construction).
     fn assert_registration_is_well_formed(node: SchemaNode) {
+        match node {
+            SchemaNode::List(element) => {
+                assert_registration_is_well_formed(*element);
+                return;
+            }
+            SchemaNode::MatchList { element, match_key } => {
+                assert!(
+                    is_valid_identifier_spelling(match_key),
+                    "{match_key} is registered as a MatchList match_key but is not a valid MDL Name"
+                );
+                assert_registration_is_well_formed(*element);
+                return;
+            }
+            SchemaNode::Scalar(_) | SchemaNode::Compound(_) => {}
+        }
         let SchemaNode::Compound(fields) = node else {
             return;
         };
@@ -204,6 +287,7 @@ mod tests {
     #[test]
     fn every_registered_table_satisfies_key_form_and_uniqueness_invariants() {
         assert_registration_is_well_formed(root_schema(EntityKind::ArmorStand));
+        assert_registration_is_well_formed(block_root_schema(BlockEntityKind::Chest));
     }
 
     #[test]
@@ -239,6 +323,30 @@ mod tests {
             .field_by_name("count")
             .unwrap();
         assert_eq!(node.scalar_type(), Some(super::ValueType::Int32));
+    }
+
+    /// BE-1: a chest's container contents, match-indexed by `slot`, reusing
+    /// `ITEM_STACK` verbatim for the matched element's `item` field.
+    #[test]
+    fn chest_container_chain_walks_the_table_end_to_end() {
+        let items = block_root_schema(BlockEntityKind::Chest)
+            .field_by_name("Items")
+            .unwrap();
+        assert_eq!(items.match_key(), Some("Slot"));
+        let count = items
+            .list_element()
+            .unwrap()
+            .field_by_name("count")
+            .unwrap();
+        assert_eq!(count.scalar_type(), Some(super::ValueType::Int32));
+        let id = block_root_schema(BlockEntityKind::Chest)
+            .field_by_name("Items")
+            .unwrap()
+            .list_element()
+            .unwrap()
+            .field_by_name("id")
+            .unwrap();
+        assert_eq!(id.scalar_type(), Some(super::ValueType::String));
     }
 
     #[test]

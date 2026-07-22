@@ -1,0 +1,18 @@
+// MDL: success
+// BE-1: block-entity NBT reads (chest contents), generalizing PS-12's
+// entity-NBT path system. Needs no run.as(...) at all -- a block position is
+// self-contained in the command it lowers to. The real chest NBT shape was
+// measured against the pinned server, not assumed: Items is a top-level
+// field (no .components wrapper), and Slot is a Byte match value, not
+// Int32 -- see notes/compiler/block-entity-nbt-paths.md.
+// HIR: entity-nbt-read
+// HIR: result_ty=Int32
+// CORE: entity_nbt_read
+// CORE: result=i32
+
+export fn read_chest_count() {
+    const count: Int32 = mc.block(Chest, 0, 4, 0).Items[0].count;
+    if (count > 1) {
+        unsafe minecraft("say BE1_STACK");
+    }
+}

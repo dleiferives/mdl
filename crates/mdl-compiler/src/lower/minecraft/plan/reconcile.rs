@@ -190,6 +190,34 @@ fn reconcile_semantic_commands(
     Ok(())
 }
 
+/// Verifies a constructed `DataSource` matches its resolved receiver and
+/// path (BE-1): an entity receiver's selector must be the ambient
+/// self-executor (unchanged from PS-12); a block receiver's position must
+/// match exactly, with no ambient context to fall back on.
+fn entity_nbt_source_matches(
+    resolved: &super::super::preflight::ResolvedEntityNbtRead,
+    source: &crate::ir::minecraft::DataSource,
+    expected_path: &crate::ir::minecraft::NbtPath,
+) -> bool {
+    match (resolved.receiver(), source) {
+        (
+            crate::ir::core::EntityNbtReceiver::Entity(_),
+            crate::ir::minecraft::DataSource::Entity { selector, path },
+        ) => {
+            *selector
+                == crate::ir::minecraft::Selector::from(
+                    crate::ir::minecraft::AtMostOneSelector::SelfExecutor,
+                )
+                && path == expected_path
+        }
+        (
+            crate::ir::core::EntityNbtReceiver::Block(_, expected_position),
+            crate::ir::minecraft::DataSource::Block { position, path },
+        ) => *position == expected_position && path == expected_path,
+        _ => false,
+    }
+}
+
 /// Verifies one constructed inline entity-NBT read against its resolved
 /// segments. Two shapes are legal, matching `emit_entity_nbt_read_result`'s
 /// two branches:
@@ -214,22 +242,20 @@ fn reconcile_entity_nbt_read_command(
 ) -> Result<(), Diagnostics> {
     let expected_path =
         super::super::emit::entity_nbt_path_from_segments(resolved.segments(), command.origin())?;
-    let self_executor =
-        crate::ir::minecraft::Selector::from(crate::ir::minecraft::AtMostOneSelector::SelfExecutor);
     match command.kind() {
         CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
             target: read_target,
             mode: crate::ir::minecraft::DataModifyMode::Set,
-            source: crate::ir::minecraft::DataSource::Entity { selector, path },
-        }) => {
-            if selector != &self_executor {
+            source,
+        }) if matches!(
+            source,
+            crate::ir::minecraft::DataSource::Entity { .. }
+                | crate::ir::minecraft::DataSource::Block { .. }
+        ) =>
+        {
+            if !entity_nbt_source_matches(resolved, source, &expected_path) {
                 return Err(recipe_mismatch(
-                    "entity-NBT read command selector differs from the current executor",
-                ));
-            }
-            if path != &expected_path {
-                return Err(recipe_mismatch(
-                    "entity-NBT read command path differs from its resolved segments",
+                    "entity-NBT read command receiver or path differs from its resolved segments",
                 ));
             }
             let fallback = preceding_command(program, location, 1)?;
@@ -287,14 +313,14 @@ fn reconcile_entity_nbt_read_command(
             let CommandKind::Data(crate::ir::minecraft::DataCommand::Modify {
                 target,
                 mode: crate::ir::minecraft::DataModifyMode::Set,
-                source: crate::ir::minecraft::DataSource::Entity { selector, path },
+                source,
             }) = read_attempt.kind()
             else {
                 return Err(recipe_mismatch(
-                    "entity-NBT scalar read is not preceded by an entity read into the scratch slot",
+                    "entity-NBT scalar read is not preceded by an entity/block read into the scratch slot",
                 ));
             };
-            if target != &scratch || selector != &self_executor || path != &expected_path {
+            if target != &scratch || !entity_nbt_source_matches(resolved, source, &expected_path) {
                 return Err(recipe_mismatch(
                     "entity-NBT scalar read attempt differs from its resolved segments",
                 ));

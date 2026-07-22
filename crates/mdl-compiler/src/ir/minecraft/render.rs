@@ -296,6 +296,13 @@ fn render_data(command: &DataCommand, sink: &mut CommandSink) -> Result<(), Rend
                     sink.write_arguments(format_args!("from entity {selector} "))?;
                     sink.write_arguments(format_args!("{path}"))
                 }
+                DataSource::Block { position, path } => {
+                    sink.write_arguments(format_args!(
+                        "from block {} {} {} ",
+                        position.x, position.y, position.z
+                    ))?;
+                    sink.write_arguments(format_args!("{path}"))
+                }
             }
         }
     }

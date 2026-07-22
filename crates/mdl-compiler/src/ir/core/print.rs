@@ -572,7 +572,7 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             output,
             "entity_nbt_read @nbt{} receiver={} result={} path=",
             read.index(),
-            data.receiver_kind(),
+            data.receiver(),
             data.result_ty()
         );
         for segment in data.segments() {
@@ -585,6 +585,18 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
                 }
                 super::EntityNbtPathSegment::Index(Operand::Runtime(v)) => {
                     let _ = write!(output, "[@{}]", v.index());
+                }
+                super::EntityNbtPathSegment::Match {
+                    match_key,
+                    value: Operand::Const(n),
+                } => {
+                    let _ = write!(output, "[{{{match_key}:{n}}}]");
+                }
+                super::EntityNbtPathSegment::Match {
+                    match_key,
+                    value: Operand::Runtime(v),
+                } => {
+                    let _ = write!(output, "[{{{match_key}:@{}}}]", v.index());
                 }
             }
         }

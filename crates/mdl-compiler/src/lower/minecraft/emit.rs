@@ -7,8 +7,9 @@ use crate::ir::core::{
 use crate::ir::minecraft::{
     AtMostOneSelector, CommandId, CommandKind, DataCommand, DataModifyMode, DataSource,
     ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FunctionCall,
-    InternalCallableRef, McFunctionId, MinecraftProgram, NbtPath, NbtPathKey, NbtPathSegment,
-    NbtValue, Selector, StoreChannel, StoreDestination, SyntaxSlot, UnsafeRawCommand,
+    InternalCallableRef, McFunctionId, MinecraftProgram, NbtMatchValueKind, NbtPath, NbtPathKey,
+    NbtPathSegment, NbtValue, Selector, StoreChannel, StoreDestination, SyntaxSlot,
+    UnsafeRawCommand,
 };
 use crate::source::OriginId;
 
@@ -410,10 +411,7 @@ fn lower_instruction(
                 ));
             };
             let path = entity_nbt_path_from_segments(resolved.segments(), data.origin())?;
-            let read_source = DataSource::Entity {
-                selector: Selector::from(AtMostOneSelector::SelfExecutor),
-                path,
-            };
+            let read_source = entity_nbt_read_source(resolved, path);
             emit_entity_nbt_read_result(context, result.home(), read_source, data.origin())
         }
         InstructionPlan::Scalar { operands, results } => {
@@ -623,10 +621,7 @@ fn define_external_helper(
             let base_cmd = CommandKind::Data(DataCommand::Modify {
                 target: result_target,
                 mode: DataModifyMode::Set,
-                source: DataSource::Entity {
-                    selector: Selector::from(AtMostOneSelector::SelfExecutor),
-                    path: read_path,
-                },
+                source: entity_nbt_read_source(resolved, read_path),
             });
             let operands = super::crossings::collect_runtime_operands(&base_cmd);
             let frame = super::crossings::build_frame(&operands)
@@ -692,14 +687,20 @@ fn entity_nbt_runtime_operands(
         .segments()
         .iter()
         .filter_map(|segment| match segment {
-            super::preflight::ResolvedEntityNbtSegment::Index(Operand::Runtime(value_id)) => {
-                Some(super::crossings::RuntimeOperand {
-                    value_id: *value_id,
-                    slot: SyntaxSlot::NbtIndex,
-                })
-            }
+            super::preflight::ResolvedEntityNbtSegment::Index(Operand::Runtime(value_id))
+            | super::preflight::ResolvedEntityNbtSegment::Match {
+                value: Operand::Runtime(value_id),
+                ..
+            } => Some(super::crossings::RuntimeOperand {
+                value_id: *value_id,
+                slot: SyntaxSlot::NbtIndex,
+            }),
             super::preflight::ResolvedEntityNbtSegment::Key(_)
-            | super::preflight::ResolvedEntityNbtSegment::Index(Operand::Const(_)) => None,
+            | super::preflight::ResolvedEntityNbtSegment::Index(Operand::Const(_))
+            | super::preflight::ResolvedEntityNbtSegment::Match {
+                value: Operand::Const(_),
+                ..
+            } => None,
         })
         .collect()
 }
@@ -735,10 +736,51 @@ pub(crate) fn entity_nbt_path_from_segments(
                 })?)
             }
             ResolvedEntityNbtSegment::Index(operand) => NbtPathSegment::Index(*operand),
+            ResolvedEntityNbtSegment::Match { match_key, value } => NbtPathSegment::Match {
+                key: NbtPathKey::new(match_key).map_err(|_| {
+                    invariant_diagnostics("entity-NBT read path has an invalid match key", origin)
+                })?,
+                value: *value,
+                value_kind: match_value_kind(match_key),
+            },
         };
         rest.push(core_segment);
     }
     Ok(NbtPath::new(NbtPathSegment::Key(root), rest))
+}
+
+/// The real NBT primitive type tag for one schema-known match key — a
+/// closed table mirroring the schema itself (`entity_schema.rs` never
+/// registers a `MatchList` whose `match_key` isn't listed here). Currently
+/// exactly one: a chest's `Slot` field is measured (against the real pinned
+/// server, not assumed) to be a `Byte`, and Minecraft's compound-match NBT
+/// syntax requires the match value's type tag to agree exactly or the match
+/// silently finds nothing.
+fn match_value_kind(match_key: &str) -> NbtMatchValueKind {
+    match match_key {
+        "Slot" => NbtMatchValueKind::Byte,
+        _ => NbtMatchValueKind::Int32,
+    }
+}
+
+/// Builds the real `DataSource` for a resolved entity-NBT read, branching on
+/// its receiver (BE-1): an entity receiver always reads via the ambient
+/// self-executor selector (unchanged from PS-12 — the op always executes
+/// inside its caller's already-`as`'d context); a block receiver reads via
+/// its absolute position directly, with no selector at all.
+fn entity_nbt_read_source(
+    resolved: &super::preflight::ResolvedEntityNbtRead,
+    path: NbtPath,
+) -> DataSource {
+    match resolved.receiver() {
+        crate::ir::core::EntityNbtReceiver::Entity(_) => DataSource::Entity {
+            selector: Selector::from(AtMostOneSelector::SelfExecutor),
+            path,
+        },
+        crate::ir::core::EntityNbtReceiver::Block(_, position) => {
+            DataSource::Block { position, path }
+        }
+    }
 }
 
 /// Emits the fail-soft two-command read (type-appropriate default, then

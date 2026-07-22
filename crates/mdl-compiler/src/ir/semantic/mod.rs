@@ -25,9 +25,9 @@ pub use minecraft::{
 };
 pub use query::{EntityTag, EntityTagError, StaticEntityQuery};
 pub use spatial::{
-    Axes, DimensionKey, EntityAnchor, FiniteDecimal, FiniteDecimalError, LocalPosition,
-    MAX_FINITE_DECIMAL_BYTES, MAX_FINITE_DECIMAL_DIGITS, PositionSpec, RelativeWorldOffset,
-    RotationAxis, RotationSpec, WorldAxis, WorldPosition,
+    Axes, BlockPosition, DimensionKey, EntityAnchor, FiniteDecimal, FiniteDecimalError,
+    LocalPosition, MAX_FINITE_DECIMAL_BYTES, MAX_FINITE_DECIMAL_DIGITS, PositionSpec,
+    RelativeWorldOffset, RotationAxis, RotationSpec, WorldAxis, WorldPosition,
 };
 
 /// Maximum ordered execution-context modifiers accepted in one source/Core scope.
@@ -95,6 +95,44 @@ impl EntityKind {
 }
 
 impl fmt::Display for EntityKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.source_name())
+    }
+}
+
+/// A nominal Minecraft block-entity kind understood by the source language.
+///
+/// Deliberately a separate closed enum from [`EntityKind`], not a shared
+/// variant space: block entities are never Minecraft command executors and
+/// have no analogous capability set, so unifying the two would force
+/// irrelevant entity concepts onto blocks. See
+/// `notes/compiler/block-entity-nbt-paths.md` §2.2.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum BlockEntityKind {
+    /// A Minecraft chest.
+    Chest,
+}
+
+impl BlockEntityKind {
+    /// Resolves one reserved source spelling to its nominal semantic identity.
+    #[must_use]
+    pub fn from_source_name(name: &str) -> Option<Self> {
+        match name {
+            "Chest" => Some(Self::Chest),
+            _ => None,
+        }
+    }
+
+    /// Returns the reserved source spelling for this nominal kind.
+    #[must_use]
+    pub const fn source_name(self) -> &'static str {
+        match self {
+            Self::Chest => "Chest",
+        }
+    }
+}
+
+impl fmt::Display for BlockEntityKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.source_name())
     }

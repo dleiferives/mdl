@@ -50,7 +50,7 @@ impl ContextMask {
 ///
 /// These bits are intentionally private and are not place-level alias analysis.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct EffectCategories(u8);
+pub struct EffectCategories(u16);
 
 impl EffectCategories {
     /// No known effect category.
@@ -71,6 +71,10 @@ impl EffectCategories {
     pub const OUTPUT: Self = Self(1 << 6);
     /// Mutates entity state such as position or dimension.
     pub const ENTITY_WRITE: Self = Self(1 << 7);
+    /// Reads a block/block-entity at a fixed position (BE-1). Distinct from
+    /// `ENTITY_QUERY`: a block position is never ambiguous/forking the way
+    /// a selector predicate can be.
+    pub const BLOCK_QUERY: Self = Self(1 << 8);
 
     /// Returns the union of two category sets.
     #[must_use]
@@ -443,6 +447,13 @@ fn data_contract(command: &DataCommand) -> CommandContract {
         } => (
             EffectCategories::ENTITY_QUERY.union(EffectCategories::STORAGE_WRITE),
             selector.context_reads(),
+        ),
+        DataCommand::Modify {
+            source: DataSource::Block { .. },
+            ..
+        } => (
+            EffectCategories::BLOCK_QUERY.union(EffectCategories::STORAGE_WRITE),
+            ContextMask::NONE,
         ),
     };
     CommandContract::new(

@@ -325,8 +325,11 @@ fn include_operation(
                             read,
                         },
                     )?;
-                    let requirement = AmbientContextRequirements::NONE
-                        .with_executor(ContextRequirement::Required(declaration.receiver_kind()));
+                    let requirement = match declaration.receiver() {
+                        super::EntityNbtReceiver::Entity(kind) => AmbientContextRequirements::NONE
+                            .with_executor(ContextRequirement::Required(kind)),
+                        super::EntityNbtReceiver::Block(..) => AmbientContextRequirements::NONE,
+                    };
                     equation.direct = equation.direct.join(requirement);
                 }
             }

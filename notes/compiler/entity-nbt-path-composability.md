@@ -5,7 +5,7 @@ Status: **architecture of record for PS-12 (PS-12.0 through PS-12E all landed â€
 Part 3's staging is complete, the retired intrinsic is fully deleted, no parallel/legacy path
 remains); extends [`macro-reference-crossing-model.md`](macro-reference-crossing-model.md). See
 [`pre-scheduler/ps-12-handoff.md`](pre-scheduler/ps-12-handoff.md) for the closing summary, and
-[`block-entity-nbt-paths.md`](block-entity-nbt-paths.md) for the proposed next generalization
+[`block-entity-nbt-paths.md`](block-entity-nbt-paths.md) for BE-1, the landed next generalization
 (block-entity/container reads, extending this system rather than replacing it).**
 
 ## Why this note exists

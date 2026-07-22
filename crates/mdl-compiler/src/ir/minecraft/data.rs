@@ -1,4 +1,5 @@
 use super::{FiniteF64, NbtPath, NbtValue, Selector, StoragePath};
+use crate::ir::semantic::BlockPosition;
 
 /// A native `/data modify` operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -28,6 +29,13 @@ pub enum DataSource {
     },
     /// One static NBT path read from an entity selected by a typed recipe.
     Entity { selector: Selector, path: NbtPath },
+    /// One static NBT path read from a block-entity at an absolute position
+    /// (BE-1). No selector: a block position is self-contained in the
+    /// command, unlike an entity read's ambient-executor-resolved selector.
+    Block {
+        position: BlockPosition,
+        path: NbtPath,
+    },
 }
 
 /// The closed initial storage-data command vocabulary.

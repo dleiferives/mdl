@@ -9,22 +9,22 @@ use std::cell::Cell;
 
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBlock, HirCall, HirComparisonOp,
-    HirDestructureTargetRole, HirEntityPathSegment, HirEntityQuery, HirEntityQueryStep,
-    HirExpression, HirExpressionKind, HirExternalOp, HirExternalSemantic, HirFunction, HirIf,
-    HirListI32Op, HirMinecraftOperationAttributes, HirRun, HirRunModifier, HirStatement,
-    HirStatementKind, HirStringOp, HirSwitchExpression, HirSwitchLabel, HirSwitchPatternKind,
-    HirSwitchStatement, HirWhile, HirWrappingArithmeticOp, LocalId, SourceExternalOpId,
-    SourceFunctionId, SourceRunId, SourceStructId, ValueType,
+    HirDestructureTargetRole, HirEntityNbtReceiver, HirEntityPathSegment, HirEntityQuery,
+    HirEntityQueryStep, HirExpression, HirExpressionKind, HirExternalOp, HirExternalSemantic,
+    HirFunction, HirIf, HirListI32Op, HirMinecraftOperationAttributes, HirRun, HirRunModifier,
+    HirStatement, HirStatementKind, HirStringOp, HirSwitchExpression, HirSwitchLabel,
+    HirSwitchPatternKind, HirSwitchStatement, HirWhile, HirWrappingArithmeticOp, LocalId,
+    SourceExternalOpId, SourceFunctionId, SourceRunId, SourceStructId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
 use crate::entity::EntityId;
 use crate::ir::core::{
     BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
-    CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityNbtPathSegment, EntityQueryDecl,
-    EntityQueryStep, ExternalOpId, ExternalSemanticBinding, FunctionBody, FunctionBuilder,
-    FunctionId, I32ClosedRange, I32Predicate, InstId, MinecraftOperationAttributes,
-    MinecraftOperationOrigins, Operand, ProgramError, RunModifierInstance, TargetFragment,
-    Terminator, TerminatorKind, ValueId, verify_program,
+    CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityNbtPathSegment, EntityNbtReceiver,
+    EntityQueryDecl, EntityQueryStep, ExternalOpId, ExternalSemanticBinding, FunctionBody,
+    FunctionBuilder, FunctionId, I32ClosedRange, I32Predicate, InstId,
+    MinecraftOperationAttributes, MinecraftOperationOrigins, Operand, ProgramError,
+    RunModifierInstance, TargetFragment, Terminator, TerminatorKind, ValueId, verify_program,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -1099,12 +1099,18 @@ fn declare_external_operations(
     for external in checked.external_ops() {
         let binding = match &external.semantic {
             HirExternalSemantic::EntityNbtRead {
-                receiver_kind,
+                receiver,
                 segments,
                 result_ty,
                 receiver_origin,
                 ..
             } => {
+                let core_receiver = match receiver {
+                    HirEntityNbtReceiver::Entity { kind, .. } => EntityNbtReceiver::Entity(*kind),
+                    HirEntityNbtReceiver::Block { kind, position } => {
+                        EntityNbtReceiver::Block(*kind, *position)
+                    }
+                };
                 let core_segments = segments
                     .iter()
                     .map(|segment| match segment {
@@ -1115,11 +1121,20 @@ fn declare_external_operations(
                                 _ => Operand::Runtime(ValueId::from_index(0)),
                             })
                         }
+                        HirEntityPathSegment::Match { match_key, value } => {
+                            EntityNbtPathSegment::Match {
+                                match_key: match_key.clone(),
+                                value: match value.kind {
+                                    HirExpressionKind::Int32(value) => Operand::Const(value),
+                                    _ => Operand::Runtime(ValueId::from_index(0)),
+                                },
+                            }
+                        }
                     })
                     .collect::<Vec<_>>();
                 let read = program
                     .declare_entity_nbt_read(
-                        *receiver_kind,
+                        core_receiver,
                         core_segments,
                         core_type(*result_ty),
                         *receiver_origin,
@@ -1209,6 +1224,7 @@ fn declare_external_operations(
                         matches!(
                             segment,
                             HirEntityPathSegment::Index(index)
+                                | HirEntityPathSegment::Match { value: index, .. }
                                 if !matches!(index.kind, HirExpressionKind::Int32(_))
                         )
                     })
@@ -1316,7 +1332,7 @@ fn verify_source_semantic_correlation(
 
     match &external.semantic {
         HirExternalSemantic::EntityNbtRead {
-            receiver_kind,
+            receiver,
             segments,
             result_ty,
             receiver_origin,
@@ -1342,9 +1358,36 @@ fn verify_source_semantic_correlation(
                             (_, Operand::Runtime(_)) => true,
                             _ => false,
                         },
+                        (
+                            HirEntityPathSegment::Match { match_key, value },
+                            EntityNbtPathSegment::Match {
+                                match_key: core_match_key,
+                                value: core_value,
+                            },
+                        ) => {
+                            match_key.as_ref() == core_match_key.as_ref()
+                                && match (&value.kind, core_value) {
+                                    (HirExpressionKind::Int32(n), Operand::Const(core_n)) => {
+                                        n == core_n
+                                    }
+                                    (_, Operand::Runtime(_)) => true,
+                                    _ => false,
+                                }
+                        }
                         _ => false,
                     });
-            if read.receiver_kind() != *receiver_kind
+            let receiver_matches = match (receiver, read.receiver()) {
+                (
+                    HirEntityNbtReceiver::Entity { kind, .. },
+                    EntityNbtReceiver::Entity(core_kind),
+                ) => *kind == core_kind,
+                (
+                    HirEntityNbtReceiver::Block { kind, position },
+                    EntityNbtReceiver::Block(core_kind, core_position),
+                ) => *kind == core_kind && *position == core_position,
+                _ => false,
+            };
+            if !receiver_matches
                 || read.result_ty() != core_type(*result_ty)
                 || read.receiver_origin() != *receiver_origin
                 || !segments_match
@@ -2388,7 +2431,9 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             Some(HirExternalSemantic::EntityNbtRead { segments, .. }) => {
                 let mut operands = Vec::new();
                 for segment in segments {
-                    let HirEntityPathSegment::Index(index) = segment else {
+                    let (HirEntityPathSegment::Index(index)
+                    | HirEntityPathSegment::Match { value: index, .. }) = segment
+                    else {
                         continue;
                     };
                     if matches!(index.kind, HirExpressionKind::Int32(_)) {

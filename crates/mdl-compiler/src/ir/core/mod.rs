@@ -34,7 +34,7 @@ pub use edit::{EditError, FunctionEditor, ValueReplacement};
 pub(crate) use edit::{
     JumpFusionApplicationStatistics, JumpFusionFactStatistics, JumpFusionPreparation,
 };
-pub use entity_nbt::{EntityNbtPathSegment, EntityNbtReadDecl};
+pub use entity_nbt::{EntityNbtPathSegment, EntityNbtReadDecl, EntityNbtReceiver};
 pub use eval::{
     CoreCallEvent, CoreEvaluation, CoreEvaluationError, CoreEvaluationLimits, CoreEvaluator,
     CoreValue,

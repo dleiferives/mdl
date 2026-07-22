@@ -150,6 +150,19 @@ impl WorldPosition {
     }
 }
 
+/// An absolute integer block coordinate triple.
+///
+/// Deliberately not `WorldPosition`: block positions are always integer, with
+/// no `~`-relative or fractional form in this slice (see
+/// `notes/compiler/block-entity-nbt-paths.md` §1.3-1.4) — `WorldAxis`/
+/// `FiniteDecimal` model a different, decimal-valued argument shape entirely.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct BlockPosition {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LocalPosition {
     pub left: FiniteDecimal,

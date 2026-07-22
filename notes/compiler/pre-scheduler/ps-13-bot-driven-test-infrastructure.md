@@ -1,6 +1,11 @@
 # PS-13 — Bot-Driven Player Test Infrastructure
 
-Status: **planned, not yet implemented.**
+Status: **implemented (2026-07-22).** `crates/mdl-test-bot/` — a deliberately
+non-workspace crate, see below — provides `BotHandle`/`BotHandle::connect`, exercised
+by two live pinned-server tests: `tests/bot_handle_lifecycle.rs` (connect/spawn/exit
+round trip) and `tests/chest_click.rs` (this milestone's own gate: a real bot opens a
+placed chest and left-clicks a slot, and the item is confirmed, via the console — not
+the bot's own view — to have moved into its inventory).
 
 ## Why this exists
 
@@ -77,22 +82,23 @@ on our version at all" — the disqualifying failure mode.
 
 ## Scope
 
-Extend `mdl-test` (`crates/mdl-test/src/lib.rs`'s `ServerSandbox`, or a small sibling
-module alongside it — see "Open questions") with an Azalea-backed bot client that can,
-against the exact same pinned server jar `ServerSandbox` already spins up:
+Delivered via `crates/mdl-test-bot/` (a non-workspace crate depending on `mdl-test` by
+path — see "Real findings" for why it isn't inside `mdl-test` itself), an
+Azalea-backed `BotHandle` that, against the exact same pinned server jar
+`ServerSandbox` already spins up:
 
-- connect with offline auth and disconnect cleanly, including as part of test teardown
-  even on assertion failure (mirroring `ServerSandbox::shutdown`'s existing discipline);
-- walk to a position (simple point-to-point movement is enough — no pathfinding
-  sophistication is required by anything downstream in this roadmap, since chests in
-  these tests are reachable in a straight line by construction);
-- open a container at a known block position and read its current contents;
-- click a specific slot in an open container;
-- send/observe chat messages (advancement reward functions can be asserted via the
-  existing `say`-marker pattern every other PS milestone already uses, so bot-side chat
-  observation, not just server-log observation, may be redundant — confirm during
-  implementation whether `ServerSandbox`'s existing log-line waiting already covers
-  this before building a second observation path).
+- connects with offline auth and disconnects (bounded — see `BotError::
+  ShutdownTimeout`), including as part of test teardown even on assertion failure
+  (mirroring `ServerSandbox::shutdown`'s existing discipline);
+- opens a container at a known block position and left-clicks a specific slot
+  (`open_container_and_click`) — proven end to end against a real chest.
+
+Movement was scoped down further than originally planned: `chest_click.rs` teleports
+the bot into range with an ordinary console `tp` command rather than using Azalea's
+own pathfinder, since nothing in this milestone's own gate needed bot-driven
+movement and console teleport is simpler, deterministic, and already available.
+`BotHandle::client()` exposes the raw `azalea::Client` for anything a future
+milestone needs that isn't wrapped yet (movement included).
 
 ## Non-goals
 
@@ -167,11 +173,10 @@ Azalea's actual source (`azalea/src/client_impl/mod.rs`) rather than doc summari
 - **`ClientBuilder::start(...)` is a run-forever call by design** — per Azalea's own
   maintainer guidance, disabling auto-reconnect still "will not make `ClientBuilder::
   start` return on disconnect, because Azalea will keep the internal swarm around
-  forever until it's forcibly exited." It must be driven from a background `tokio::
-  spawn`, never awaited directly in the test's main flow — the test regains control by
-  calling `exit()` on the `Client` it received via the channel above, then joining the
-  spawned task's `JoinHandle` to confirm clean shutdown (mirroring `TestServer`'s own
-  `Drop`/`shutdown()` teardown discipline, not best-effort).
+  forever until it's forcibly exited." It must be driven from a background task, never
+  awaited directly in the test's main flow. (Originally planned as a plain
+  `tokio::spawn` — turned out not to work; see "Real findings" below for why it needs
+  a dedicated OS thread instead, and why even the teardown call needs its own bound.)
 
 `mdl-test` has zero async/tokio dependency today (confirmed: no `tokio` anywhere in
 the workspace, `ServerSandbox`/`TestServer` are 100% thread-and-channel based). Azalea
@@ -187,31 +192,87 @@ bot-driven tests keep reading top-to-bottom like every existing pinned-server te
 freely interleaving ordinary `TestServer::command()`/`wait_for_log()` calls with bot
 actions, with no `async`/`.await` visible in test bodies at all.
 
-## Not yet determined
+## Real findings from implementation (2026-07-22)
 
-- Crate placement: extend `mdl-test` directly, or add a new sibling crate (e.g.
-  `mdl-test-bot`) that `mdl-test` test files depend on. Leans toward extending
-  `mdl-test` directly unless Azalea's dependency tree turns out to meaningfully slow
-  down compilation of tests that don't need it — check this empirically (a clean
-  `cargo build` timing comparison) before deciding, not by intuition.
+Every one of these was measured against the real toolchain/library/server, not
+assumed — several directly overturned this note's own earlier plan.
+
+- **Azalea's build script hard-requires a nightly Rust toolchain** (`panic!` in
+  `azalea/build.rs` if `RUSTUP_TOOLCHAIN` doesn't contain `"nightly"`). Nothing in the
+  original library research surfaced this. Folding Azalea into `mdl-test` directly
+  would have forced `cargo test --workspace` onto nightly for every crate, for every
+  contributor, whether or not they touch bot tests — Cargo resolves one toolchain per
+  invocation across a whole workspace. Fixed by moving everything Azalea-dependent
+  into **`crates/mdl-test-bot/`, a crate deliberately excluded from the root
+  workspace** (its own empty `[workspace]` table stops Cargo walking up and treating
+  it as an unlisted member of the root `Cargo.toml`) — invoked separately with `cd
+  crates/mdl-test-bot && cargo +nightly test -- --ignored`, matching how these tests
+  were already opt-in (`#[ignore]`, env-var-gated). `TestServer::game_port()`
+  (Stage 1's fix, landed in `mdl-test` itself) is the only thing `mdl-test-bot`
+  actually needs from `mdl-test` beyond the ordinary `ServerSandbox`/`TestServer` API.
+- **crates.io's published `azalea` is stale.** Newest published version is
+  `0.16.0+mc26.1` (2026-03-28) — Cargo's semver resolution ignores build-metadata
+  suffixes for matching, so a plain `version = "0.16.0+mc26.2"` requirement silently
+  resolved to the stale `+mc26.1` release when tried. Real 26.2 fixes only exist on
+  the unreleased git `main` branch. `mdl-test-bot/Cargo.toml` pins a specific commit
+  via a `git`/`rev` dependency instead, with a comment explaining why and a note to
+  re-pin if it goes stale.
+- **`ClientBuilder::start(...)`'s future is not `Send`** — confirmed by trying
+  `tokio::spawn` on it first and reading the resulting `*const () cannot be shared
+  between threads` compiler error (it internally uses a `tokio::task::LocalSet`). It
+  runs on a dedicated OS thread with its own single-threaded runtime and `LocalSet`,
+  entirely separate from the runtime `BotHandle` uses afterward for ordinary `Client`
+  method calls.
+- **Auto-reconnect must be disabled (`.reconnect_after(None)`), or a real disconnect
+  hangs shutdown forever.** `BotHandle::open_container_and_click` triggered a real
+  mid-test disconnect once (a `StacklessClosedChannelException` while the server was
+  delivering a chat packet, cause not fully root-caused). Without
+  `reconnect_after(None)`, Azalea's default behavior after that disconnect is to
+  retry forever, so `Client::exit()` afterward never actually let
+  `ClientBuilder::start` return — measured as a genuine multi-minute hang, not a
+  theoretical risk.
+- **`Client::exit()` itself can block indefinitely on its own.** It's a plain
+  synchronous call (`self.ecs.write().write_message(...)`) with no timeout of its
+  own. After a container interaction, the bot's background tick loop was observed
+  holding that same ECS write lock long enough that `exit()` blocked past any
+  reasonable bound — even with auto-reconnect disabled. `BotHandle::stop` now calls
+  `exit()` on its own short-lived detached thread and separately waits, with a bound
+  (`BotError::ShutdownTimeout` after 15s via a `std::sync::mpsc::Receiver::
+  recv_timeout` — `std::thread::JoinHandle::join` has no timeout of its own, so a
+  plain join can't provide this bound), rather than calling `exit()` inline on the
+  caller's own thread.
+- **`ContainerHandle::left_click` only sends the click packet — it does not wait for
+  the server to process it.** Querying the bot's inventory immediately afterward is a
+  real, reproducible race (confirmed: the assertion failed intermittently without a
+  settle delay, passed reliably with one). `chest_click.rs` adds a 500ms sleep after
+  the click before querying; there's no click-acknowledgement API to await instead.
+- **A "Got `SetContainerContentEvent` for container with ID 1, but the current
+  container ID is 0" warning appears on every container interaction**, whether or not
+  the container is explicitly closed afterward (tested both ways — closing turned out
+  not to be the cause of anything). Appears benign (the click and inventory update
+  both still land correctly), but unresolved — left as a known, harmless-so-far
+  cosmetic wrinkle in this very-fresh Azalea build rather than chased further, since
+  `open_container_and_click`'s actual claim is independently verified through the
+  console on every test run.
+- **`data get entity <name> Inventory`'s response is a plain logged line** — no
+  NBT-predicate selector (`[nbt={...}]`) needed to check its contents. An initial
+  attempt at one hit a real Minecraft 26.2 command-parser syntax error (confirmed
+  directly in `harness.log`: `Expected whitespace to end one argument, but found
+  trailing data`), abandoned in favor of just waiting for a substring in the `data
+  get` response itself.
+
+## Still open
+
+- The container-ID-mismatch warning's root cause. Not blocking (see above), but worth
+  a closer look if it ever starts correlating with an actual assertion failure rather
+  than just shutdown slowness.
 - Whether bot-side assertions (reading the bot's own observed inventory/world state)
-  are needed at all, or whether every PS-14 through PS-17 test can get by on the
-  existing log-line-driven assertion style plus the bot purely as an actor (not an
-  observer). Decide this once PS-14's actual test shapes are drafted, not preemptively.
-- Whether the bot needs to survive across multiple commands/assertions within one test
-  (stay connected, same session) or whether a fresh connect-act-disconnect cycle per
-  assertion is acceptable/preferable for isolation. PS-17's multi-screen walkthrough
-  almost certainly wants one persistent connection across a whole test; simpler
-  PS-14/15 tests might not care either way — don't over-build persistence machinery
-  until PS-17 actually needs it.
-
-## Structural ideas to carry forward
-
-- Give the bot connection the same teardown discipline `ServerSandbox::shutdown`
-  already has — guaranteed disconnect on drop/failure, not just on the happy path,
-  so a failed assertion mid-test can't leak a connected bot process/socket into the
-  next test.
-- Whatever exposes the discovered port should live next to `ServerConfig`/`start`'s
-  existing API shape (`lib.rs:47,245`), not bolted on separately — a caller that
-  already has a `TestServer` handle should be able to ask it for a bot-connectable
-  address with no extra wiring.
+  are ever needed, or whether every PS-14 through PS-17 test can keep using the
+  existing log-line-driven console assertion style with the bot purely as an actor.
+  `chest_click.rs` only needed the latter.
+- Whether a bot needs to survive across multiple commands/assertions within one test
+  (stay connected) or whether a fresh connect-per-assertion cycle is preferable.
+  PS-17's multi-screen walkthrough will likely want one persistent connection; decide
+  when that test is actually drafted, not preemptively.
+- Azalea's git pin (`crates/mdl-test-bot/Cargo.toml`) will need periodic re-pinning as
+  its `main` branch moves; no automation for this exists yet.

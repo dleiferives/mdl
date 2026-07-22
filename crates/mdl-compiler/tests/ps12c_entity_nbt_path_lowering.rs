@@ -137,6 +137,35 @@ export fn read_resolved() {
     assert!(pack.contains("run data get storage"), "{pack}");
 }
 
+/// PS-12E's extensibility proof, exercised end to end: `.count` on
+/// `ItemStack` was added as a pure schema table-row change (no new
+/// checker/HIR/lowering branch), so it must compile and lower through the
+/// same generic machinery as the pre-existing fields, on a shorter chain
+/// than the book-page family (`equipment.mainhand.count` — no `components`
+/// or resource-id step) — the true proof the mechanism generalizes, since
+/// the schema-table unit test alone only proves reachability and typing.
+#[test]
+fn item_count_lowers_inline_through_the_scalar_scratch_conversion() {
+    let source = r#"
+export fn read_count() {
+    run.as(mc.entities(ArmorStand).with_tag("x").limit(1)) |reader| {
+        const count: Int32 = reader.equipment.mainhand.count;
+        if (count > 1) {
+            reader.say("MDL_PS12C_COUNT");
+        }
+    }
+}
+"#;
+    let pack = pack_text(source);
+    assert!(pack.contains("entity_nbt_scalar_scratch"), "{pack}");
+    assert!(
+        pack.contains("\"equipment\".\"mainhand\".\"count\""),
+        "{pack}"
+    );
+    assert!(pack.contains("execute store result score"), "{pack}");
+    assert!(pack.contains("run data get storage"), "{pack}");
+}
+
 fn options() -> CompilationOptions {
     let lowering = LoweringOptions::new(
         JavaEditionTarget::V26_2,

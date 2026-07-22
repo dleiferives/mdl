@@ -89,10 +89,10 @@ impl SchemaNode {
 
 // ── The V26_2 / ArmorStand table (`nbt-schema-system.md` §8) ──
 //
-// Deliberately ships only what the book-page chain needs. `ItemStack.id`/
-// `.count` are NOT included yet — adding one (`.count`) as a pure table-row
-// change is PS-12E's extensibility proof, and pre-populating it here would
-// leave nothing to prove.
+// Ships what the book-page chain needs, plus `ItemStack.count` as PS-12E's
+// worked extensibility proof: a new schema field is a pure table-row change,
+// with no new checker/HIR/lowering branch required. `ItemStack.id` remains
+// unregistered — still explicit follow-up, not required by either chain.
 
 static BOOK_PAGE_ENTRY: SchemaNode = SchemaNode::Compound(&[(
     SchemaKey::Identifier("raw"),
@@ -120,8 +120,13 @@ static COMPONENTS: SchemaNode = SchemaNode::Compound(&[(
     WRITTEN_BOOK_CONTENT,
 )]);
 
-static ITEM_STACK: SchemaNode =
-    SchemaNode::Compound(&[(SchemaKey::Identifier("components"), COMPONENTS)]);
+static ITEM_STACK: SchemaNode = SchemaNode::Compound(&[
+    (SchemaKey::Identifier("components"), COMPONENTS),
+    (
+        SchemaKey::Identifier("count"),
+        SchemaNode::Scalar(ValueType::Int32),
+    ),
+]);
 
 static EQUIPMENT_SLOTS: SchemaNode = SchemaNode::Compound(&[
     (SchemaKey::Identifier("mainhand"), ITEM_STACK),
@@ -219,6 +224,21 @@ mod tests {
             .field_by_name("raw")
             .unwrap();
         assert_eq!(node.scalar_type(), Some(super::ValueType::String));
+    }
+
+    /// PS-12E's extensibility proof: `.count` was added as a pure table-row
+    /// change (no new checker/HIR/lowering branch), mirroring the book-page
+    /// chain test above.
+    #[test]
+    fn item_count_chain_walks_the_table_end_to_end() {
+        let node = root_schema(EntityKind::ArmorStand)
+            .field_by_name("equipment")
+            .unwrap()
+            .field_by_name("mainhand")
+            .unwrap()
+            .field_by_name("count")
+            .unwrap();
+        assert_eq!(node.scalar_type(), Some(super::ValueType::Int32));
     }
 
     #[test]

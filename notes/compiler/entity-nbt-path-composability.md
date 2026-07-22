@@ -1,7 +1,10 @@
 # Composable Entity-NBT Paths — Retiring the Hardcoded Book Intrinsic
 
 Date: 2026-07-20
-Status: **architecture of record for PS-12; extends [`macro-reference-crossing-model.md`](macro-reference-crossing-model.md)**
+Status: **architecture of record for PS-12 (PS-12.0 through PS-12E all landed — every stage in
+Part 3's staging is complete, the retired intrinsic is fully deleted, no parallel/legacy path
+remains); extends [`macro-reference-crossing-model.md`](macro-reference-crossing-model.md). See
+[`pre-scheduler/ps-12-handoff.md`](pre-scheduler/ps-12-handoff.md) for the closing summary.**
 
 ## Why this note exists
 

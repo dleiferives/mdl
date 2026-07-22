@@ -1,10 +1,13 @@
 # PS-12: Composable Entity-NBT Paths (Retires the Hardcoded Book Intrinsic)
 
-Status: **PS-12.0 through PS-12D are all landed — the general path expression compiles, type-checks,
+Status: **PS-12.0 through PS-12E are all landed — the general path expression compiles, type-checks,
 lowers to Core, and lowers to real `.mcfunction` commands on both the inline and macro-helper
-routes, with four-policy differential evidence and an ignored pinned-server test. Only PS-12E
-(delete the retired intrinsic, add `.count` as the extensibility proof, handoff) remains — see
-[`ps-12-entity-nbt-paths-todo.md`](ps-12-entity-nbt-paths-todo.md).**
+routes, with four-policy differential evidence and an ignored pinned-server test. The retired
+`main_hand_written_book_literal_page_or_empty` intrinsic is fully deleted (no parallel/legacy
+path remains), the brainfuck capstone is migrated to the new syntax, and `.count` on `ItemStack`
+proves the schema table is genuinely extensible by a pure table-row change. See
+[`ps-12-entity-nbt-paths-todo.md`](ps-12-entity-nbt-paths-todo.md) and
+[`ps-12-handoff.md`](ps-12-handoff.md).**
 
 ## Identity
 

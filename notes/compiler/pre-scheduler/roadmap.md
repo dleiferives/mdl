@@ -1,19 +1,20 @@
 # Stage 8.5 Roadmap
 
 Status: **PS-1 through PS-5 complete; PS-11A–C (generic macro engine) landed; PS-12
-(composable entity-NBT paths) in progress**
+(composable entity-NBT paths) complete**
 
 The macro/reference work has its own architecture of record —
 [`../macro-reference-crossing-model.md`](../macro-reference-crossing-model.md) — and
 its first executable slice, [`ps-11-macro-reference-crossing-plan.md`](ps-11-macro-reference-crossing-plan.md)
 (Tier A: generic value-crossing engine and wired runtime bridge), landed in commit
 `7654bc0`. PS-12, with its own architecture note
-[`../entity-nbt-path-composability.md`](../entity-nbt-path-composability.md) and plan
-[`ps-12-entity-nbt-paths-plan.md`](ps-12-entity-nbt-paths-plan.md), fixes two bugs found
-in the landed engine and replaces the one hardcoded intrinsic client
-(`main_hand_written_book_literal_page_or_empty`) with a general, schema-typed,
-composable entity-NBT path expression. Tier B (first-class references / `DataRef<T>`)
-and Tier C (all-command generalization) remain later PS milestones.
+[`../entity-nbt-path-composability.md`](../entity-nbt-path-composability.md), plan
+[`ps-12-entity-nbt-paths-plan.md`](ps-12-entity-nbt-paths-plan.md), and handoff
+[`ps-12-handoff.md`](ps-12-handoff.md), fixed two bugs found in the landed engine and
+replaced the one hardcoded intrinsic client
+(`main_hand_written_book_literal_page_or_empty`, now fully deleted) with a general,
+schema-typed, composable entity-NBT path expression. Tier B (first-class references /
+`DataRef<T>`) and Tier C (all-command generalization) remain later PS milestones.
 
 ## Why the roadmap changes here
 

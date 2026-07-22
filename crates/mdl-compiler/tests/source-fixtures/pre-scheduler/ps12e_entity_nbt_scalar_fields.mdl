@@ -1,0 +1,34 @@
+// MDL: success
+// PS-12E: schema-typed entity-NBT scalar (Bool/Int32) reads, neither behind a
+// runtime list index -- the inline scratch/score-conversion route
+// (execute store result score ... run data get storage <scratch>) exercised
+// by ps12c_entity_nbt_path_lowering.rs's structural tests, but never before
+// carried through a four-policy differential or the pinned server. Found via
+// manual verification that the sibling macro/runtime String route had a real
+// bug (a leading `.` before the root NBT path key) that no structural or
+// differential test caught -- this fixture closes the matching gap for the
+// scalar route by also covering it with real server evidence.
+// HIR: entity-nbt-read
+// HIR: result_ty=Bool
+// HIR: result_ty=Int32
+// CORE: entity_nbt_read
+// CORE: result=bool
+// CORE: result=i32
+
+export fn read_scalars() {
+    run.as(mc.entities(ArmorStand).with_tag("mdl_ps12e_scalar").limit(1)) |reader| {
+        const resolved: Bool = reader.equipment.mainhand.components."minecraft:written_book_content".resolved;
+        const count: Int32 = reader.equipment.mainhand.count;
+        if (resolved) {
+            if (count > 1) {
+                reader.say("MDL_PS12E_SCALAR_BOTH");
+            } else {
+                reader.say("MDL_PS12E_SCALAR_RESOLVED_ONLY");
+            }
+        } else if (count > 1) {
+            reader.say("MDL_PS12E_SCALAR_COUNT_ONLY");
+        } else {
+            reader.say("MDL_PS12E_SCALAR_NEITHER");
+        }
+    }
+}

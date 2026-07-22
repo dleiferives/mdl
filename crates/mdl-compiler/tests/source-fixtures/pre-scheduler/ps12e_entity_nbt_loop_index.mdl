@@ -1,0 +1,28 @@
+// MDL: success
+// PS-12E: a genuinely loop-carried runtime index -- the entity-NBT read
+// instruction executes once per loop iteration with a different runtime
+// value each time, distinct from ps12_entity_nbt_path.mdl's single
+// occurrence (one instruction, one constant-folded-to-zero value) and from
+// the brainfuck capstone's 100 unrolled *literal* occurrences (100 separate
+// inline instructions, never a runtime index at all). This is the strongest
+// available proof the macro/crossings runtime route is correct under real
+// per-iteration dynamism, not just a single call site.
+// HIR: entity-nbt-read
+// HIR: result_ty=String
+// CORE: entity_nbt_read
+// CORE: result=string
+
+export fn sum_page_lengths() {
+    run.as(mc.entities(ArmorStand).with_tag("mdl_ps12e_loop").limit(1)) |reader| {
+        var total: Int32 = 0;
+        var i: Int32 = 0;
+        while (i < 3) {
+            const page: String = reader.equipment.mainhand.components."minecraft:written_book_content".pages[i].raw;
+            total = total +% page.length();
+            i = i +% 1;
+        }
+        if (total == 6) {
+            reader.say("MDL_PS12E_LOOP_OK");
+        }
+    }
+}

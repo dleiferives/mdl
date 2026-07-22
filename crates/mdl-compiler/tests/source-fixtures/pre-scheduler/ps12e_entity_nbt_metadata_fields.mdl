@@ -1,0 +1,24 @@
+// MDL: success
+// PS-12E: `.author` and `.title.raw` are declared in the schema table
+// (frontend/entity_schema.rs's WRITTEN_BOOK_CONTENT node) but no earlier
+// test -- structural, differential, or pinned-server -- ever reads either
+// field; every prior test only ever touches `.pages[N].raw`. This also
+// reads off the `offhand` slot instead of `mainhand`, proving the
+// equipment-slot dimension of the schema generalizes too, not just the one
+// slot every other PS-12 fixture happens to use.
+// HIR: entity-nbt-read
+// HIR: result_ty=String
+// CORE: entity_nbt_read
+// CORE: result=string
+
+export fn read_book_metadata() {
+    run.as(mc.entities(ArmorStand).with_tag("mdl_ps12e_meta").limit(1)) |reader| {
+        const author: String = reader.equipment.offhand.components."minecraft:written_book_content".author;
+        const title: String = reader.equipment.offhand.components."minecraft:written_book_content".title.raw;
+        if (author.ends_with_ascii("l")) {
+            if (title.ends_with_ascii("t")) {
+                reader.say("MDL_PS12E_META_OK");
+            }
+        }
+    }
+}

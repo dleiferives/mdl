@@ -1,0 +1,36 @@
+# Deliberately NOT a member of the root workspace (`../../Cargo.toml`). Azalea's
+# build script unconditionally requires a nightly Rust toolchain, and Cargo resolves
+# one toolchain per invocation across an entire workspace -- folding this crate into
+# the root workspace would force `cargo test --workspace` onto nightly for every
+# crate, for every contributor, whether or not they touch bot-driven tests. Its own
+# `[workspace]` table below marks it as a self-contained workspace root so Cargo does
+# not walk up and treat it as an unlisted member of `../../Cargo.toml`.
+#
+# Run with: `cd crates/mdl-test-bot && cargo +nightly test -- --ignored`
+
+[workspace]
+
+[package]
+name = "mdl-test-bot"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+publish = false
+
+[lib]
+name = "mdl_test_bot"
+
+[dependencies]
+mdl-test = { path = "../mdl-test" }
+# Pinned to a specific commit, not a crates.io version: crates.io's newest published
+# `azalea` is `0.16.0+mc26.1` (published 2026-03-28, confirmed via the crates.io API --
+# there is no `+mc26.2` release published at all). A plain version requirement like
+# `"0.16.0+mc26.2"` does NOT select it either way, since Cargo's semver resolution
+# ignores build-metadata suffixes for matching purposes -- it silently resolved to the
+# stale +mc26.1 release when tried. Real 26.2 protocol fixes (confirmed: "fix
+# incorrect particle order for 26.2", "update ClientboundSetPlayerTeam for 26.2") only
+# exist on the unreleased git `main` branch. Pinned to `main`'s HEAD as of 2026-07-22;
+# re-pin to a newer commit (or a crates.io release, once one ships) if it goes stale.
+azalea = { git = "https://github.com/azalea-rs/azalea", rev = "c35b57ebf82fa8b26ada77ab9eb795e3827d6c16", default-features = false, features = ["log"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

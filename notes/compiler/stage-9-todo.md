@@ -101,27 +101,60 @@ mechanism actually came from instead (redundant straight-line operation folding)
 
 ## 9B — Recurring scheduling without continuation (capability 2)
 
-- [ ] Add the `Ticks` type and compile-time-constant delay literals; reject runtime
-      delays with a stable "deferred" diagnostic.
-- [ ] Add the `schedule` / `schedule clear` source surface and tick-handler
-      registration surface; define HIR/Core representation (a scheduled call is a
-      deferred entry reference, not a synchronous call).
-- [ ] Enforce argument-free scheduled functions; pass required state through external
-      stores the function reads.
-- [ ] Enforce self-rooting via `AmbientContextRequirements`: reject a scheduled
-      function whose `generated_entry_requirement` does not reduce to the default
-      root, with a diagnostic pointing at the inherited-context dependency.
-- [ ] Recognize self-reschedule as scheduled re-entry, not a recursive call; ensure
-      no Stage 8 activation frame is allocated for it.
-- [ ] Lower to `schedule function`/`schedule clear` with the schedule-self-first
-      ordering; register tick handlers into `#minecraft:tick` in source/module order
-      via the `construct.rs` tag mechanism.
-- [ ] Apply the resolved reload-dedup lowering (default `replace`, explicit clear if
-      9.0 proved it necessary).
-- [ ] Four-policy differential + pinned-server proof: a self-rescheduling job and a
-      tick-tag job observed across multiple ticks, with correct reload behavior and
-      no duplicate chains.
-- [ ] Write `stage-9/9-b-recurring-scheduling.md`.
+Status: **designed, not implemented.** Full design in
+[`stage-9/9-b-recurring-scheduling.md`](stage-9/9-b-recurring-scheduling.md),
+including a load-bearing discovery not anticipated by this checklist's original
+wording: `CoreOp::function_references()` is the single mechanism feeding both
+inter-function reachability and the Stage 8 recursion/call-graph classification,
+undifferentiated by `FunctionReferenceKind`, so `Schedule`/`ScheduleClear` Core
+operations must simply not implement it at all (rather than implementing it and
+then filtering it out downstream) for self-reschedule to correctly get no
+activation frame.
+
+- [ ] Add the `tick` function modifier (tick-tag registration, does **not** require
+      `export` — diverges from 9A's `one_tick` deliberately, see dossier) and the
+      `schedule` / `schedule clear` statements (bare function-name target, not a
+      call expression — see dossier for why reusing `AstCall` was rejected). Delay
+      stays a bare compile-time integer literal (no new `Ticks` literal suffix
+      proposed; flagged open in the dossier); mode (`append`/`replace`) is a plain
+      identifier validated against a closed vocabulary, mirroring
+      `EventTrigger::from_source_name`.
+- [ ] Define HIR/Core representation: `HirStatementKind::Schedule`/`ScheduleClear`
+      siblings of `Call`; `CoreOp::Schedule`/`ScheduleClear` siblings of `Call` that
+      deliberately return no `function_references()` reference (the load-bearing
+      discovery above — this is what makes self-reschedule allocate no Stage 8
+      activation frame, with no change to `audit.rs` needed).
+- [ ] Enforce argument-free `tick`/schedule-target functions (new check, not free
+      from ordinary call-site arity checking given the bare-name grammar); pass
+      required state through external stores the function reads.
+- [ ] Enforce self-rooting via `AmbientContextRequirements`/`generated_entry_requirement()`
+      (currently read only by one test assertion, never enforced): reject a
+      `tick`/schedule-target function whose entry requirement is not `NONE`, with a
+      diagnostic naming the non-`None` component. Safe to build now despite 9.0's
+      open dimension question (A-028) — this is a static semantic-model check, not
+      a runtime-reconstruction claim; see dossier.
+- [ ] Extend `LoweringOutput::analyze_target_execution`'s root list: every
+      schedule-target function becomes its own independent `Function` root; the
+      `#minecraft:tick` tag (constructed only if non-empty) becomes one aggregate
+      `FunctionTag` root covering all handlers together, matching vanilla's actual
+      per-tick combined-budget semantics.
+- [ ] Lower to `schedule function`/`schedule clear` (new minimal `CommandKind`
+      variants mirroring `AdvancementRevokeCommand` — no crossings.rs involvement,
+      no runtime operands to marshal); register tick handlers into `#minecraft:tick`
+      in `FunctionId` order (already deterministic) via the `construct.rs` tag
+      mechanism, generalized from one entry to N. Schedule-self-first stays a
+      documented authoring pattern, not a compiler-inserted reordering.
+- [ ] Apply the resolved reload-dedup lowering: `replace` unconditionally, no
+      explicit `schedule clear` inserted by the compiler (9.0 M13a/M13b already
+      showed `replace` alone is sufficient).
+- [ ] Four-policy differential + pinned-server proof: a self-rescheduling job
+      (`dynamic-lights` shape) and a tick-tag job (`spawn-animations` shape, tick tag
+      plus a separate self-rescheduling watchdog) observed across multiple ticks,
+      with correct reload behavior and no duplicate chains. Promote 9.0's
+      `wait_for_gametime_settled`/`step_and_settle` out of the single fixture file
+      into a shared `mdl-test` helper — 9.0 explicitly deferred this to whichever of
+      9B/9C needed it from more than one file first; that's now.
+- [x] Write `stage-9/9-b-recurring-scheduling.md`.
 - Gate: pinned-server multi-tick observation under all four policies; `dynamic-lights`-
       shaped and `spawn-animations`-shaped fixtures both expressible.
 

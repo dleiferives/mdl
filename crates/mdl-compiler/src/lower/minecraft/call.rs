@@ -373,7 +373,7 @@ mod tests {
             .entry();
         let entry_planned = plan.block_function(entry_function, entry_block).unwrap();
         let target_planned = plan.block_function(target_function, target_block).unwrap();
-        let mut construction = TargetConstruction::declare(&plan).unwrap();
+        let mut construction = TargetConstruction::declare(&core, &plan).unwrap();
         construction.define_initialization(&plan).unwrap();
         let mut context = construction
             .begin_function(
@@ -492,7 +492,7 @@ mod tests {
         let outer_planned = plan.function_entry(outer).unwrap();
         let relay_planned = plan.function_entry(relay).unwrap();
         let terminal_planned = plan.function_entry(terminal).unwrap();
-        let mut construction = TargetConstruction::declare(&plan).unwrap();
+        let mut construction = TargetConstruction::declare(&core, &plan).unwrap();
         construction.define_initialization(&plan).unwrap();
 
         let mut outer_context = construction

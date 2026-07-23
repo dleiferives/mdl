@@ -29,7 +29,7 @@ fn classify_step(command: &CommandKind) -> Option<CommandStepCost> {
             CommandStepCounts::new(1, 0, 0, 1),
             vec![CommandOutcome::Continue],
         )),
-        CommandKind::Say(_) => Some(simple_step(
+        CommandKind::Say(_) | CommandKind::AdvancementRevoke(_) => Some(simple_step(
             CommandStepCounts::new(1, 0, 0, 0),
             vec![CommandOutcome::Continue],
         )),

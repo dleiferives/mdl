@@ -1,14 +1,19 @@
+use std::collections::HashMap;
+
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::{EntityId, EntityLimitError, EntityVec};
+use crate::ir::core::{CoreProgram, Criterion as CoreCriterion};
 use crate::ir::minecraft::{
-    BuildError, CommandId, CommandKind, CommandNode, Condition, DataCommand, DataModifyMode,
-    DataSource, ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
-    FunctionBodyBuilder, FunctionTagEntry, FunctionTagId, FunctionTagMerge, FunctionTagResourceId,
-    InternalCallableRef, McFunctionId, MinecraftProgram, MinecraftProgramBuilder, NbtValue,
-    ReturnCommand, ScoreCommand, ScoreRef,
+    AdvancementResourceId, AdvancementRevokeCommand, BuildError, CommandId, CommandKind,
+    CommandNode, Condition, Criterion, DataCommand, DataModifyMode, DataSource, ExecuteCommand,
+    ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FunctionBodyBuilder, FunctionTagEntry,
+    FunctionTagId, FunctionTagMerge, FunctionTagResourceId, InternalCallableRef, ItemMatch,
+    McFunctionId, MinecraftProgram, MinecraftProgramBuilder, NbtValue, ReturnCommand, ScoreCommand,
+    ScoreRef,
 };
 use crate::source::OriginId;
 
+use super::GeneratedNames;
 use super::plan::{HomeId, LoweringPlan, PlannedFunctionId};
 
 /// Complete Stage 3 declaration mapping, retained only during construction.
@@ -20,11 +25,22 @@ pub(crate) struct DeclarationMap {
         reason = "the frozen Stage 3 declaration map records the load-tag identity by contract"
     )]
     load_tag: FunctionTagId,
+    /// Reward planned functions needing the PS-15 auto-revoke command
+    /// prepended as their first physical command, keyed by the same
+    /// resource `TargetConstruction::declare` already declared for them.
+    revoke_before: HashMap<PlannedFunctionId, AdvancementResourceId>,
 }
 
 impl DeclarationMap {
     pub(crate) fn function(&self, planned: PlannedFunctionId) -> Option<McFunctionId> {
         self.functions.get(planned).copied()
+    }
+
+    pub(crate) fn revoke_before(
+        &self,
+        planned: PlannedFunctionId,
+    ) -> Option<&AdvancementResourceId> {
+        self.revoke_before.get(&planned)
     }
 
     #[cfg(test)]
@@ -41,7 +57,7 @@ pub(crate) struct TargetConstruction {
 }
 
 impl TargetConstruction {
-    pub(crate) fn declare(plan: &LoweringPlan) -> Result<Self, Diagnostics> {
+    pub(crate) fn declare(core: &CoreProgram, plan: &LoweringPlan) -> Result<Self, Diagnostics> {
         let mut builder = MinecraftProgramBuilder::new(plan.target());
         let mut functions: EntityVec<PlannedFunctionId, McFunctionId> = EntityVec::new();
         for (planned, function) in plan.planned_functions() {
@@ -80,11 +96,39 @@ impl TargetConstruction {
             OriginId::UNKNOWN,
         ));
         tag.finish();
+
+        let mut revoke_before = HashMap::new();
+        for (advancement, declaration) in core.advancements() {
+            let resource = GeneratedNames::advancement_resource(plan.namespace(), advancement);
+            let reward_planned = plan.function_entry(declaration.reward()).ok_or_else(|| {
+                invariant_diagnostics(
+                    "advancement reward has no planned entry block",
+                    declaration.origin(),
+                )
+            })?;
+            let reward_target = functions.get(reward_planned).copied().ok_or_else(|| {
+                invariant_diagnostics(
+                    "advancement reward's planned entry has no Stage 3 declaration",
+                    declaration.origin(),
+                )
+            })?;
+            builder
+                .declare_advancement(
+                    resource.clone(),
+                    lower_criterion(declaration.criterion()),
+                    reward_target,
+                    declaration.origin(),
+                )
+                .map_err(|error| construction_diagnostics(&error, declaration.origin()))?;
+            revoke_before.insert(reward_planned, resource);
+        }
+
         Ok(Self {
             builder,
             declarations: DeclarationMap {
                 functions,
                 load_tag,
+                revoke_before,
             },
         })
     }
@@ -110,10 +154,19 @@ impl TargetConstruction {
                 OriginId::UNKNOWN,
             )
         })?;
-        let target_body = self
+        let mut target_body = self
             .builder
             .begin_function(target)
             .map_err(|error| construction_diagnostics(&error, OriginId::UNKNOWN))?;
+        if let Some(resource) = self.declarations.revoke_before(planned) {
+            let revoke = command(
+                CommandKind::AdvancementRevoke(AdvancementRevokeCommand::new(resource.clone())),
+                OriginId::UNKNOWN,
+            )?;
+            target_body
+                .push(revoke)
+                .map_err(|error| construction_diagnostics(&error, OriginId::UNKNOWN))?;
+        }
         #[cfg(not(test))]
         let _ = body;
         Ok(FunctionLoweringCx {
@@ -300,11 +353,28 @@ impl<'a> FunctionLoweringCx<'a, '_> {
     }
 }
 
+/// Translates Core's target-independent `Criterion` into the Minecraft-IR
+/// mirror used purely for JSON emission — the same per-layer translation
+/// discipline every other Core-to-Minecraft-IR construct in this compiler
+/// already follows (`ir::core::MinecraftOperationAttributes` vs.
+/// `ir::minecraft`'s own typed commands), not a shared type across layers.
+fn lower_criterion(criterion: &CoreCriterion) -> Criterion {
+    match criterion {
+        CoreCriterion::InventoryChanged { items } => Criterion::InventoryChanged {
+            items: items
+                .iter()
+                .map(|item| ItemMatch::new(item.as_str()))
+                .collect(),
+        },
+    }
+}
+
 fn construction_diagnostics(error: &BuildError, origin: OriginId) -> Diagnostics {
     match error {
         BuildError::EntityLimit => capacity_diagnostics(origin),
         BuildError::DuplicateFunctionResource(_)
         | BuildError::DuplicateFunctionTagResource(_)
+        | BuildError::DuplicateAdvancementResource(_)
         | BuildError::InvalidFunction(_)
         | BuildError::InvalidFunctionTag(_)
         | BuildError::FunctionAlreadyDefined(_)
@@ -392,7 +462,7 @@ mod tests {
     #[test]
     fn declares_dense_functions_and_the_append_only_load_tag() {
         let (core, analyses, plan, _) = plan();
-        let mut construction = TargetConstruction::declare(&plan).unwrap();
+        let mut construction = TargetConstruction::declare(&core, &plan).unwrap();
         for (planned, _) in plan.planned_functions() {
             assert_eq!(
                 construction.declarations.function(planned).unwrap().index(),
@@ -427,7 +497,7 @@ mod tests {
         let body = core.function(function).unwrap().body().unwrap();
         let planned = plan.block_function(function, body.entry()).unwrap();
         let home = plan.value_home(function, value).unwrap();
-        let mut construction = TargetConstruction::declare(&plan).unwrap();
+        let mut construction = TargetConstruction::declare(&core, &plan).unwrap();
         let expected_target = construction.declarations().function(planned).unwrap();
 
         let context = construction.begin_function(body, &plan, planned).unwrap();
@@ -440,8 +510,8 @@ mod tests {
 
     #[test]
     fn initialization_is_exact_collision_safe_structured_ir() {
-        let (_core, _analyses, plan, _) = plan();
-        let mut construction = TargetConstruction::declare(&plan).unwrap();
+        let (core, _analyses, plan, _) = plan();
+        let mut construction = TargetConstruction::declare(&core, &plan).unwrap();
 
         construction.define_initialization(&plan).unwrap();
         for (planned, _) in plan.planned_functions() {

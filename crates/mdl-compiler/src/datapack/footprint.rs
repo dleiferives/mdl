@@ -13,6 +13,8 @@ pub enum ArtifactFileKind {
     Function,
     /// One emitted function-tag JSON file.
     FunctionTag,
+    /// One emitted hidden advancement JSON file.
+    Advancement,
 }
 
 /// Exact size of one emitted file in authoritative artifact order.
@@ -53,6 +55,7 @@ pub struct ArtifactFootprintReport {
     metadata_files: usize,
     function_files: usize,
     function_tag_files: usize,
+    advancement_files: usize,
     physical_function_lines: usize,
     total_utf8_bytes: usize,
     maximum_function_line_utf16_units: usize,
@@ -64,6 +67,7 @@ impl ArtifactFootprintReport {
         let mut metadata_files = 0usize;
         let mut function_files = 0usize;
         let mut function_tag_files = 0usize;
+        let mut advancement_files = 0usize;
         let mut physical_function_lines = 0usize;
         let mut total_utf8_bytes = 0usize;
         let mut maximum_function_line_utf16_units = 0usize;
@@ -85,6 +89,7 @@ impl ArtifactFootprintReport {
                         }
                     }
                     ArtifactFileKind::FunctionTag => function_tag_files += 1,
+                    ArtifactFileKind::Advancement => advancement_files += 1,
                 }
                 ArtifactFileFootprint {
                     path: file.path().clone(),
@@ -99,6 +104,7 @@ impl ArtifactFootprintReport {
             metadata_files,
             function_files,
             function_tag_files,
+            advancement_files,
             physical_function_lines,
             total_utf8_bytes,
             maximum_function_line_utf16_units,
@@ -128,6 +134,12 @@ impl ArtifactFootprintReport {
     #[must_use]
     pub const fn function_tag_files(&self) -> usize {
         self.function_tag_files
+    }
+
+    /// Returns the number of emitted advancement files.
+    #[must_use]
+    pub const fn advancement_files(&self) -> usize {
+        self.advancement_files
     }
 
     /// Returns the number of physical command lines across function files.
@@ -160,11 +172,12 @@ impl ArtifactFootprintReport {
         let mut output = String::new();
         writeln!(
             output,
-            "artifact-footprint files={} metadata={} functions={} function-tags={} function-lines={} utf8-bytes={} max-function-line-utf16={} trace-records={}",
+            "artifact-footprint files={} metadata={} functions={} function-tags={} advancements={} function-lines={} utf8-bytes={} max-function-line-utf16={} trace-records={}",
             self.files.len(),
             self.metadata_files,
             self.function_files,
             self.function_tag_files,
+            self.advancement_files,
             self.physical_function_lines,
             self.total_utf8_bytes,
             self.maximum_function_line_utf16_units,

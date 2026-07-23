@@ -745,7 +745,7 @@ mod tests {
         function: FunctionId,
         specs: &[BranchSpec],
     ) -> RenderedBranches {
-        let mut construction = TargetConstruction::declare(plan).unwrap();
+        let mut construction = TargetConstruction::declare(core, plan).unwrap();
         construction.define_initialization(plan).unwrap();
         let body = core.function(function).unwrap().body().unwrap();
         let mut block_targets = BTreeMap::new();
@@ -833,7 +833,7 @@ mod tests {
         destination: BlockId,
         origin: OriginId,
     ) -> (String, Vec<OriginId>) {
-        let mut construction = TargetConstruction::declare(plan).unwrap();
+        let mut construction = TargetConstruction::declare(core, plan).unwrap();
         construction.define_initialization(plan).unwrap();
         let body = core.function(function).unwrap().body().unwrap();
         let source_planned = plan.block_function(function, source).unwrap();
@@ -868,7 +868,7 @@ mod tests {
         values: &[crate::lower::minecraft::plan::HomeId],
         origin: OriginId,
     ) -> (String, Vec<OriginId>) {
-        let mut construction = TargetConstruction::declare(plan).unwrap();
+        let mut construction = TargetConstruction::declare(core, plan).unwrap();
         construction.define_initialization(plan).unwrap();
         let body = core.function(function).unwrap().body().unwrap();
         let planned = plan.function_entry(function).unwrap();

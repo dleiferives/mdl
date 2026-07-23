@@ -104,7 +104,8 @@ fn verify_command_shape(
         | CommandKind::Function(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Macro(_)
-        | CommandKind::FunctionWithStorage(_) => {}
+        | CommandKind::FunctionWithStorage(_)
+        | CommandKind::AdvancementRevoke(_) => {}
         CommandKind::Say(say) => {
             if let Err(error) = SayMessage::new_for_target(say.message().as_str(), target) {
                 verifier.report(
@@ -350,7 +351,8 @@ fn verify_command_references(
         | CommandKind::Teleport(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Macro(_)
-        | CommandKind::Raw(_) => {}
+        | CommandKind::Raw(_)
+        | CommandKind::AdvancementRevoke(_) => {}
     }
 }
 
@@ -581,7 +583,8 @@ fn verify_command_origins(
         | CommandKind::FunctionWithStorage(_)
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Raw(_)
-        | CommandKind::Macro(_) => {}
+        | CommandKind::Macro(_)
+        | CommandKind::AdvancementRevoke(_) => {}
     }
 }
 
@@ -627,7 +630,12 @@ mod tests {
                 body,
             ))
             .unwrap();
-        MinecraftProgram::new(JavaEditionTarget::V26_2, functions, EntityVec::new())
+        MinecraftProgram::new(
+            JavaEditionTarget::V26_2,
+            functions,
+            EntityVec::new(),
+            EntityVec::new(),
+        )
     }
 
     #[test]
@@ -783,6 +791,7 @@ mod tests {
             JavaEditionTarget::V26_2,
             functions,
             EntityVec::<super::super::FunctionTagId, FunctionTag>::new(),
+            EntityVec::<super::super::AdvancementId, super::super::Advancement>::new(),
         );
         let diagnostics = verify_program(&program, &SourceContext::new()).unwrap_err();
         assert!(diagnostics.contains_code("minecraft.duplicate-function-resource"));

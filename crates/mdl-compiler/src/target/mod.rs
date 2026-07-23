@@ -32,6 +32,7 @@ pub struct TargetSpec {
     data_pack_format: [u32; 2],
     function_directory: &'static str,
     function_tag_directory: &'static str,
+    advancement_directory: &'static str,
     default_max_command_sequence: u32,
     default_max_command_forks: u32,
     max_logical_command_utf16_units: u32,
@@ -69,6 +70,12 @@ impl TargetSpec {
     #[must_use]
     pub const fn function_tag_directory(&self) -> &'static str {
         self.function_tag_directory
+    }
+
+    /// Returns the target-relative advancement resource directory.
+    #[must_use]
+    pub const fn advancement_directory(&self) -> &'static str {
+        self.advancement_directory
     }
 
     /// Returns the target's default maximum command sequence length.
@@ -111,6 +118,7 @@ mod tests {
         assert_eq!(spec.data_pack_format(), [107, 1]);
         assert_eq!(spec.function_directory(), "function");
         assert_eq!(spec.function_tag_directory(), "tags/function");
+        assert_eq!(spec.advancement_directory(), "advancement");
         assert_eq!(spec.default_max_command_sequence(), 65_536);
         assert_eq!(spec.default_max_command_forks(), 65_536);
         assert_eq!(spec.max_logical_command_utf16_units(), 2_000_000);

@@ -1,5 +1,6 @@
 //! Typed Minecraft target syntax.
 
+mod advancement;
 mod builder;
 mod command;
 mod contract;
@@ -18,6 +19,7 @@ mod selector;
 mod spatial;
 mod verify;
 
+pub use advancement::AdvancementRevokeCommand;
 pub use builder::{BuildError, FunctionBodyBuilder, FunctionTagBuilder, MinecraftProgramBuilder};
 pub use command::{
     CommandDepthError, CommandKind, CommandNode, FunctionCall, FunctionWithStorage,
@@ -38,8 +40,9 @@ pub use macro_command::{
     MacroKeyError, MacroLine, MacroSegment, MacroVariable, MacroVariableId, SyntaxSlot,
 };
 pub use names::{
-    DimensionId, FunctionResourceId, FunctionTagResourceId, NameError, NameErrorReason, NameKind,
-    Namespace, PackNamespace, PackPath, PackResourcePath, ResourcePath, StorageId,
+    AdvancementResourceId, DimensionId, FunctionResourceId, FunctionTagResourceId, NameError,
+    NameErrorReason, NameKind, Namespace, PackNamespace, PackPath, PackResourcePath, ResourcePath,
+    StorageId,
 };
 pub use nbt::{
     EmptyNbtPath, MAX_NBT_DEPTH, NbtBuildError, NbtKey, NbtMatchValueKind, NbtPath, NbtPathKey,
@@ -47,9 +50,10 @@ pub use nbt::{
 };
 pub use number::{FiniteF32, FiniteF64, FloatWidth, NonFiniteFloat, NonFiniteKind};
 pub use program::{
-    CallableRef, CommandId, ExternalCallableRef, ExternalTagRequirement, FunctionBody, FunctionTag,
-    FunctionTagEntry, FunctionTagEntryKind, FunctionTagId, FunctionTagMerge, InternalCallableRef,
-    McFunction, McFunctionId, MinecraftProgram,
+    Advancement, AdvancementId, CallableRef, CommandId, Criterion, ExternalCallableRef,
+    ExternalTagRequirement, FunctionBody, FunctionTag, FunctionTagEntry, FunctionTagEntryKind,
+    FunctionTagId, FunctionTagMerge, InternalCallableRef, ItemMatch, McFunction, McFunctionId,
+    MinecraftProgram,
 };
 pub use say::{MAX_SAY_MESSAGE_UTF16_UNITS, SayCommand, SayMessage, SayMessageError};
 pub use score::{

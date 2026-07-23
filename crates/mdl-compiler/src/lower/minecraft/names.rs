@@ -1,8 +1,8 @@
 use crate::entity::EntityId;
-use crate::ir::core::{BlockId, CoreType, FunctionId, InstId, Operand, ValueId};
+use crate::ir::core::{AdvancementId, BlockId, CoreType, FunctionId, InstId, Operand, ValueId};
 use crate::ir::minecraft::{
-    FakeScoreHolder, FunctionResourceId, NbtPath, NbtPathKey, NbtPathSegment, PackResourcePath,
-    ResourcePath, StorageId, StoragePath,
+    AdvancementResourceId, FakeScoreHolder, FunctionResourceId, NbtPath, NbtPathKey,
+    NbtPathSegment, PackResourcePath, ResourcePath, StorageId, StoragePath,
 };
 
 use super::{LoweringOptions, plan::BranchArm};
@@ -28,6 +28,25 @@ impl<'a> GeneratedNames<'a> {
 
     pub(crate) fn block_function(self, function: FunctionId, block: BlockId) -> FunctionResourceId {
         self.function_resource(format!("__mdl/f{}/b{}", function.index(), block.index()))
+    }
+
+    /// Names one advancement purely from its own dense Core identity and the
+    /// pack namespace — deliberately independent of function/block planning
+    /// order, so it can be computed at any point without a resource-
+    /// assignment sequencing dependency on the reward function's own
+    /// generated name. Mirrors `activation_frames_for`'s shape: a plain
+    /// associated function over a namespace, not an instance method, since
+    /// callers outside function/block planning (advancement declaration)
+    /// have a namespace but no `LoweringOptions` to hand.
+    pub(crate) fn advancement_resource(
+        namespace: &crate::ir::minecraft::PackNamespace,
+        advancement: AdvancementId,
+    ) -> AdvancementResourceId {
+        AdvancementResourceId::new(
+            namespace.clone(),
+            PackResourcePath::try_from(format!("__mdl/adv{}", advancement.index()))
+                .expect("generated advancement resource path must be pack-safe"),
+        )
     }
 
     pub(crate) fn branch_helper_function(

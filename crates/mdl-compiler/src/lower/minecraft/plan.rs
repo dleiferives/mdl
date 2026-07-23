@@ -439,6 +439,10 @@ impl LoweringPlan {
         self.target
     }
 
+    pub(crate) const fn namespace(&self) -> &PackNamespace {
+        &self.namespace
+    }
+
     pub(crate) fn selected_semantic_recipe(
         &self,
         external: ExternalOpId,

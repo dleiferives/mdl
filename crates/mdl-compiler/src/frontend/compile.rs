@@ -1390,6 +1390,50 @@ mod tests {
     }
 
     #[test]
+    fn event_handler_compiles_to_a_hidden_advancement_with_auto_revoke() {
+        let output = compile_source(
+            SourceInput::new(
+                "handler.mdl",
+                r#"on inventory_changed(.items = ["minecraft:diamond"]) |player| {
+    player.say("MDL_GOT_DIAMOND");
+}"#,
+            ),
+            &options(),
+        )
+        .unwrap();
+
+        let pack = output.emission().pack();
+        assert_eq!(
+            pack.file("data/mdl_stage6/advancement/__mdl/adv0.json")
+                .unwrap()
+                .bytes(),
+            concat!(
+                "{\"criteria\":{\"criterion\":{\"trigger\":\"minecraft:inventory_changed\",",
+                "\"conditions\":{\"items\":[{\"items\":[\"minecraft:diamond\"]}]}}},",
+                "\"requirements\":[[\"criterion\"]],",
+                "\"rewards\":{\"function\":\"mdl_stage6:__mdl/f0/b0\"}}\n",
+            )
+            .as_bytes(),
+            "the advancement JSON must have no `display` key at all, making it fully hidden"
+        );
+        assert_eq!(
+            pack.file("data/mdl_stage6/function/__mdl/f0/b0.mcfunction")
+                .unwrap()
+                .bytes(),
+            concat!(
+                "advancement revoke @s only mdl_stage6:__mdl/adv0\n",
+                "say MDL_GOT_DIAMOND\n",
+                "return 1\n",
+            )
+            .as_bytes(),
+            "the auto-revoke command must be the first line of the reward function"
+        );
+
+        let footprint = output.emission().footprint();
+        assert_eq!(footprint.advancement_files(), 1);
+    }
+
+    #[test]
     fn literal_unsafe_command_crosses_every_verified_boundary_without_becoming_safe() {
         let source = SourceInput::new(
             "unsafe.mdl",

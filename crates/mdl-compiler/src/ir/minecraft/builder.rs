@@ -8,9 +8,9 @@ use crate::source::OriginId;
 use crate::target::JavaEditionTarget;
 
 use super::{
-    CommandId, CommandNode, FunctionBody, FunctionResourceId, FunctionTag, FunctionTagEntry,
-    FunctionTagId, FunctionTagMerge, FunctionTagResourceId, McFunction, McFunctionId,
-    MinecraftProgram,
+    Advancement, AdvancementId, AdvancementResourceId, CommandId, CommandNode, Criterion,
+    FunctionBody, FunctionResourceId, FunctionTag, FunctionTagEntry, FunctionTagId,
+    FunctionTagMerge, FunctionTagResourceId, McFunction, McFunctionId, MinecraftProgram,
 };
 
 #[derive(Debug)]
@@ -34,8 +34,10 @@ pub struct MinecraftProgramBuilder {
     target: JavaEditionTarget,
     functions: EntityVec<McFunctionId, PendingFunction>,
     function_tags: EntityVec<FunctionTagId, PendingFunctionTag>,
+    advancements: EntityVec<AdvancementId, Advancement>,
     functions_by_resource: HashMap<FunctionResourceId, McFunctionId>,
     tags_by_resource: HashMap<FunctionTagResourceId, FunctionTagId>,
+    advancements_by_resource: HashMap<AdvancementResourceId, AdvancementId>,
 }
 
 impl MinecraftProgramBuilder {
@@ -46,8 +48,10 @@ impl MinecraftProgramBuilder {
             target,
             functions: EntityVec::new(),
             function_tags: EntityVec::new(),
+            advancements: EntityVec::new(),
             functions_by_resource: HashMap::new(),
             tags_by_resource: HashMap::new(),
+            advancements_by_resource: HashMap::new(),
         }
     }
 
@@ -100,6 +104,37 @@ impl MinecraftProgramBuilder {
             })
             .map_err(|EntityLimitError| BuildError::EntityLimit)?;
         self.tags_by_resource.insert(resource, id);
+        Ok(id)
+    }
+
+    /// Declares one complete advancement and returns its stable typed identity.
+    ///
+    /// Unlike a function or function tag, an advancement has no incremental
+    /// body — its criterion and reward are fully known at declaration time.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a duplicate advancement resource or exhausted entity identity space.
+    pub fn declare_advancement(
+        &mut self,
+        resource: AdvancementResourceId,
+        criterion: Criterion,
+        reward: McFunctionId,
+        origin: OriginId,
+    ) -> Result<AdvancementId, BuildError> {
+        if self.advancements_by_resource.contains_key(&resource) {
+            return Err(BuildError::DuplicateAdvancementResource(resource));
+        }
+        let id = self
+            .advancements
+            .push(Advancement::new(
+                resource.clone(),
+                criterion,
+                reward,
+                origin,
+            ))
+            .map_err(|EntityLimitError| BuildError::EntityLimit)?;
+        self.advancements_by_resource.insert(resource, id);
         Ok(id)
     }
 
@@ -204,6 +239,7 @@ impl MinecraftProgramBuilder {
                 self.target,
                 EntityVec::from_constrained_values(function_values),
                 EntityVec::from_constrained_values(tag_values),
+                self.advancements,
             )),
         }
     }
@@ -260,6 +296,8 @@ pub enum BuildError {
     DuplicateFunctionResource(FunctionResourceId),
     /// A function-tag resource was declared twice.
     DuplicateFunctionTagResource(FunctionTagResourceId),
+    /// An advancement resource was declared twice.
+    DuplicateAdvancementResource(AdvancementResourceId),
     /// A function ID does not belong to this pending store.
     InvalidFunction(McFunctionId),
     /// A function-tag ID does not belong to this pending store.
@@ -282,6 +320,12 @@ impl fmt::Display for BuildError {
                 write!(
                     formatter,
                     "function-tag resource {resource} was declared twice"
+                )
+            }
+            Self::DuplicateAdvancementResource(resource) => {
+                write!(
+                    formatter,
+                    "advancement resource {resource} was declared twice"
                 )
             }
             Self::InvalidFunction(function) => {

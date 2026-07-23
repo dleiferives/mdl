@@ -739,7 +739,8 @@ fn command_node_count(command: &crate::ir::minecraft::CommandNode) -> u64 {
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Raw(_)
         | CommandKind::Macro(_)
-        | CommandKind::FunctionWithStorage(_) => 0,
+        | CommandKind::FunctionWithStorage(_)
+        | CommandKind::AdvancementRevoke(_) => 0,
     }
 }
 

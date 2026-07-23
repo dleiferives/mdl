@@ -2,7 +2,7 @@ use crate::entity::{EntityVec, entity_id};
 use crate::source::OriginId;
 use crate::target::JavaEditionTarget;
 
-use super::{CommandNode, FunctionResourceId, FunctionTagResourceId};
+use super::{AdvancementResourceId, CommandNode, FunctionResourceId, FunctionTagResourceId};
 
 entity_id!(
     /// Identity of a function within one Minecraft program.
@@ -15,9 +15,49 @@ entity_id!(
 );
 
 entity_id!(
+    /// Identity of an advancement within one Minecraft program.
+    pub struct AdvancementId;
+);
+
+entity_id!(
     /// Identity of a top-level command within one function body.
     pub struct CommandId;
 );
+
+/// A thin validated `namespace:path` item-resource-id spelling, mirroring
+/// `ir::core::ItemMatch` at the target layer. Kept as a separate type rather
+/// than reused directly: every other IR-layer boundary in this compiler
+/// (HIR's `HirMinecraftOperationAttributes` vs. Core's
+/// `MinecraftOperationAttributes`, HIR's `HirEntityQuery` vs. Core's
+/// `EntityQueryDecl`) owns a translated copy at each layer rather than
+/// sharing one type across layers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemMatch(Box<str>);
+
+impl ItemMatch {
+    /// Wraps an already-validated item-resource-id spelling.
+    #[must_use]
+    pub fn new(id: impl Into<Box<str>>) -> Self {
+        Self(id.into())
+    }
+
+    /// Returns the validated `namespace:path` spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Closed advancement-trigger vocabulary at the target layer (Slice 1: one
+/// variant), mirroring `ir::core::Criterion`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Criterion {
+    /// `minecraft:inventory_changed`, matched against a fixed set of item IDs.
+    InventoryChanged {
+        /// At least one item resource id.
+        items: Vec<ItemMatch>,
+    },
+}
 
 /// A callable resource owned by the current program.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -261,12 +301,68 @@ impl FunctionTag {
     }
 }
 
+/// One owned advancement resource: a criterion and the reward function
+/// vanilla invokes when it is satisfied.
+///
+/// `reward` is `McFunctionId` directly, not the more general
+/// `InternalCallableRef` — a vanilla advancement's `rewards.function` is
+/// always exactly one function, never a tag, so allowing `Tag` here would
+/// model something vanilla's own JSON schema does not support.
+#[derive(Clone, Debug)]
+pub struct Advancement {
+    resource: AdvancementResourceId,
+    criterion: Criterion,
+    reward: McFunctionId,
+    origin: OriginId,
+}
+
+impl Advancement {
+    pub(super) const fn new(
+        resource: AdvancementResourceId,
+        criterion: Criterion,
+        reward: McFunctionId,
+        origin: OriginId,
+    ) -> Self {
+        Self {
+            resource,
+            criterion,
+            reward,
+            origin,
+        }
+    }
+
+    /// Returns the serialized resource identity.
+    #[must_use]
+    pub const fn resource(&self) -> &AdvancementResourceId {
+        &self.resource
+    }
+
+    /// Returns the closed trigger criterion.
+    #[must_use]
+    pub const fn criterion(&self) -> &Criterion {
+        &self.criterion
+    }
+
+    /// Returns the reward function invoked when the criterion is satisfied.
+    #[must_use]
+    pub const fn reward(&self) -> McFunctionId {
+        self.reward
+    }
+
+    /// Returns declaration provenance.
+    #[must_use]
+    pub const fn origin(&self) -> OriginId {
+        self.origin
+    }
+}
+
 /// A complete immutable Minecraft target program.
 #[derive(Debug)]
 pub struct MinecraftProgram {
     target: JavaEditionTarget,
     functions: EntityVec<McFunctionId, McFunction>,
     function_tags: EntityVec<FunctionTagId, FunctionTag>,
+    advancements: EntityVec<AdvancementId, Advancement>,
 }
 
 impl MinecraftProgram {
@@ -274,11 +370,13 @@ impl MinecraftProgram {
         target: JavaEditionTarget,
         functions: EntityVec<McFunctionId, McFunction>,
         function_tags: EntityVec<FunctionTagId, FunctionTag>,
+        advancements: EntityVec<AdvancementId, Advancement>,
     ) -> Self {
         Self {
             target,
             functions,
             function_tags,
+            advancements,
         }
     }
 
@@ -312,6 +410,20 @@ impl MinecraftProgram {
         &self,
     ) -> impl ExactSizeIterator<Item = (FunctionTagId, &FunctionTag)> + '_ {
         self.function_tags.iter()
+    }
+
+    /// Looks up one owned advancement.
+    #[must_use]
+    pub fn advancement(&self, advancement: AdvancementId) -> Option<&Advancement> {
+        self.advancements.get(advancement)
+    }
+
+    /// Iterates owned advancements in declaration order.
+    #[must_use]
+    pub fn advancements(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (AdvancementId, &Advancement)> + '_ {
+        self.advancements.iter()
     }
 }
 

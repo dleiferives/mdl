@@ -8,7 +8,7 @@ use crate::datapack::{
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::entity::EntityVec;
 use crate::ir::minecraft::{
-    ExternalCallableRef, ExternalTagRequirement, FunctionTagEntryKind, FunctionTagMerge,
+    Criterion, ExternalCallableRef, ExternalTagRequirement, FunctionTagEntryKind, FunctionTagMerge,
     InternalCallableRef, MinecraftProgram, PackPath, RenderError, render_function, verify_program,
 };
 use crate::source::{OriginId, SourceContext};
@@ -105,6 +105,17 @@ pub fn emit_datapack(
                 tag.resource().pack_path(program.target()),
                 bytes,
                 ArtifactFileKind::FunctionTag,
+            )),
+            Err(diagnostic) => findings.push(diagnostic),
+        }
+    }
+
+    for (_, advancement) in program.advancements() {
+        match serialize_advancement(program, advancement) {
+            Ok(bytes) => files.push(PackFile::new(
+                advancement.resource().pack_path(program.target()),
+                bytes,
+                ArtifactFileKind::Advancement,
             )),
             Err(diagnostic) => findings.push(diagnostic),
         }
@@ -223,6 +234,97 @@ fn serialize_tag(
                 tag.resource()
             ),
             tag.origin(),
+        )
+    })?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+/// The vanilla advancement JSON shape, restricted to the closed
+/// `criteria`/`requirements`/`rewards` triple PS-15 emits. `display` is
+/// never a field on this struct at all — its complete absence, not a null
+/// or empty value, is what makes the advancement fully hidden (no toast, no
+/// tree entry): `notes/compiler/advancement-triggers.md` Part 1.1, verified
+/// live against the pinned server before shipping.
+#[derive(Serialize)]
+struct AdvancementJson {
+    criteria: CriteriaJson,
+    requirements: [[&'static str; 1]; 1],
+    rewards: RewardsJson,
+}
+
+#[derive(Serialize)]
+struct CriteriaJson {
+    criterion: CriterionJson,
+}
+
+#[derive(Serialize)]
+struct CriterionJson {
+    trigger: &'static str,
+    conditions: ConditionsJson,
+}
+
+#[derive(Serialize)]
+struct ConditionsJson {
+    items: Vec<ItemPredicateJson>,
+}
+
+#[derive(Serialize)]
+struct ItemPredicateJson {
+    items: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RewardsJson {
+    function: String,
+}
+
+const ADVANCEMENT_CRITERION_NAME: &str = "criterion";
+
+fn serialize_advancement(
+    program: &MinecraftProgram,
+    advancement: &crate::ir::minecraft::Advancement,
+) -> Result<Vec<u8>, Diagnostic> {
+    let function = program.function(advancement.reward()).ok_or_else(|| {
+        Diagnostic::new(
+            "datapack.invalid-advancement-reward",
+            format!(
+                "cannot resolve reward function for advancement {}",
+                advancement.resource()
+            ),
+            advancement.origin(),
+        )
+    })?;
+    let (trigger, conditions) = match advancement.criterion() {
+        Criterion::InventoryChanged { items } => (
+            "minecraft:inventory_changed",
+            ConditionsJson {
+                items: vec![ItemPredicateJson {
+                    items: items.iter().map(|item| item.as_str().to_owned()).collect(),
+                }],
+            },
+        ),
+    };
+    let mut bytes = serde_json::to_vec(&AdvancementJson {
+        criteria: CriteriaJson {
+            criterion: CriterionJson {
+                trigger,
+                conditions,
+            },
+        },
+        requirements: [[ADVANCEMENT_CRITERION_NAME]],
+        rewards: RewardsJson {
+            function: function.resource().to_string(),
+        },
+    })
+    .map_err(|error| {
+        Diagnostic::new(
+            "datapack.advancement-json",
+            format!(
+                "failed to serialize advancement {}: {error}",
+                advancement.resource()
+            ),
+            advancement.origin(),
         )
     })?;
     bytes.push(b'\n');
@@ -432,7 +534,7 @@ mod tests {
         assert_eq!(
             footprint.dump(),
             concat!(
-                "artifact-footprint files=4 metadata=1 functions=2 function-tags=1 function-lines=1 utf8-bytes=156 max-function-line-utf16=10 trace-records=1\n",
+                "artifact-footprint files=4 metadata=1 functions=2 function-tags=1 advancements=0 function-lines=1 utf8-bytes=156 max-function-line-utf16=10 trace-records=1\n",
                 "file data/mdl/function/empty.mcfunction kind=Function utf8-bytes=0\n",
                 "file data/mdl/function/entry.mcfunction kind=Function utf8-bytes=11\n",
                 "file data/mdl/tags/function/entries.json kind=FunctionTag utf8-bytes=63\n",

@@ -249,6 +249,7 @@ pub enum CommandStepClass {
     Data(DataCommandClass),
     Say,
     Teleport,
+    AdvancementRevoke,
     Execute {
         modifiers: Box<[ExecuteModifierClass]>,
         run: Box<CommandStepClass>,
@@ -268,6 +269,7 @@ impl CommandStepClass {
             CommandKind::Data(command) => Self::Data(DataCommandClass::classify(command)),
             CommandKind::Say(_) => Self::Say,
             CommandKind::Teleport(_) => Self::Teleport,
+            CommandKind::AdvancementRevoke(_) => Self::AdvancementRevoke,
             CommandKind::Execute(command) => Self::Execute {
                 modifiers: command
                     .modifiers()

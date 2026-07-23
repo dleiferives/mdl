@@ -7,8 +7,8 @@ use crate::target::JavaEditionTarget;
 
 use super::macro_command::MacroCommand;
 use super::{
-    CallableRef, DataCommand, ExecuteCommand, SayCommand, ScoreCommand, StoragePath,
-    TeleportCommand,
+    AdvancementRevokeCommand, CallableRef, DataCommand, ExecuteCommand, SayCommand, ScoreCommand,
+    StoragePath, TeleportCommand,
 };
 
 /// Initial maximum nesting depth for recursive commands.
@@ -65,7 +65,8 @@ impl CommandNode {
             | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
             | CommandKind::Raw(_)
             | CommandKind::Macro(_)
-            | CommandKind::FunctionWithStorage(_) => 0,
+            | CommandKind::FunctionWithStorage(_)
+            | CommandKind::AdvancementRevoke(_) => 0,
         }
     }
 
@@ -105,6 +106,8 @@ pub enum CommandKind {
     Macro(MacroCommand),
     /// A function invocation with storage macro arguments.
     FunctionWithStorage(FunctionWithStorage),
+    /// Self-revoke an advancement (the PS-15 auto-revoke idiom).
+    AdvancementRevoke(AdvancementRevokeCommand),
 }
 
 /// One typed function or function-tag invocation.

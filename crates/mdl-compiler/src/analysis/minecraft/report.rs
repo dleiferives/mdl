@@ -68,6 +68,7 @@ pub struct TargetExecutionCensus {
     data_commands: usize,
     say_commands: usize,
     teleport_commands: usize,
+    advancement_revoke_commands: usize,
     return_commands: usize,
     raw_commands: usize,
 }
@@ -95,6 +96,7 @@ impl TargetExecutionCensus {
         (data_commands, data_commands),
         (say_commands, say_commands),
         (teleport_commands, teleport_commands),
+        (advancement_revoke_commands, advancement_revoke_commands),
         (return_commands, return_commands),
         (raw_commands, raw_commands),
     );
@@ -138,6 +140,10 @@ impl TargetExecutionCensus {
                 self.function_calls = self.function_calls.checked_add(1)?;
             }
             CommandKind::Raw(_) => self.raw_commands = self.raw_commands.checked_add(1)?,
+            CommandKind::AdvancementRevoke(_) => {
+                self.advancement_revoke_commands =
+                    self.advancement_revoke_commands.checked_add(1)?;
+            }
             CommandKind::Execute(command) => {
                 self.execute_stages = self.execute_stages.checked_add(command.modifiers().len())?;
                 for modifier in command.modifiers().as_slice() {

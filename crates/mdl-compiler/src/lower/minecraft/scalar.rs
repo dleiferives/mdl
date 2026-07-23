@@ -847,7 +847,7 @@ mod tests {
         let plan = plan_builder.finish(&core, &analyses).unwrap();
         let block = core.function(function).unwrap().body().unwrap().entry();
         let planned = plan.block_function(function, block).unwrap();
-        let mut construction = TargetConstruction::declare(&plan).unwrap();
+        let mut construction = TargetConstruction::declare(&core, &plan).unwrap();
         construction.define_initialization(&plan).unwrap();
         let mut context = construction
             .begin_function(

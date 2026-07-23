@@ -176,6 +176,10 @@ fn render_command(
                 call.storage.path()
             ))
         }
+        CommandKind::AdvancementRevoke(command) => {
+            sink.push_checked("advancement revoke @s only ")?;
+            sink.write_arguments(format_args!("{}", command.resource()))
+        }
     }
 }
 

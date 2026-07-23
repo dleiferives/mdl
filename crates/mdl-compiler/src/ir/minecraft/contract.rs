@@ -75,6 +75,10 @@ impl EffectCategories {
     /// `ENTITY_QUERY`: a block position is never ambiguous/forking the way
     /// a selector predicate can be.
     pub const BLOCK_QUERY: Self = Self(1 << 8);
+    /// Mutates per-player advancement state. Distinct from `ENTITY_WRITE`:
+    /// advancement progress is not entity NBT/position state, and optimizer
+    /// passes must not assume the two commute or alias the same way.
+    pub const ADVANCEMENT_WRITE: Self = Self(1 << 9);
 
     /// Returns the union of two category sets.
     #[must_use]
@@ -366,6 +370,19 @@ fn contract_for_kind(kind: &CommandKind) -> CommandContract {
             EffectSummary::Unknown,
             ContextSummary::Unknown,
             ForkClass::UNKNOWN,
+        ),
+        // Native outcome (the exact success count `advancement revoke` returns)
+        // is deliberately left at the `new` default of `Unknown` — it has not
+        // been measured against the pinned server yet, unlike every other fact
+        // here, which the compiler knows precisely because it only ever
+        // generates this exact self/only shape.
+        CommandKind::AdvancementRevoke(_) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::ADVANCEMENT_WRITE),
+            ContextSummary::Known {
+                reads: ContextMask::EXECUTOR,
+                changes: ContextMask::NONE,
+            },
+            ForkClass::NEVER,
         ),
         CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail) => CommandContract::new(
             EffectSummary::Known(EffectCategories::CONTROL),

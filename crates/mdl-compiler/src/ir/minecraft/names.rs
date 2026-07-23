@@ -19,6 +19,8 @@ pub enum NameKind {
     FunctionResource,
     /// A function-tag resource identifier.
     FunctionTagResource,
+    /// An advancement resource identifier.
+    AdvancementResource,
     /// A storage resource identifier.
     Storage,
     /// A dimension resource identifier.
@@ -36,6 +38,7 @@ impl fmt::Display for NameKind {
             Self::PackResourcePath => "pack resource path",
             Self::FunctionResource => "function resource identifier",
             Self::FunctionTagResource => "function-tag resource identifier",
+            Self::AdvancementResource => "advancement resource identifier",
             Self::Storage => "storage identifier",
             Self::Dimension => "dimension identifier",
             Self::PackPath => "pack path",
@@ -499,6 +502,28 @@ impl FunctionTagResourceId {
             "data/{}/{}/{}.json",
             self.namespace().as_str(),
             spec.function_tag_directory(),
+            self.path().as_str()
+        ))
+    }
+}
+
+resource_id!(
+    /// An advancement resource identifier that maps safely into a datapack.
+    AdvancementResourceId,
+    PackNamespace,
+    PackResourcePath,
+    NameKind::AdvancementResource
+);
+
+impl AdvancementResourceId {
+    /// Maps this resource into its target-specific advancement artifact path.
+    #[must_use]
+    pub fn pack_path(&self, target: JavaEditionTarget) -> PackPath {
+        let spec = target.spec();
+        PackPath::from_generated(format!(
+            "data/{}/{}/{}.json",
+            self.namespace().as_str(),
+            spec.advancement_directory(),
             self.path().as_str()
         ))
     }

@@ -110,6 +110,13 @@ fn write_command(
         CommandKind::FunctionWithStorage(call) => {
             { write!(output, "function-with-storage target={:?}", call.target) }?;
         }
+        CommandKind::AdvancementRevoke(command) => {
+            write!(
+                output,
+                "advancement.revoke resource={:?}",
+                command.resource()
+            )?;
+        }
     }
     output.write_char('\n')
 }

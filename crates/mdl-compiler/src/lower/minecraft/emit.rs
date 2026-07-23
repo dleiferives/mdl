@@ -199,7 +199,7 @@ pub(crate) fn construct_program(
     core: &CoreProgram,
     plan: &LoweringPlan,
 ) -> Result<ConstructedProgram, Diagnostics> {
-    let mut target = TargetConstruction::declare(plan)?;
+    let mut target = TargetConstruction::declare(core, plan)?;
     let mut commands = ConstructionMap::new(core)?;
     target.define_initialization(plan)?;
     define_external_helpers(&mut target, core, plan, &mut commands)?;
@@ -3216,7 +3216,8 @@ mod tests {
                 | CommandKind::Teleport(_)
                 | CommandKind::Raw(_)
                 | CommandKind::Macro(_)
-                | CommandKind::FunctionWithStorage(_) => {
+                | CommandKind::FunctionWithStorage(_)
+                | CommandKind::AdvancementRevoke(_) => {
                     panic!("loop lowering emitted a non-score primitive")
                 }
             }

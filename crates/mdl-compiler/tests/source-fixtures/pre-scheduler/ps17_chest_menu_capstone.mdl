@@ -1,0 +1,29 @@
+// MDL: success
+// PS-17: the chest-menu capstone -- composes PS-13 (bot infrastructure),
+// PS-14 (Player), PS-15 (on-handlers), and PS-16 (whole-slot writes). Each
+// button is its own `on inventory_changed` handler, one per distinct item ID
+// (Slice 1's `ItemMatch` is item-ID-only, not per-instance). Screen 2's only
+// button (`minecraft:redstone_block`) is created solely by the gold-ingot
+// handler's write -- clicking it succeeding on the real pinned server is the
+// observable proof the write actually landed, not just that it compiled.
+// HIR: on reward=@0 inventory_changed items=["minecraft:emerald"]
+// HIR: on reward=@1 inventory_changed items=["minecraft:gold_ingot"]
+// HIR: on reward=@2 inventory_changed items=["minecraft:redstone_block"]
+// CORE: entity_nbt_write
+// PACK-COUNT-3: "trigger":"minecraft:inventory_changed"
+
+on inventory_changed(.items = ["minecraft:emerald"]) |player| {
+    player.say("MDL_TELEPORTED");
+    player.teleport(10, -60, 10);
+}
+
+on inventory_changed(.items = ["minecraft:gold_ingot"]) |player| {
+    mc.block(Chest, 0, 4, 0).Items[0] = .{.id = "minecraft:air", .count = 1};
+    mc.block(Chest, 0, 4, 0).Items[1] = .{.id = "minecraft:redstone_block", .count = 1};
+    player.say("MDL_SCREEN_2");
+}
+
+on inventory_changed(.items = ["minecraft:redstone_block"]) |player| {
+    unsafe minecraft("give @s minecraft:stick 1");
+    player.say("MDL_REWARD");
+}

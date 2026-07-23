@@ -945,3 +945,86 @@ Evidence:
 
 - [`../../tests/programs/brainfuck/cases.json`](../../tests/programs/brainfuck/cases.json)
 - [`../../crates/mdl-test/tests/ps3_brainfuck.rs`](../../crates/mdl-test/tests/ps3_brainfuck.rs)
+
+## A-028 — Dimension reconstruction across a `schedule`/`#minecraft:tick` boundary is
+unmeasured, not merely unknown
+
+**Status:** compile-time unknown; measurement attempted and invalidated 2026-07-23.
+
+Stage 9's cut-legality rule (domain 4) requires knowing what execution context —
+including dimension — a scheduled or tick-tag-fired function actually receives.
+Executor loss and the ambient default *position* (the world spawn point, not the
+scheduling site) are confirmed
+([`stage-9/9-0-contracts-and-evidence.md`](stage-9/9-0-contracts-and-evidence.md),
+M14), but the dimension component was not successfully measured. The attempted test
+(schedule from `execute in minecraft:the_nether`, then probe which dimension a
+`~ ~ ~`-summoned marker lands in) produced a self-contradictory result: both an
+overworld-scoped and a nether-scoped presence check matched the same,
+definitely-overworld-resident test entity. A follow-up diagnostic
+(`recon_dimension_selector_scoping` in the same test file) found that
+`execute in <dim> as/if entity @e[...]` did not reliably filter by dimension under
+this harness's test conditions even after fixing an initial modifier-ordering bug
+(`as @e[...] in <dim>` evaluates the selector before `in` takes effect, which is a
+real, separate finding worth remembering on its own).
+
+The compiler must not assume "self-rooting reduces to overworld" (or any other
+specific dimension) for 9B's scheduled/tick-tag entries until a redesigned
+measurement — forceloading the relevant chunk in *every* candidate dimension before
+testing, and verifying `execute in <dim> as @e[...]`'s filtering semantics in
+isolation first — produces a trustworthy answer. Until then, dimension context
+should be treated as `ContextRequirement::Unknown` rather than assumed `None`
+wherever the generated-entry-requirement check (`AmbientContextRequirements`,
+`crates/mdl-compiler/src/ir/semantic/behavior.rs`) is applied to a scheduled entry's
+dimension component specifically.
+
+## A-029 — Player-presence selector leakage into a scheduled/tick-tag function is
+unmeasured
+
+**Status:** compile-time unknown; not yet attempted.
+
+Whether a fired `schedule`/`#minecraft:tick` function's default entity-selector
+state (e.g. `@e[limit=1,sort=nearest]` with no other constraint) can be influenced
+by, or leak information from, a connected player being nearby versus absent was
+planned as measurement M16 in
+[`stage-9/9-0-contracts-and-evidence.md`](stage-9/9-0-contracts-and-evidence.md)
+but was not run in the 2026-07-23 pass — it requires a real Azalea client
+(`crates/mdl-test-bot::BotHandle`) standing alongside the frozen-tick harness, which
+was out of scope for that pass's time budget. Executor loss itself (M14) is already
+confirmed without a connected player; this entry covers only the narrower
+"does a *present* player change anything" question. Treat as unmeasured, not as
+implicitly "no" by absence of a demonstrated leak.
+
+## A-030 — `append`-mode reload duplication hazard is real datapack practice but
+unreproduced
+
+**Status:** unspecified behavior; negative measurement recorded 2026-07-23, not
+otherwise explained.
+
+`spawn-animations` (see
+[`../functionality-keystones/datapacks/spawn-animations/NOTES.md`](../functionality-keystones/datapacks/spawn-animations/NOTES.md))
+defends its load-time self-reschedule with an explicit `schedule clear` before a
+fresh `schedule function ... 1s`, citing the risk that `/reload` would otherwise
+stack a duplicate chain. Stage 9.0 measured `replace`-based re-arm (safe, confirmed,
+M12) and `append`-based re-arm at both a matched delay (safe, M13a — consistent with
+M7's finding that `append` at an already-pending target tick is a no-op) and a
+deliberately *mismatched* delay modeled on `spawn-animations`'s own shape (5t
+internal chain, 3t load-time re-arm, M13b) intended to reproduce the hazard `append`
++ a different target tick should, per M8, be able to create. **It did not
+reproduce**: `loop_count` advanced by exactly the single-chain expected amount with
+no excess.
+
+This is recorded as an honest negative result, not resolved into either "the hazard
+does not exist" or "this test failed to trigger it for an identifiable reason." Does
+not block any current Stage 9 decision — MDL's own lowering uses `replace`
+unconditionally per the plan's frozen decision, sidestepping the question — but a
+future session investigating `append`-mode scheduling more deeply (or citing
+`spawn-animations` as evidence of a specific hazard) should re-run and extend this
+measurement rather than assume either this note's negative result or the datapack
+author's defensive practice settles the question.
+
+Evidence:
+
+- [`../../crates/mdl-test/tests/stage9_0_schedule_tick_evidence.rs`](../../crates/mdl-test/tests/stage9_0_schedule_tick_evidence.rs)
+  (`group4_reload_rearm_hazard`, `group5_execution_context_loss`,
+  `recon_dimension_selector_scoping`)
+- [`stage-9/9-0-contracts-and-evidence.md`](stage-9/9-0-contracts-and-evidence.md)

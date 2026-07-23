@@ -39,6 +39,9 @@
 - [PS-3 Brainfuck capstone plan](pre-scheduler/ps-3-brainfuck-capstone-plan.md)
 - [PS-3 implementation checklist](pre-scheduler/ps-3-brainfuck-capstone-todo.md)
 - [PS-3 to Stage 9 handoff](pre-scheduler/ps-3-handoff.md)
+- [Stage 9 persistent continuations and scheduling plan](stage-9-plan.md)
+- [Stage 9 implementation checklist](stage-9-todo.md)
+- [Stage 9 per-tranche design dossiers](stage-9/README.md)
 - [Post-Stage-8 aggregate value client plan](aggregate-values-plan.md)
 - [Historical Stage 7A module handoff](stage-6-modules-plan.md)
 - [Historical Stage 7B effect/raw-command handoff](stage-6-effects-plan.md)
@@ -90,5 +93,8 @@ products; the full 0..99-page typed book adapter runs the split-page `A` showcas
 pinned Java 26.2 under every policy, with wrong-item and malformed-book cases kept
 distinct. Exact artifact/cost evidence is pinned and sequence-cycle uncertainty is
 retained honestly. Persistent continuations and multi-tick scheduling are now Stage
-9; general language metaprogramming and broader runtime interpolation remain later
-work.
+9, whose plan is written and not yet started: one boundary/crossing model (a tick
+boundary is a forced cut, the same value-materialization operation as a macro cut)
+carrying three layered capabilities — an opt-in one-tick bound contract, recurring
+scheduling with no continuation, and compiler-partitioned persistent continuations.
+General language metaprogramming and broader runtime interpolation remain later work.

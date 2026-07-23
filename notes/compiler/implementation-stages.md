@@ -576,8 +576,29 @@ in [`pre-scheduler/ps-3-handoff.md`](pre-scheduler/ps-3-handoff.md).
 
 ## Stage 9: Persistent continuations and static multi-tick scheduling
 
+Status: **9.0 (contracts and pinned-server evidence) complete; 9A/9B/9C not
+started.** The authoritative design and execution order are in
+[`stage-9-plan.md`](stage-9-plan.md), with the checklist in
+[`stage-9-todo.md`](stage-9-todo.md) and per-tranche dossiers in
+[`stage-9/`](stage-9/README.md). 9.0 measured `schedule`/`schedule clear`/
+`#minecraft:tick` behavior directly against the pinned Java 26.2 server and froze
+five of the plan's six semantic decisions without qualification (the sixth,
+cut-legality, is frozen for executor/position and open for dimension
+reconstruction) — see
+[`stage-9/9-0-contracts-and-evidence.md`](stage-9/9-0-contracts-and-evidence.md).
+
 Add suspension and lower already-correct synchronous work according to bounds and
-target budgets:
+target budgets. The plan organizes this as one boundary/crossing model — a tick
+boundary is a forced cut, the same value-materialization operation as a macro cut, so
+Stage 9 generalizes the existing crossing engine rather than building a separate
+scheduler — carrying three layered capabilities in dependency order:
+
+- an opt-in one-tick bound contract (promote existing bound analysis to a hard error);
+- recurring scheduling with no continuation (`schedule`/`schedule clear`/
+  `#minecraft:tick`, argument-free self-rooting functions, all state external); and
+- compiler-partitioned persistent continuations (resume discriminant, liveness-lifted
+  live state, explicit yield plus schedulable-loop auto-partition at iteration
+  boundaries), with:
 
 - static continuation phases across ticks;
 - explicit live-state preservation at yield points.

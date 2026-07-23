@@ -177,6 +177,26 @@ to hardcode that composition — it falls out for free once both exist.
 - Anything to do with reading NBT — that's [`block-entity-nbt-paths.md`](block-entity-nbt-paths.md)
   entirely; this note is push, that note is pull.
 
+### Live-measured finding (PS-15 implementation, pinned server): pick example items carefully
+
+`minecraft:diamond` — this note's and the PS-15 doc's own illustrative `.items = [...]` example —
+is *also* the trigger item of a real, visible, built-in vanilla advancement
+(`minecraft:story/mine_diamond`, display name "Diamonds!"). Giving a bot a diamond to satisfy a
+compiler-generated hidden advancement's criterion **also** satisfies vanilla's own unrelated
+advancement, which broadcasts `<player> has made the advancement [Diamonds!]` to server
+chat/console — confirmed live against the pinned 26.2 server, not assumed. This is not a bug in
+the hidden-advancement mechanism (it is vanilla's *own*, separate, permanently-one-shot
+advancement firing, fully independent of anything this compiler emits) but it is a real trap for
+any test or example that tries to confirm "an advancement with no `display` key never
+broadcasts anything" using `minecraft:diamond` as the probe item: the first grant's log window is
+unavoidably confounded by vanilla's own broadcast. PS-15's own pinned test
+(`crates/mdl-test-bot/tests/ps15_advancement_inventory_changed.rs`) works around this by only
+checking for absence of a broadcast in the *second* grant's window, after vanilla's own one-shot
+copy has already permanently fired and can never broadcast again — at that point any broadcast
+seen could only come from MDL's own (auto-revoked, re-fired) hidden advancement. A future
+milestone choosing its own illustrative/test item should either accept this same two-grant
+structure or pick an item with no coincidental vanilla advancement tie-in.
+
 ## Sources
 
 - [Advancement definition – Minecraft Wiki](https://minecraft.wiki/w/Advancement_definition) —

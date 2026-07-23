@@ -1,0 +1,15 @@
+// MDL: success
+// PS-15: the minimal Slice 1 shape -- a hidden `minecraft:inventory_changed`
+// advancement whose reward runs `player.say(...)` with `player` seeded as an
+// ambient executor capture (Established{Player}), never a source-level
+// query. The auto-revoke command is compiler-injected, not written here.
+// HIR: on reward=@0 inventory_changed items=["minecraft:diamond"]
+// HIR: entry-capture Executor<Player>
+// CORE: advancement @adv0 reward=@fn0 inventory_changed items=["minecraft:diamond"]
+// TARGET: advancement.revoke resource=
+// PACK: "trigger":"minecraft:inventory_changed"
+// PACK-NOT: "display"
+
+on inventory_changed(.items = ["minecraft:diamond"]) |player| {
+    player.say("MDL_GOT_DIAMOND");
+}

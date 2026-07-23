@@ -5,9 +5,9 @@ use std::fmt;
 use std::fmt::Write;
 
 use super::{
-    BlockTarget, CoreOp, CoreProgram, Diagnostics, ExternalSemanticBinding, FunctionBody,
-    FunctionId, MinecraftOperationAttributes, Operand, RunModifierInstance, TargetFragment,
-    TerminatorKind, ValueId, verify_program,
+    BlockTarget, CoreOp, CoreProgram, Criterion, Diagnostics, ExternalSemanticBinding,
+    FunctionBody, FunctionId, MinecraftOperationAttributes, Operand, RunModifierInstance,
+    TargetFragment, TerminatorKind, ValueId, verify_program,
 };
 use crate::entity::EntityId;
 use crate::source::SourceContext;
@@ -633,6 +633,27 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             let _ = write!(output, "{ty}");
         }
         output.push_str(")\n");
+    }
+    for (advancement, declaration) in program.advancements() {
+        let _ = write!(
+            output,
+            "advancement @adv{} reward=@fn{} ",
+            advancement.index(),
+            declaration.reward().index()
+        );
+        match declaration.criterion() {
+            Criterion::InventoryChanged { items } => {
+                let _ = write!(output, "inventory_changed items=[");
+                for (index, item) in items.iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(", ");
+                    }
+                    let _ = write!(output, "{:?}", item.as_str());
+                }
+                output.push(']');
+            }
+        }
+        let _ = writeln!(output);
     }
 }
 

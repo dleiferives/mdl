@@ -61,6 +61,21 @@ fn write_program(program: &MinecraftProgram, output: &mut impl fmt::Write) -> fm
             output.write_char('\n')?;
         }
     }
+    for (advancement, data) in program.advancements() {
+        write!(
+            output,
+            "advancement {advancement:?} resource={} reward={:?} origin={:?} ",
+            data.resource(),
+            data.reward(),
+            data.origin()
+        )?;
+        match data.criterion() {
+            super::Criterion::InventoryChanged { items } => {
+                write!(output, "inventory_changed items={items:?}")?;
+            }
+        }
+        output.write_char('\n')?;
+    }
     Ok(())
 }
 

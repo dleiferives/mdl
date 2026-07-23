@@ -1,11 +1,12 @@
 # PS-13 through PS-17 — Player Interaction and the Chest-Menu Capstone
 
-Status: **PS-13, PS-14, PS-15 complete; PS-16 fully researched and ready to implement
-(a real dangerous-behavior finding changed its scope — see its own document); PS-17
-planned at the milestone
-level.** Each milestone has its own document; this file is the index and the shared
-dependency rationale, mirroring how `roadmap.md` itself indexes PS-1 through PS-5
-rather than containing their full detail inline.
+Status: **PS-13, PS-14, PS-15 complete; PS-16 and PS-17 both fully researched and
+ready to implement, in dependency order (PS-16's own document has a real
+dangerous-behavior finding that changed its scope; PS-17's has a concrete two-screen
+program design and a resolved `give` decision).** Each milestone has its own document;
+this file is the index and the shared dependency rationale, mirroring how
+`roadmap.md` itself indexes PS-1 through PS-5 rather than containing their full
+detail inline.
 
 ## Why this sequence exists
 
@@ -34,7 +35,7 @@ now; PS-13 crosses it.
 | PS-14 ✅ | `EntityKind::Player` | [ps-14-player-entity-kind.md](ps-14-player-entity-kind.md) |
 | PS-15 ✅ | Advancement-triggered events (the push model) | [ps-15-advancement-triggered-events.md](ps-15-advancement-triggered-events.md) |
 | PS-16 🔬 | Block-entity NBT writes (BE-2) — researched, ready to implement | [ps-16-block-entity-nbt-writes.md](ps-16-block-entity-nbt-writes.md) |
-| PS-17 | Capstone: `tests/programs/chest-menu`, composition only | [ps-17-chest-menu-capstone.md](ps-17-chest-menu-capstone.md) |
+| PS-17 🔬 | Capstone: `tests/programs/chest-menu`, composition only — researched, ready to implement once PS-16 lands | [ps-17-chest-menu-capstone.md](ps-17-chest-menu-capstone.md) |
 
 Dependency order is strict and linear — each milestone depends on every one before it,
 with the partial exception of PS-16 (depends only on BE-1, not PS-13/14/15; see its own
@@ -61,10 +62,11 @@ evaluator gate before the next dependent slice treats it as established."
   PS-16 already has a known instance of the same risk before implementation even
   starts (see its document's "Verify against current implementation" section).
 
-## Open, not yet decided, and not owned by any single one of the five documents
+## Resolved along the way, recorded here so it isn't re-litigated
 
 - `give` has no typed builtin today (only `Say`/`TeleportCurrentExecutor`/
-  `MoveCurrentExecutorBy` exist). Scoped to PS-17's document as a decision to make
-  there, since it's the first and so far only milestone that needs it.
+  `MoveCurrentExecutorBy` exist), and PS-17's own document resolves this: stay
+  `unsafe minecraft("give @s ...")`, don't add a typed builtin for a capability only
+  one milestone in this whole sequence needs.
 - Whether PS-13's bot capability belongs in `mdl-test` directly or a new sibling crate
   is scoped to PS-13's document as an implementation-time call.

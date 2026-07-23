@@ -1,12 +1,16 @@
 # PS-13 through PS-17 — Player Interaction and the Chest-Menu Capstone
 
-Status: **PS-13, PS-14, PS-15, PS-16 complete; PS-17 fully researched and ready to
-implement (PS-16's own document has a real dangerous-behavior finding that changed
-its scope, confirmed against the real pinned server once implemented; PS-17's has a
-concrete two-screen program design and a resolved `give` decision).** Each milestone
-has its own document; this file is the index and the shared dependency rationale,
-mirroring how `roadmap.md` itself indexes PS-1 through PS-5 rather than containing
-their full detail inline.
+Status: **PS-13 through PS-17 all complete (2026-07-23).** PS-16's own document has a
+real dangerous-behavior finding that changed its scope, confirmed against the real
+pinned server once implemented. PS-17 shipped its recommended two-screen, three-button
+design unchanged, with a resolved `give` decision and two real findings of its own
+surfaced while writing the pinned-server walkthrough (this harness's flat-world floor
+sits at `y=-60`, not the `y=4` every earlier test in this sequence floated things at;
+a clicked button item left in the player's inventory can let an unrelated later `tp`
+spuriously refire an auto-revoked handler) — see its own document's status line for
+detail. Each milestone has its own document; this file is the index and the shared
+dependency rationale, mirroring how `roadmap.md` itself indexes PS-1 through PS-5
+rather than containing their full detail inline.
 
 ## Why this sequence exists
 
@@ -35,7 +39,7 @@ now; PS-13 crosses it.
 | PS-14 ✅ | `EntityKind::Player` | [ps-14-player-entity-kind.md](ps-14-player-entity-kind.md) |
 | PS-15 ✅ | Advancement-triggered events (the push model) | [ps-15-advancement-triggered-events.md](ps-15-advancement-triggered-events.md) |
 | PS-16 ✅ | Block-entity NBT writes (BE-2) | [ps-16-block-entity-nbt-writes.md](ps-16-block-entity-nbt-writes.md) |
-| PS-17 🔬 | Capstone: `tests/programs/chest-menu`, composition only — researched, ready to implement once PS-16 lands | [ps-17-chest-menu-capstone.md](ps-17-chest-menu-capstone.md) |
+| PS-17 ✅ | Capstone: `tests/programs/chest-menu`, composition only | [ps-17-chest-menu-capstone.md](ps-17-chest-menu-capstone.md) |
 
 Dependency order is strict and linear — each milestone depends on every one before it,
 with the partial exception of PS-16 (depends only on BE-1, not PS-13/14/15; see its own

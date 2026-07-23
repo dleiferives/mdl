@@ -1,11 +1,25 @@
 # PS-17 — Capstone: `tests/programs/chest-menu`
 
-Status: **planned, researched to an implementation handoff (2026-07-22).** Depends on
-PS-13, PS-14, PS-15 (all complete) and PS-16 (researched, not yet implemented — do not
-start PS-17 before PS-16 lands and its own pinned-server gate passes). No new compiler
-capability — same role PS-3 (Brainfuck) played for PS-2: compose existing capabilities
-into one real program. This document is written for a fresh agent with no memory of
-prior sessions, and is grounded in PS-15's actual landed test
+Status: **implemented and landed (2026-07-23).** The recommended minimal design shipped
+unchanged: `crates/mdl-compiler/tests/source-fixtures/pre-scheduler/ps17_chest_menu_capstone.mdl`
+(three `on inventory_changed` handlers, zero new Core ops/recipes/checker special-cases)
+and `crates/mdl-test-bot/tests/ps17_chest_menu_capstone.rs` (a real bot clicking through
+both screens on the pinned Java 26.2 server), both passing. Both open questions below were
+confirmed directly before implementation: `player.teleport(...)` is callable on an
+`on`-handler's `player` capture the same way `say` is (`frontend/check.rs`'s
+`check_event_handler` establishes the same executor-capture context both methods dispatch
+through — no `run.as(player) { ... }` wrap needed), and PS-16's write API cleanly clears a
+slot via `.{id: "minecraft:air", ...}` with no "Serialization errors" warning. Writing the
+pinned-server walkthrough also surfaced two real findings not anticipated by this document:
+this test harness's flat world floor sits at `y=-60`, not `y=4` (every earlier PS-13–17 test
+floats blocks/players at `y=4` without ever needing them to rest there — this milestone's own
+position-check assertion was the first to depend on standing still), and leaving a clicked
+button item in the player's inventory lets an unrelated later `tp` spuriously re-satisfy the
+auto-revoked `inventory_changed` criterion and refire the handler mid-reposition, worked
+around by clearing the item before moving the bot back to the chest. This document is
+retained for the research and design that shaped the implementation; it was originally
+written for a fresh agent with no memory of prior sessions, and is grounded in PS-15's actual
+landed test
 (`crates/mdl-test-bot/tests/ps15_advancement_inventory_changed.rs` and its fixture
 `ps15_advancement_inventory_changed.mdl`) and BE-2's real fixture
 (`be2_block_entity_nbt_runtime_slot.mdl`) — read both before starting, they are the

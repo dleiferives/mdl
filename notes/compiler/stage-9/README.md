@@ -7,13 +7,15 @@ one boundary/crossing model with three capabilities layered over it. These dossi
 are the implementation-facing source of truth for each gated tranche and are written
 when the tranche's turn comes, not up front.
 
-Planned dossiers:
+Dossiers:
 
-1. `9-0-contracts-and-evidence.md` — pin `schedule`/`schedule clear`/`#minecraft:tick`
-   behavior on the pinned server, build cross-tick observation into the harness, and
-   freeze the six semantic decisions before any lowering.
-2. `9-a-one-tick-contract.md` — promote the existing bound analysis into an opt-in
-   hard one-tick contract (capability 1).
+1. [`9-0-contracts-and-evidence.md`](9-0-contracts-and-evidence.md) — **measured.**
+   Pinned `schedule`/`schedule clear`/`#minecraft:tick` behavior on the pinned
+   server, built cross-tick observation into the harness, and froze five of the
+   six semantic decisions (the sixth, cut-legality, partially).
+2. [`9-a-one-tick-contract.md`](9-a-one-tick-contract.md) — **designed, not
+   implemented.** Promotes the existing bound analysis into an opt-in hard
+   one-tick contract (capability 1).
 3. `9-b-recurring-scheduling.md` — argument-free self-rooting scheduled functions,
    tick-tag registration, self-reschedule-is-not-recursion, reload dedup (capability 2).
 4. `9-c-persistent-continuations.md` — resume discriminant, liveness-lifted live

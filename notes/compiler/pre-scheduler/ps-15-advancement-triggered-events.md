@@ -1,13 +1,25 @@
 # PS-15 — Advancement-Triggered Events
 
-Status: **planned, researched to an implementation handoff (2026-07-22).** Depends on
-[PS-13](ps-13-bot-driven-test-infrastructure.md) and [PS-14](ps-14-player-entity-kind.md)
-(both complete). This document is written for a fresh agent with no memory of prior
-sessions — read [`advancement-triggers.md`](../advancement-triggers.md) first for the
-full researched Minecraft mechanics (advancement JSON shape, the one-shot re-fire
-problem, the auto-revoke idiom); this document does not repeat that, it's the concrete
-"how do I actually build this" pass, including one real correction to that note's own
-syntax sketch.
+Status: **implemented (2026-07-22).** `on <trigger>(...) |binding| { }` landed across
+all four layers: grammar (`KeywordOn`, `AstEventHandler`), checker/HIR (the reward body
+is an ordinary zero-parameter `Void` `HirFunction` with a new `entry_capture` field
+seeding its ambient executor context, rather than a parallel HIR construction — a real
+simplification found during implementation, see `notes/syntax/event-handlers.md` and
+the commit history for why), Core IR (`AdvancementDecl`/`Criterion`, a new
+`CoreProgram`-owned table), and Minecraft-target lowering + emission
+(`CommandKind::AdvancementRevoke`, hidden-advancement JSON with no `display` key at
+all). Evidence: a structural no-server test, a 4-optimization-policy fixture-
+conformance check, and a pinned-server bot test proving the reward fires a *second*
+time after the auto-revoke — this milestone's actual non-negotiable claim, run live
+against the pinned 26.2 server. Depends on
+[PS-13](ps-13-bot-driven-test-infrastructure.md) and
+[PS-14](ps-14-player-entity-kind.md) (both complete). This document was originally
+written for a fresh agent with no memory of prior sessions — read
+[`advancement-triggers.md`](../advancement-triggers.md) first for the full researched
+Minecraft mechanics (advancement JSON shape, the one-shot re-fire problem, the
+auto-revoke idiom); that note also records a live-measured finding from
+implementation (its own new "Live-measured finding" section) worth reading before
+choosing an example/test item.
 
 ## Why this exists, and why it's bigger than PS-13/PS-14
 

@@ -3,9 +3,8 @@
 Status: **PS-1 through PS-5 complete; PS-11A–C (generic macro engine) landed; PS-12
 (composable entity-NBT paths) complete; BE-1 (block-entity NBT reads) complete;
 PS-13 (bot-driven test infrastructure) complete; PS-14 (`Player` entity kind)
-complete; PS-15 (advancement-triggered events) researched and ready to implement;
-PS-16, PS-17 (player interaction / chest-menu capstone) planned at the milestone
-level**
+complete; PS-15 (advancement-triggered events) complete; PS-16, PS-17 (player
+interaction / chest-menu capstone) planned at the milestone level**
 
 The macro/reference work has its own architecture of record —
 [`../macro-reference-crossing-model.md`](../macro-reference-crossing-model.md) — and
@@ -88,7 +87,7 @@ PS-13 through PS-17 player interaction / chest-menu capstone
   |
   +-> Azalea-backed bot test infrastructure (PS-13, complete)
   +-> Player entity kind (PS-14, complete)
-  +-> advancement-triggered events, the push model (PS-15)
+  +-> advancement-triggered events, the push model (PS-15, complete)
   +-> block-entity NBT writes (PS-16)
   +-> chest-menu capstone, composition only (PS-17)
   |

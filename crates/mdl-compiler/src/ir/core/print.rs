@@ -581,7 +581,7 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
     for (write, data) in program.entity_nbt_writes() {
         let _ = write!(
             output,
-            "entity_nbt_write @nbtw{} receiver={} item={:?} count={} path=",
+            "entity_nbt_write @nbtw{} receiver={} item={:?} count={:?} path=",
             write.index(),
             data.receiver(),
             data.item_id(),

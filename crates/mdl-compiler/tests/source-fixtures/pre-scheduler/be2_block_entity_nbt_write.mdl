@@ -1,10 +1,17 @@
 // MDL: success
-// PS-16 Stage 1: whole-slot entity-NBT writes, lowered unconditionally to
+// PS-16: whole-slot entity-NBT writes, lowered unconditionally to
 // `item replace block <pos> container.<slot> with <item> <count>`. Each
-// function writes to its own literal slot (Stage 1 requires a compile-time
-// slot), then reads its own write back via BE-1's already-proven read path
-// and only announces success if the read confirms the written count — a
-// self-verifying round trip, not just "the write command ran".
+// function writes to its own slot, then reads its own write back via BE-1's
+// already-proven read path and only announces success if the read confirms
+// the written count — a self-verifying round trip, not just "the write
+// command ran". `write_runtime_everything` binds its slot/id/count through
+// local `const`s rather than literals — this compiler's "compile-time
+// literal" detection is syntactic (does the write's own AST node spell the
+// value directly), so even a `const`-bound value routes through the same
+// macro/crossings engine a genuinely caller-supplied runtime value would
+// (Stage 2), exercising the runtime path without needing a String-typed
+// parameter, which this compiler's export ABI has no scoreboard-based slot
+// for.
 // HIR: entity-nbt-write
 // HIR: entity-nbt-read
 // CORE: entity_nbt_write
@@ -23,5 +30,16 @@ export fn write_occupied_slot() {
     const count: Int32 = mc.block(Chest, 0, 4, 0).Items[12].count;
     if (count == 3) {
         unsafe minecraft("say BE2_OCCUPIED_OK");
+    }
+}
+
+export fn write_runtime_everything() {
+    const slot: Int32 = 20;
+    const id: String = "minecraft:redstone_block";
+    const count: Int32 = 2;
+    mc.block(Chest, 0, 4, 0).Items[slot] = .{.id = id, .count = count};
+    const readback: Int32 = mc.block(Chest, 0, 4, 0).Items[20].count;
+    if (readback == 2) {
+        unsafe minecraft("say BE2_RUNTIME_OK");
     }
 }

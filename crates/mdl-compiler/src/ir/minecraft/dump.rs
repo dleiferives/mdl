@@ -136,7 +136,7 @@ fn write_command(
             let position = command.position();
             write!(
                 output,
-                "item.replace_block position={} {} {} slot={:?} item={:?} count={}",
+                "item.replace_block position={} {} {} slot={:?} item={:?} count={:?}",
                 position.x,
                 position.y,
                 position.z,

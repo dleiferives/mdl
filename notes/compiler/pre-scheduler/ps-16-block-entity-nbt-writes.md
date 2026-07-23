@@ -1,10 +1,22 @@
 # PS-16 — Block-Entity NBT Writes (BE-2)
 
-Status: **planned, researched to an implementation handoff (2026-07-22).** Depends on
-BE-1 (block-entity NBT reads, landed) for the schema/segment groundwork this reuses.
-Does **not** depend on PS-13/14/15 — writes can be tested via the existing
-`crates/mdl-test` `ServerSandbox` pattern (console commands + `data get`), no live bot
-needed, unlike PS-14/15. This document is written for a fresh agent with no memory of
+Status: **implemented and landed (2026-07-23).** Whole-slot writes
+(`mc.block(Chest, x, y, z).Items[slot] = .{.id: ..., .count: ...}`) lower unconditionally
+to `item replace block <pos> container.<slot> with <item> <count>`, confirmed clean (no
+"Serialization errors" warning) against the real pinned Java 26.2 server for both an
+occupied and an unoccupied slot, and for both the inline-literal and macro-routed-runtime
+lowering shapes. Shipped in two stages: Stage 1 (literal slot only, mirroring BE-1
+Slice 1's own staging) landed first; Stage 2 lifted the literal-only restriction for the
+container slot and — going beyond this document's own original scope recommendation, per
+explicit direction during implementation — also made the item id and count
+runtime-capable, bridged through the same macro/crossings engine (a runtime `String` item
+id required a genuinely new bridging path, `emit_bridges`' `data modify storage ... set
+from storage ...` copy, since a string was never score-representable the way the existing
+`Int32` bridge assumed). Depended on BE-1 (block-entity NBT reads, landed) for the
+schema/segment groundwork it reuses; did not depend on PS-13/14/15 — tested via the
+existing `crates/mdl-test` `ServerSandbox` pattern (console commands + `data get`), no
+live bot needed. This document is retained for the research and the measured finding that
+shaped the implementation; it was originally written for a fresh agent with no memory of
 prior sessions.
 
 ## Why this exists

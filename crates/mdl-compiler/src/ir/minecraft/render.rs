@@ -189,13 +189,21 @@ fn render_command(
                      PS-11C extract_crossings handles $(key) substitution"
                 );
             };
+            let Operand::Const(item_id) = command.item_id() else {
+                panic!(
+                    "runtime item id rendered outside a macro context; \
+                     PS-11C extract_crossings handles $(key) substitution"
+                );
+            };
+            let Operand::Const(count) = command.count() else {
+                panic!(
+                    "runtime count rendered outside a macro context; \
+                     PS-11C extract_crossings handles $(key) substitution"
+                );
+            };
             sink.write_arguments(format_args!(
-                "item replace block {} {} {} container.{slot} with {} {}",
-                position.x,
-                position.y,
-                position.z,
-                command.item_id(),
-                command.count(),
+                "item replace block {} {} {} container.{slot} with {item_id} {count}",
+                position.x, position.y, position.z,
             ))
         }
     }

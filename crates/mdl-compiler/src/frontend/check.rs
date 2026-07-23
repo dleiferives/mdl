@@ -110,8 +110,6 @@ const INVALID_ASSIGNMENT_TARGET: &str = "frontend.check.invalid-assignment-targe
 const PARTIAL_ENTITY_NBT_WRITE: &str = "frontend.check.partial-entity-nbt-write";
 const NOT_AN_ENTITY_NBT_WRITE_TARGET: &str = "frontend.check.not-an-entity-nbt-write-target";
 const ENTITY_NBT_WRITE_VALUE_REQUIRED: &str = "frontend.check.entity-nbt-write-value-required";
-const RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED: &str =
-    "frontend.check.runtime-container-slot-write-unsupported";
 
 /// Closed event-trigger vocabulary (PS-15 Slice 1: one variant). Growing this
 /// to a second trigger is "add a variant", not a redesign of the argument-
@@ -3146,7 +3144,14 @@ impl<'a> BodyChecker<'a> {
             self.check_entity_nbt_write_value_only(assignment, assigned)?;
             return self.finish_statement(None, assignment.span, true);
         }
-        let Some(HirEntityPathSegment::Match { value, .. }) = step.segments.last() else {
+        // A runtime slot value is accepted here (Stage 2 lifted Stage 1's
+        // literal-only restriction) — its `Operand` const-folding already
+        // happens generically in `lower_entity_nbt_segments`, exactly like
+        // BE-1 Slice 2's own read-side `Match` segment.
+        if !matches!(
+            step.segments.last(),
+            Some(HirEntityPathSegment::Match { .. })
+        ) {
             self.diagnostics.push(
                 PendingDiagnostic::new(
                     NOT_AN_ENTITY_NBT_WRITE_TARGET,
@@ -3154,18 +3159,6 @@ impl<'a> BodyChecker<'a> {
                     assignment.target.span,
                 )
                 .primary("expected `...Items[slot]`, matched by a schema `MatchList`"),
-            );
-            self.check_entity_nbt_write_value_only(assignment, assigned)?;
-            return self.finish_statement(None, assignment.span, true);
-        };
-        if !matches!(value.kind, HirExpressionKind::Int32(_)) {
-            self.diagnostics.push(
-                PendingDiagnostic::new(
-                    RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED,
-                    "runtime container slots are not supported for writes in this release",
-                    assignment.target.span,
-                )
-                .primary("expected a compiler-known constant slot index"),
             );
             self.check_entity_nbt_write_value_only(assignment, assigned)?;
             return self.finish_statement(None, assignment.span, true);
@@ -3185,43 +3178,61 @@ impl<'a> BodyChecker<'a> {
                     "expected a `.{.id = \"...\", .count = N}` item literal",
                     assignment.value.span,
                 )
-                .primary("a whole-slot write's id and count must be compile-time literals"),
+                .primary(
+                    "a whole-slot write's value must be an inferred struct literal (its \
+                     `id`/`count` fields may each be a literal or a runtime expression)",
+                ),
             );
             return self.finish_statement(None, assignment.span, true);
         };
-        let mut item_id: Option<Box<str>> = None;
-        let mut count: Option<i32> = None;
-        for field in &fields {
+        let mut item_id: Option<Box<HirExpression>> = None;
+        let mut count: Option<Box<HirExpression>> = None;
+        for field in fields {
             match field.field {
-                0 => match &field.value.kind {
-                    HirExpressionKind::String {
+                0 => {
+                    if let HirExpressionKind::String {
                         op: HirStringOp::Constant(text),
                         ..
-                    } if is_valid_item_resource_id(text) => item_id = Some(text.clone()),
-                    _ => {
+                    } = &field.value.kind
+                    {
+                        if !is_valid_item_resource_id(text) {
+                            self.diagnostics.push(
+                                PendingDiagnostic::new(
+                                    ENTITY_NBT_WRITE_VALUE_REQUIRED,
+                                    "item id must be a `namespace:path` resource id",
+                                    assignment.value.span,
+                                )
+                                .primary("this literal `id` is not a valid resource id"),
+                            );
+                            continue;
+                        }
+                    } else if Self::runtime_index_contains_forbidden(&field.value) {
                         self.diagnostics.push(
                             PendingDiagnostic::new(
-                                ENTITY_NBT_WRITE_VALUE_REQUIRED,
-                                "item id must be a compile-time `namespace:path` string literal",
+                                LITERAL_CONTEXT_REQUIRED,
+                                "a runtime item id may not contain a function call yet",
                                 assignment.value.span,
                             )
-                            .primary("this `id` field is not a valid compile-time resource id"),
+                            .primary("this expression contains a call or external operation"),
                         );
+                        continue;
                     }
-                },
-                1 => match field.value.kind {
-                    HirExpressionKind::Int32(value) => count = Some(value),
-                    _ => {
+                    item_id = Some(Box::new(field.value));
+                }
+                1 => {
+                    if Self::runtime_index_contains_forbidden(&field.value) {
                         self.diagnostics.push(
                             PendingDiagnostic::new(
-                                ENTITY_NBT_WRITE_VALUE_REQUIRED,
-                                "item count must be a compile-time integer literal",
+                                LITERAL_CONTEXT_REQUIRED,
+                                "a runtime item count may not contain a function call yet",
                                 assignment.value.span,
                             )
-                            .primary("this `count` field is not a compile-time literal"),
+                            .primary("this expression contains a call or external operation"),
                         );
+                        continue;
                     }
-                },
+                    count = Some(Box::new(field.value));
+                }
                 _ => {}
             }
         }
@@ -6705,10 +6716,9 @@ mod tests {
         MISSING_EVENT_ARGUMENT, MISSING_RETURN, NON_EXHAUSTIVE_SWITCH,
         NOT_AN_ENTITY_NBT_WRITE_TARGET, OVERLAPPING_SWITCH_PATTERN, PARTIAL_ENTITY_NBT_WRITE,
         RESERVED_COMPILER_NAME, RETURN_IN_RUN_SCOPE, RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED,
-        RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED, SCOPED_CAPABILITY_VALUE, TRUNCATED,
-        TYPE_MISMATCH, UNINITIALIZED_READ, UNKNOWN_EVENT_ARGUMENT, UNKNOWN_EVENT_TRIGGER,
-        UNKNOWN_MEMBER, UNKNOWN_NAME, UNRESOLVED_MEMBER, UNSUPPORTED_RUN_SCALAR_CAPTURE,
-        VOID_VALUE, check,
+        SCOPED_CAPABILITY_VALUE, TRUNCATED, TYPE_MISMATCH, UNINITIALIZED_READ,
+        UNKNOWN_EVENT_ARGUMENT, UNKNOWN_EVENT_TRIGGER, UNKNOWN_MEMBER, UNKNOWN_NAME,
+        UNRESOLVED_MEMBER, UNSUPPORTED_RUN_SCALAR_CAPTURE, VOID_VALUE, check,
     };
     use crate::frontend::FrontendLimits;
     use crate::frontend::hir::{FunctionResult, HirStatementKind, SourceFunctionId, ValueType};
@@ -7665,21 +7675,54 @@ fn returning(condition: Bool) -> Int32 {
     }
 
     #[test]
-    fn a_non_literal_item_id_is_rejected() {
-        let source = r"fn bad(id: String) {
+    fn a_runtime_item_id_type_checks() {
+        // Stage 2: a runtime `id`/`count` is accepted, bridged through the
+        // macro engine like the container slot already is (per direction
+        // during PS-16's implementation — the doc's own scope section only
+        // asked for a runtime slot, but nothing about `String`/`Int32`
+        // bridging is intrinsically harder than the slot's own `Int32` case).
+        let source = r"fn write(id: String) {
             mc.block(Chest, 0, 4, 0).Items[0] = .{.id = id, .count = 5};
         }";
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let dump = output.checked().unwrap().dump(&sources);
+        assert!(dump.contains("item=<runtime>"), "{dump}");
+        assert!(dump.contains("count=5"), "{dump}");
+    }
+
+    #[test]
+    fn a_runtime_count_type_checks() {
+        let source = r#"fn write(count: Int32) {
+            mc.block(Chest, 0, 4, 0).Items[0] = .{.id = "minecraft:diamond", .count = count};
+        }"#;
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let dump = output.checked().unwrap().dump(&sources);
+        assert!(dump.contains("item=\"minecraft:diamond\""), "{dump}");
+        assert!(dump.contains("count=<runtime>"), "{dump}");
+    }
+
+    #[test]
+    fn a_malformed_literal_item_id_is_still_rejected() {
+        // A compile-time-constant `id` is still validated as a real
+        // `namespace:path` resource id — only a genuinely runtime value
+        // skips this check (the compiler cannot inspect its content).
+        let source = r#"fn bad() {
+            mc.block(Chest, 0, 4, 0).Items[0] = .{.id = "not a resource id", .count = 5};
+        }"#;
         let (_, _, output) = check_text(source);
         assert_eq!(codes(&output), [ENTITY_NBT_WRITE_VALUE_REQUIRED]);
     }
 
     #[test]
-    fn a_non_literal_count_is_rejected() {
-        let source = r#"fn bad(count: Int32) {
-            mc.block(Chest, 0, 4, 0).Items[0] = .{.id = "minecraft:diamond", .count = count};
+    fn a_runtime_item_id_or_count_containing_a_call_is_rejected() {
+        let source = r#"fn helper() -> Int32 { return 5; }
+        fn bad() {
+            mc.block(Chest, 0, 4, 0).Items[0] = .{.id = "minecraft:diamond", .count = helper()};
         }"#;
         let (_, _, output) = check_text(source);
-        assert_eq!(codes(&output), [ENTITY_NBT_WRITE_VALUE_REQUIRED]);
+        assert_eq!(codes(&output), [LITERAL_CONTEXT_REQUIRED]);
     }
 
     #[test]
@@ -7695,14 +7738,20 @@ fn returning(condition: Bool) -> Int32 {
     }
 
     #[test]
-    fn runtime_container_slot_write_is_rejected() {
-        // Stage 1's own explicit restriction, mirroring BE-1 Slice 1's own
-        // literal-only precedent — lifted in Stage 2.
-        let source = r#"fn bad(slot: Int32) {
+    fn runtime_container_slot_write_type_checks() {
+        // Stage 2: lifts Stage 1's own literal-only restriction, mirroring
+        // BE-1 Slice 2's own read-side lift.
+        let source = r#"fn write(slot: Int32) {
             mc.block(Chest, 0, 4, 0).Items[slot] = .{.id = "minecraft:diamond", .count = 5};
         }"#;
-        let (_, _, output) = check_text(source);
-        assert_eq!(codes(&output), [RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED]);
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let dump = output.checked().unwrap().dump(&sources);
+        assert!(
+            dump.contains("entity-nbt-write receiver=Block<Chest> position=0 4 0"),
+            "{dump}"
+        );
+        assert!(dump.contains("path=.Items[{Slot:<runtime>}]"), "{dump}");
     }
 
     #[test]

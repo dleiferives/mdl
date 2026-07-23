@@ -342,6 +342,22 @@ fn lower_instruction(
                     super::crossings::push_macro_call(context, target, args, data.origin())?;
                     return Ok(None);
                 }
+            } else if let Some(resolved) = plan.preflight().selected_entity_nbt_write(*external) {
+                if resolved.is_unusable_inline() {
+                    let args = super::crossings::seed_macro_frame(context, data.origin())?;
+                    let operands = entity_nbt_write_runtime_operands(resolved);
+                    if let Some(frame) = super::crossings::build_frame(&operands) {
+                        super::crossings::emit_bridges(
+                            context,
+                            plan,
+                            function,
+                            &frame,
+                            data.origin(),
+                        )?;
+                    }
+                    super::crossings::push_macro_call(context, target, args, data.origin())?;
+                    return Ok(None);
+                }
             }
             context.push(command(
                 CommandKind::Function(FunctionCall::new(
@@ -696,11 +712,31 @@ fn define_external_helper(
             let body = command(CommandKind::Macro(macro_cmd), data.origin())?;
             target.define_external_helper(helper, body)
         }
-        ExternalSemanticBinding::EntityNbtWrite(_) => Err(invariant_diagnostics(
-            "entity-NBT write incorrectly received an external helper — Stage 1 has no runtime \
-             container slot support yet, so a write is never plan-routed through External{helper}",
-            data.origin(),
-        )),
+        ExternalSemanticBinding::EntityNbtWrite(_) => {
+            let resolved = plan
+                .preflight()
+                .selected_entity_nbt_write(operation)
+                .ok_or_else(|| {
+                    invariant_diagnostics(
+                        "entity-NBT write helper has no retained preflight resolution",
+                        data.origin(),
+                    )
+                })?;
+            if !resolved.is_unusable_inline() {
+                return Err(invariant_diagnostics(
+                    "all-constant entity-NBT write incorrectly received an external helper",
+                    data.origin(),
+                ));
+            }
+            let base_cmd =
+                CommandKind::ItemReplaceBlock(item_replace_block_command(resolved, data.origin())?);
+            let operands = super::crossings::collect_runtime_operands(&base_cmd);
+            let frame = super::crossings::build_frame(&operands)
+                .expect("unusable-inline entity-NBT write must have runtime operands");
+            let macro_cmd = super::crossings::render_as_macro(&base_cmd, &frame, data.origin());
+            let body = command(CommandKind::Macro(macro_cmd), data.origin())?;
+            target.define_external_helper(helper, body)
+        }
     }
 }
 
@@ -750,12 +786,41 @@ fn retarget_to_result_home(
 /// `crossings::collect_runtime_operands`, which instead walks a constructed
 /// `CommandKind`. There is no base command to walk yet at the call site (only
 /// the helper body, built separately in `define_external_helper`, has one),
-/// so this reads the same information straight from `ResolvedEntityNbtRead`.
+/// so this reads the same information straight from the resolved read.
 fn entity_nbt_runtime_operands(
     resolved: &super::preflight::ResolvedEntityNbtRead,
 ) -> Vec<super::crossings::RuntimeOperand> {
-    resolved
-        .segments()
+    entity_nbt_segment_runtime_operands(resolved.segments())
+}
+
+/// Same rationale as `entity_nbt_runtime_operands`, for a resolved whole-slot
+/// write (PS-16, BE-2) — additionally includes `item_id`/`count` when either
+/// is runtime, in the same order `EntityNbtWriteDecl::runtime_operand_types`
+/// declared them.
+fn entity_nbt_write_runtime_operands(
+    resolved: &super::preflight::ResolvedEntityNbtWrite,
+) -> Vec<super::crossings::RuntimeOperand> {
+    let mut operands = entity_nbt_segment_runtime_operands(resolved.segments());
+    if let Operand::Runtime(value_id) = resolved.item_id() {
+        operands.push(super::crossings::RuntimeOperand {
+            value_id: *value_id,
+            slot: SyntaxSlot::ResourceId,
+        });
+    }
+    if let Operand::Runtime(value_id) = resolved.count() {
+        operands.push(super::crossings::RuntimeOperand {
+            value_id,
+            slot: SyntaxSlot::Int,
+        });
+    }
+    operands
+}
+
+/// Shared by `entity_nbt_runtime_operands`/`entity_nbt_write_runtime_operands`.
+fn entity_nbt_segment_runtime_operands(
+    segments: &[super::preflight::ResolvedEntityNbtSegment],
+) -> Vec<super::crossings::RuntimeOperand> {
+    segments
         .iter()
         .filter_map(|segment| match segment {
             super::preflight::ResolvedEntityNbtSegment::Index(Operand::Runtime(value_id))
@@ -883,7 +948,7 @@ fn item_replace_block_command(
     Ok(ItemReplaceBlockCommand::new(
         position,
         *slot,
-        resolved.item_id().into(),
+        resolved.item_id().clone(),
         resolved.count(),
     ))
 }

@@ -183,8 +183,8 @@ impl CoreProgram {
         &mut self,
         receiver: EntityNbtReceiver,
         segments: Vec<EntityNbtPathSegment>,
-        item_id: Box<str>,
-        count: i32,
+        item_id: Operand<Box<str>>,
+        count: Operand<i32>,
         receiver_origin: OriginId,
     ) -> Result<super::EntityNbtWriteId, ProgramError> {
         let declaration = EntityNbtWriteDecl {
@@ -222,16 +222,16 @@ impl CoreProgram {
 /// <item> <count>`, confirmed clean for both an occupied and unoccupied slot
 /// by direct measurement against the real pinned server (see
 /// `notes/compiler/pre-scheduler/ps-16-block-entity-nbt-writes.md`), so no
-/// occupancy check is needed. `item_id`/`count` are always compile-time
-/// constants — only `segments`' final `Match`/`Index` value may ever be a
-/// runtime `Operand`, reusing `EntityNbtPathSegment` unchanged, the same as
+/// occupancy check is needed. `segments`' final `Match`/`Index` value,
+/// `item_id`, and `count` may each independently be a runtime `Operand` —
+/// `segments` reuses `EntityNbtPathSegment` unchanged, the same as
 /// `EntityNbtReadDecl`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EntityNbtWriteDecl {
     receiver: EntityNbtReceiver,
     segments: Box<[EntityNbtPathSegment]>,
-    item_id: Box<str>,
-    count: i32,
+    item_id: Operand<Box<str>>,
+    count: Operand<i32>,
     receiver_origin: OriginId,
 }
 
@@ -251,13 +251,13 @@ impl EntityNbtWriteDecl {
 
     /// Returns the written item's `namespace:path` resource id.
     #[must_use]
-    pub fn item_id(&self) -> &str {
+    pub const fn item_id(&self) -> &Operand<Box<str>> {
         &self.item_id
     }
 
     /// Returns the written stack count.
     #[must_use]
-    pub const fn count(&self) -> i32 {
+    pub const fn count(&self) -> Operand<i32> {
         self.count
     }
 
@@ -267,14 +267,26 @@ impl EntityNbtWriteDecl {
         self.receiver_origin
     }
 
-    /// Returns the number of `Index`/`Match` segments carrying a runtime
-    /// `ValueId` — exactly the number of instruction operands this
-    /// declaration expects (mirrors `EntityNbtReadDecl::runtime_index_count`;
-    /// always `0` until Stage 2 lifts the checker's literal-only slot
-    /// restriction).
+    /// Returns the number of `Index`/`Match` segments, plus `item_id`/
+    /// `count`, carrying a runtime `ValueId` — exactly the number of
+    /// instruction operands this declaration expects (mirrors
+    /// `EntityNbtReadDecl::runtime_index_count`).
     #[must_use]
     pub fn runtime_operand_count(&self) -> usize {
-        self.segments
+        self.runtime_operand_types().len()
+    }
+
+    /// Returns the exact Core type each runtime instruction operand this
+    /// declaration expects must have, in order: one `I32` per runtime
+    /// `Index`/`Match` segment (the container slot), then `String` if
+    /// `item_id` is runtime, then `I32` if `count` is runtime. Unlike
+    /// `EntityNbtReadDecl`, whose runtime operands are always `I32` slot/
+    /// match indices, a write's operands are not uniformly typed once
+    /// `item_id` can be runtime too.
+    #[must_use]
+    pub fn runtime_operand_types(&self) -> Vec<CoreType> {
+        let mut types: Vec<CoreType> = self
+            .segments
             .iter()
             .filter(|segment| {
                 matches!(
@@ -286,12 +298,20 @@ impl EntityNbtWriteDecl {
                         }
                 )
             })
-            .count()
+            .map(|_| CoreType::I32)
+            .collect();
+        if !self.item_id.is_const() {
+            types.push(CoreType::String);
+        }
+        if !self.count.is_const() {
+            types.push(CoreType::I32);
+        }
+        types
     }
 
     pub(crate) fn is_well_formed(&self) -> bool {
         !self.segments.is_empty()
-            && !self.item_id.is_empty()
+            && !matches!(&self.item_id, Operand::Const(id) if id.is_empty())
             && matches!(self.receiver, EntityNbtReceiver::Block(..))
     }
 }
@@ -446,8 +466,8 @@ mod tests {
             .declare_entity_nbt_write(
                 EntityNbtReceiver::Block(BlockEntityKind::Chest, position),
                 container_write_segments(),
-                "minecraft:diamond".into(),
-                5,
+                Operand::Const("minecraft:diamond".into()),
+                Operand::Const(5),
                 OriginId::UNKNOWN,
             )
             .unwrap();
@@ -456,8 +476,11 @@ mod tests {
             declaration.receiver(),
             EntityNbtReceiver::Block(BlockEntityKind::Chest, position)
         );
-        assert_eq!(declaration.item_id(), "minecraft:diamond");
-        assert_eq!(declaration.count(), 5);
+        assert_eq!(
+            declaration.item_id(),
+            &Operand::Const("minecraft:diamond".into())
+        );
+        assert_eq!(declaration.count(), Operand::Const(5));
         assert_eq!(declaration.segments().len(), 2);
         assert_eq!(declaration.runtime_operand_count(), 0);
         assert_eq!(program.entity_nbt_writes().len(), 1);
@@ -478,8 +501,8 @@ mod tests {
                     BlockPosition { x: 0, y: 4, z: 0 },
                 ),
                 segments,
-                "minecraft:diamond".into(),
-                5,
+                Operand::Const("minecraft:diamond".into()),
+                Operand::Const(5),
                 OriginId::UNKNOWN,
             )
             .unwrap();
@@ -493,6 +516,30 @@ mod tests {
     }
 
     #[test]
+    fn runtime_item_id_and_count_are_counted() {
+        let mut program = CoreProgram::new();
+        let write = program
+            .declare_entity_nbt_write(
+                EntityNbtReceiver::Block(
+                    BlockEntityKind::Chest,
+                    BlockPosition { x: 0, y: 4, z: 0 },
+                ),
+                container_write_segments(),
+                Operand::Runtime(ValueId::from_index(0)),
+                Operand::Runtime(ValueId::from_index(1)),
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        assert_eq!(
+            program
+                .entity_nbt_write(write)
+                .unwrap()
+                .runtime_operand_count(),
+            2
+        );
+    }
+
+    #[test]
     fn an_empty_write_path_is_rejected() {
         let mut program = CoreProgram::new();
         assert_eq!(
@@ -502,8 +549,8 @@ mod tests {
                     BlockPosition { x: 0, y: 4, z: 0 }
                 ),
                 vec![],
-                "minecraft:diamond".into(),
-                5,
+                Operand::Const("minecraft:diamond".into()),
+                Operand::Const(5),
                 OriginId::UNKNOWN,
             ),
             Err(ProgramError::InvalidEntityNbtWrite)
@@ -520,8 +567,8 @@ mod tests {
                     BlockPosition { x: 0, y: 4, z: 0 }
                 ),
                 container_write_segments(),
-                "".into(),
-                5,
+                Operand::Const("".into()),
+                Operand::Const(5),
                 OriginId::UNKNOWN,
             ),
             Err(ProgramError::InvalidEntityNbtWrite)
@@ -535,8 +582,8 @@ mod tests {
             program.declare_entity_nbt_write(
                 EntityNbtReceiver::Entity(EntityKind::ArmorStand),
                 container_write_segments(),
-                "minecraft:diamond".into(),
-                5,
+                Operand::Const("minecraft:diamond".into()),
+                Operand::Const(5),
                 OriginId::UNKNOWN,
             ),
             Err(ProgramError::InvalidEntityNbtWrite)

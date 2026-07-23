@@ -586,17 +586,18 @@ pub(super) enum HirExternalSemantic {
         receiver_origin: OriginId,
     },
     /// A whole-slot entity-NBT write (PS-16, BE-2), e.g.
-    /// `mc.block(Chest, x, y, z).Items[slot] = .{id: "...", count: N}`.
+    /// `mc.block(Chest, x, y, z).Items[slot] = .{.id = "...", .count = N}`.
     /// `segments` ends in the `Match`/`Index` step selecting the written
     /// element (mirrors `EntityNbtRead`'s own path, reused unchanged).
-    /// `item_id`/`count` are always compile-time literals — never routed
+    /// `item_id`/`count` may each be a compile-time literal or a runtime
+    /// expression (checked `String`/`Int32` respectively) — never routed
     /// through `MinecraftSemanticKey` either, for the same schema-driven
     /// reason `EntityNbtRead` isn't.
     EntityNbtWrite {
         receiver: HirEntityNbtReceiver,
         segments: Box<[HirEntityPathSegment]>,
-        item_id: Box<str>,
-        count: i32,
+        item_id: Box<HirExpression>,
+        count: Box<HirExpression>,
         receiver_origin: OriginId,
     },
 }
@@ -1283,10 +1284,21 @@ impl<'a> Dumper<'a> {
                 } => {
                     let path = dump_entity_nbt_path(segments);
                     let receiver_text = dump_entity_nbt_receiver(receiver);
+                    let item_text = match &item_id.kind {
+                        HirExpressionKind::String {
+                            op: HirStringOp::Constant(text),
+                            ..
+                        } => format!("{text:?}"),
+                        _ => "<runtime>".to_string(),
+                    };
+                    let count_text = match count.kind {
+                        HirExpressionKind::Int32(value) => value.to_string(),
+                        _ => "<runtime>".to_string(),
+                    };
                     self.line(
                         1,
                         &format!(
-                            "external @{} entity-nbt-write receiver={receiver_text} path={path} item={item_id:?} count={count} receiver_origin={} {}",
+                            "external @{} entity-nbt-write receiver={receiver_text} path={path} item={item_text} count={count_text} receiver_origin={} {}",
                             external.id.index(),
                             self.location(*receiver_origin),
                             self.location(external.origin),
@@ -2025,7 +2037,7 @@ impl Verifier<'_> {
                     receiver,
                     segments,
                     item_id,
-                    count: _,
+                    count,
                     receiver_origin,
                 } => {
                     self.origin(*receiver_origin, "entity-NBT write receiver")?;
@@ -2041,9 +2053,27 @@ impl Verifier<'_> {
                             external.id
                         )));
                     }
-                    if item_id.is_empty() {
+                    if item_id.ty != ValueType::String {
                         return Err(HirVerificationError::new(format!(
-                            "entity-NBT write {:?} has an empty item id",
+                            "entity-NBT write {:?} has a non-String item id",
+                            external.id
+                        )));
+                    }
+                    if let HirExpressionKind::String {
+                        op: HirStringOp::Constant(text),
+                        ..
+                    } = &item_id.kind
+                    {
+                        if text.is_empty() {
+                            return Err(HirVerificationError::new(format!(
+                                "entity-NBT write {:?} has an empty item id",
+                                external.id
+                            )));
+                        }
+                    }
+                    if count.ty != ValueType::Int32 {
+                        return Err(HirVerificationError::new(format!(
+                            "entity-NBT write {:?} has a non-Int32 count",
                             external.id
                         )));
                     }

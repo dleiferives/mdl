@@ -185,8 +185,7 @@ impl ExternalSemanticBinding {
             }),
             Self::EntityNbtWrite(write) => program.entity_nbt_write(write).is_some_and(|write| {
                 write.is_well_formed()
-                    && parameters.len() == write.runtime_operand_count()
-                    && parameters.iter().all(|ty| *ty == CoreType::I32)
+                    && *parameters == *write.runtime_operand_types()
                     && results.is_empty()
             }),
         }

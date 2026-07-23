@@ -7,15 +7,17 @@ use crate::ir::semantic::BlockPosition;
 /// occupied and an unoccupied slot by direct measurement against the real
 /// pinned server (`notes/compiler/pre-scheduler/ps-16-block-entity-nbt-writes.md`),
 /// unlike a `data modify ... Items[{Slot:N}].field set value ...` partial
-/// write, so no occupancy check is needed. `item_id`/`count` are always
-/// compile-time constants; `slot` may be `Operand::Runtime` once a macro
-/// route exists (Stage 2) — rendered inline only when `Operand::Const`.
+/// write, so no occupancy check is needed. `position` is always a
+/// compile-time literal (Stage 1's own narrowing, unchanged); `slot`,
+/// `item_id`, and `count` may each independently be `Operand::Runtime`
+/// (Stage 2) — rendered inline only when every one of them is
+/// `Operand::Const`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemReplaceBlockCommand {
     position: BlockPosition,
     slot: Operand<i32>,
-    item_id: Box<str>,
-    count: i32,
+    item_id: Operand<Box<str>>,
+    count: Operand<i32>,
 }
 
 impl ItemReplaceBlockCommand {
@@ -24,8 +26,8 @@ impl ItemReplaceBlockCommand {
     pub const fn new(
         position: BlockPosition,
         slot: Operand<i32>,
-        item_id: Box<str>,
-        count: i32,
+        item_id: Operand<Box<str>>,
+        count: Operand<i32>,
     ) -> Self {
         Self {
             position,
@@ -49,13 +51,13 @@ impl ItemReplaceBlockCommand {
 
     /// Returns the written item's `namespace:path` resource id.
     #[must_use]
-    pub fn item_id(&self) -> &str {
+    pub const fn item_id(&self) -> &Operand<Box<str>> {
         &self.item_id
     }
 
     /// Returns the written stack count.
     #[must_use]
-    pub const fn count(&self) -> i32 {
+    pub const fn count(&self) -> Operand<i32> {
         self.count
     }
 }

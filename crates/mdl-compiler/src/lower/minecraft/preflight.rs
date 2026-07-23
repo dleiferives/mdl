@@ -905,11 +905,12 @@ fn resolve_entity_nbt_read(
     declaration: &EntityNbtReadDecl,
     operands: &[ValueId],
 ) -> Result<ResolvedEntityNbtRead, Diagnostic> {
+    let mut operands = operands.iter().copied();
     Ok(ResolvedEntityNbtRead {
         receiver: declaration.receiver(),
         segments: resolve_entity_nbt_segments(
             declaration.segments(),
-            operands,
+            &mut operands,
             declaration.receiver_origin(),
         )?,
     })
@@ -920,13 +921,15 @@ fn resolve_entity_nbt_read(
 /// placeholder written during Core generation in favor of the real
 /// per-occurrence `ValueId`. Shared by `resolve_entity_nbt_read` and
 /// `resolve_entity_nbt_write` (PS-16) — a write's path is the exact same
-/// shape as a read's, just without a terminal scalar field.
+/// shape as a read's, just without a terminal scalar field. Takes a shared
+/// operand iterator (rather than a plain slice) so a write can continue
+/// consuming the same stream for its own `item_id`/`count` operands
+/// afterward, in the declaration's fixed operand order.
 fn resolve_entity_nbt_segments(
     segments: &[EntityNbtPathSegment],
-    operands: &[ValueId],
+    operands: &mut impl Iterator<Item = ValueId>,
     receiver_origin: OriginId,
 ) -> Result<Box<[ResolvedEntityNbtSegment]>, Diagnostic> {
-    let mut operands = operands.iter().copied();
     let mut resolved_segments = Vec::with_capacity(segments.len());
     for segment in segments {
         let resolved = match segment {
@@ -955,16 +958,6 @@ fn resolve_entity_nbt_segments(
                 match_key,
                 value: Operand::Runtime(_),
             } => {
-                // No schema field reachable through a runtime-matched list
-                // is registered yet for reads without a literal container
-                // slot restriction lifted (BE-1 Slice 2), and writes still
-                // reject a runtime slot entirely in this release (PS-16
-                // Stage 1 — see `frontend/check.rs`'s
-                // `RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED` guard). Kept
-                // structurally parallel to the `Index` arm above rather than
-                // silently omitted, so this stops compiling loudly instead
-                // of miscompiling quietly once a future slice lifts that
-                // restriction.
                 let value = operands.next().ok_or_else(|| {
                     Diagnostic::new(
                         "lower.preflight.missing-macro-operand",
@@ -990,8 +983,8 @@ fn resolve_entity_nbt_segments(
 pub(crate) struct ResolvedEntityNbtWrite {
     receiver: EntityNbtReceiver,
     segments: Box<[ResolvedEntityNbtSegment]>,
-    item_id: Box<str>,
-    count: i32,
+    item_id: Operand<Box<str>>,
+    count: Operand<i32>,
 }
 
 impl ResolvedEntityNbtWrite {
@@ -1003,19 +996,19 @@ impl ResolvedEntityNbtWrite {
         &self.segments
     }
 
-    pub(crate) fn item_id(&self) -> &str {
+    pub(crate) const fn item_id(&self) -> &Operand<Box<str>> {
         &self.item_id
     }
 
-    pub(crate) const fn count(&self) -> i32 {
+    pub(crate) const fn count(&self) -> Operand<i32> {
         self.count
     }
 
-    /// Whether any segment carries a runtime `ValueId` — the derived
-    /// predicate deciding inline (`InstructionPlan::EntityNbtWrite`) vs.
-    /// macro-helper (`InstructionPlan::External`) lowering. Mirrors
-    /// `ResolvedEntityNbtRead::is_unusable_inline` exactly; always `false`
-    /// in Stage 1, since the checker forbids a runtime container slot.
+    /// Whether any segment, `item_id`, or `count` carries a runtime
+    /// `ValueId` — the derived predicate deciding inline
+    /// (`InstructionPlan::EntityNbtWrite`) vs. macro-helper
+    /// (`InstructionPlan::External`) lowering. Mirrors
+    /// `ResolvedEntityNbtRead::is_unusable_inline`.
     pub(crate) fn is_unusable_inline(&self) -> bool {
         self.segments.iter().any(|segment| {
             matches!(
@@ -1026,7 +1019,8 @@ impl ResolvedEntityNbtWrite {
                         ..
                     }
             )
-        })
+        }) || !self.item_id.is_const()
+            || !self.count.is_const()
     }
 }
 
@@ -1125,15 +1119,37 @@ fn resolve_entity_nbt_write(
     declaration: &EntityNbtWriteDecl,
     operands: &[ValueId],
 ) -> Result<ResolvedEntityNbtWrite, Diagnostic> {
+    let mut operands = operands.iter().copied();
+    let segments = resolve_entity_nbt_segments(
+        declaration.segments(),
+        &mut operands,
+        declaration.receiver_origin(),
+    )?;
+    let item_id = match declaration.item_id() {
+        Operand::Const(id) => Operand::Const(id.clone()),
+        Operand::Runtime(_) => Operand::Runtime(operands.next().ok_or_else(|| {
+            Diagnostic::new(
+                "lower.preflight.missing-macro-operand",
+                "runtime entity-NBT write is missing an item-id operand",
+                declaration.receiver_origin(),
+            )
+        })?),
+    };
+    let count = match declaration.count() {
+        Operand::Const(count) => Operand::Const(count),
+        Operand::Runtime(_) => Operand::Runtime(operands.next().ok_or_else(|| {
+            Diagnostic::new(
+                "lower.preflight.missing-macro-operand",
+                "runtime entity-NBT write is missing a count operand",
+                declaration.receiver_origin(),
+            )
+        })?),
+    };
     Ok(ResolvedEntityNbtWrite {
         receiver: declaration.receiver(),
-        segments: resolve_entity_nbt_segments(
-            declaration.segments(),
-            operands,
-            declaration.receiver_origin(),
-        )?,
-        item_id: declaration.item_id().into(),
-        count: declaration.count(),
+        segments,
+        item_id,
+        count,
     })
 }
 

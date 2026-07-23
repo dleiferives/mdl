@@ -14,9 +14,9 @@ const SOURCE: &str = include_str!(
     "../../mdl-compiler/tests/source-fixtures/pre-scheduler/be2_block_entity_nbt_write.mdl"
 );
 
-/// PS-16 Stage 1 (BE-2): a whole-slot container write against the real
-/// pinned Java 26.2 server. This is the milestone's own required proof, not
-/// a nice-to-have: the original plan (`data modify ...
+/// PS-16 (BE-2): a whole-slot container write against the real pinned Java
+/// 26.2 server. This is the milestone's own required proof, not a
+/// nice-to-have: the original plan (`data modify ...
 /// Items[{Slot:N}].field set value ...`) was measured directly against this
 /// same server to report success while silently synthesizing a malformed
 /// NBT entry missing the mandatory `id` field, which then trips a real
@@ -24,9 +24,12 @@ const SOURCE: &str = include_str!(
 /// for what the MDL program considers ordinary, successful behavior (see
 /// `notes/compiler/pre-scheduler/ps-16-block-entity-nbt-writes.md`). The
 /// whole-slot `item replace` shape this milestone actually ships was
-/// confirmed clean for both an occupied and an unoccupied slot; the two
+/// confirmed clean for both an occupied and an unoccupied slot; the three
 /// `assert!(...matching_log_lines_since...)` checks below are the automated
-/// regression proving that stays true, not just that the write "ran".
+/// regression proving that stays true, not just that the write "ran" — one
+/// for the inline literal path (Stage 1) and one covering the macro-routed
+/// runtime path (Stage 2), so the same danger is checked under both
+/// lowering shapes.
 #[test]
 #[ignore = "requires the pinned official Minecraft 26.2 server bundle and Java 25"]
 fn whole_slot_write_matches_java_26_2_with_no_serialization_errors() {
@@ -40,11 +43,12 @@ fn whole_slot_write_matches_java_26_2_with_no_serialization_errors() {
     )
     .unwrap();
     // Function resource names are compiler-generated identities
-    // (`__mdl/f0/b0`, ...), not derived from the source name, so the two
+    // (`__mdl/f0/b0`, ...), not derived from the source name, so the
     // exported functions are told apart by declaration order instead —
-    // `write_unoccupied_slot` is declared first, `write_occupied_slot`
-    // second, in `be2_block_entity_nbt_write.mdl`. `function_ids()` iterates
-    // in dense declaration order.
+    // `write_unoccupied_slot`, `write_occupied_slot`, then
+    // `write_runtime_everything`, in that order in
+    // `be2_block_entity_nbt_write.mdl`. `function_ids()` iterates in dense
+    // declaration order.
     let functions = output.checked_frontend().function_ids().collect::<Vec<_>>();
     let entry = |index: usize| {
         output
@@ -55,6 +59,7 @@ fn whole_slot_write_matches_java_26_2_with_no_serialization_errors() {
     };
     let write_unoccupied = entry(0);
     let write_occupied = entry(1);
+    let write_runtime = entry(2);
 
     let sandbox = ServerSandbox::create(env::var_os("MDL_KEEP_TEST_DIR").is_some()).unwrap();
     sandbox
@@ -76,7 +81,7 @@ fn whole_slot_write_matches_java_26_2_with_no_serialization_errors() {
 
     // Slot 7 has never been populated — the exact case this milestone's own
     // research measured as dangerous under the rejected `data modify`
-    // partial-write shape.
+    // partial-write shape. Inline literal lowering (Stage 1).
     let checkpoint = server.log_checkpoint();
     server
         .command(&format!("function {write_unoccupied}"))
@@ -96,7 +101,8 @@ fn whole_slot_write_matches_java_26_2_with_no_serialization_errors() {
     );
 
     // Slot 12 is pre-populated by a direct console write before the
-    // compiled write overwrites it — the occupied-slot case.
+    // compiled write overwrites it — the occupied-slot case, still inline
+    // literal lowering.
     server
         .command("item replace block 0 4 0 container.12 with minecraft:stone 1")
         .unwrap();
@@ -118,6 +124,28 @@ fn whole_slot_write_matches_java_26_2_with_no_serialization_errors() {
          warning either"
     );
 
+    // Slot 20, also never populated, but written through the macro-routed
+    // runtime path (Stage 2: slot, item id, and count are all bridged
+    // through `mdl:__mdl/macro` rather than baked into the command inline)
+    // — the same "unoccupied slot" danger, now proven under the other
+    // lowering shape too.
+    let checkpoint = server.log_checkpoint();
+    server
+        .command(&format!("function {write_runtime}"))
+        .unwrap();
+    server.wait_for_command_log("BE2_RUNTIME_OK").unwrap();
+    server.command("data get block 0 4 0 Items").unwrap();
+    server.command("say BE2_BARRIER_3").unwrap();
+    server.wait_for_command_log("BE2_BARRIER_3").unwrap();
+    assert!(
+        server
+            .matching_log_lines_since(checkpoint, "Serialization errors")
+            .unwrap()
+            .is_empty(),
+        "a macro-routed runtime whole-slot write to an unoccupied slot must not trip a \
+         Serialization errors warning either"
+    );
+
     server.shutdown().unwrap();
 }
 
@@ -135,6 +163,6 @@ fn options() -> CompilationOptions {
         CoreOptimizationOptions::new(CoreOptimizationLevel::Baseline),
         lowering,
         TargetExecutionAnalysisLimits::new(arithmetic, 100_000, 100_000),
-        EmissionOptions::new("PS-16 Stage 1 block-entity NBT write semantics"),
+        EmissionOptions::new("PS-16 block-entity NBT write semantics"),
     )
 }

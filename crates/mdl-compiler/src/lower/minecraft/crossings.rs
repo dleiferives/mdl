@@ -39,8 +39,39 @@ pub(crate) struct MacroFrame {
 pub(crate) fn collect_runtime_operands(command: &CommandKind) -> Vec<RuntimeOperand> {
     match command {
         CommandKind::Data(DataCommand::Modify { source, .. }) => collect_from_data_source(source),
+        CommandKind::ItemReplaceBlock(command) => collect_from_item_replace_block(command),
         _ => vec![],
     }
+}
+
+/// PS-16, BE-2: `container.<slot>` accepts a runtime slot the same way an
+/// entity-NBT `Match` segment does; `<item>`/`<count>` are ordinary
+/// command-argument positions a runtime `String`/`Int32` value can also
+/// fill. Collected in `slot`, `item`, `count` order — an arbitrary but
+/// stable order, since `build_frame` deduplicates by `ValueId` regardless.
+fn collect_from_item_replace_block(
+    command: &crate::ir::minecraft::ItemReplaceBlockCommand,
+) -> Vec<RuntimeOperand> {
+    let mut operands = Vec::with_capacity(3);
+    if let crate::ir::core::Operand::Runtime(value_id) = command.slot() {
+        operands.push(RuntimeOperand {
+            value_id,
+            slot: SyntaxSlot::NbtIndex,
+        });
+    }
+    if let crate::ir::core::Operand::Runtime(value_id) = command.item_id() {
+        operands.push(RuntimeOperand {
+            value_id: *value_id,
+            slot: SyntaxSlot::ResourceId,
+        });
+    }
+    if let crate::ir::core::Operand::Runtime(value_id) = command.count() {
+        operands.push(RuntimeOperand {
+            value_id,
+            slot: SyntaxSlot::Int,
+        });
+    }
+    operands
 }
 
 fn collect_from_data_source(source: &DataSource) -> Vec<RuntimeOperand> {
@@ -127,8 +158,82 @@ pub(crate) fn render_as_macro(
         CommandKind::Data(DataCommand::Modify { target, source, .. }) => {
             render_data_modify_as_macro(target, source, frame, origin)
         }
+        CommandKind::ItemReplaceBlock(command) => {
+            render_item_replace_block_as_macro(command, frame, origin)
+        }
         _ => panic!("render_as_macro called on unsupported CommandKind variant"),
     }
+}
+
+/// Builds the macro-routed whole-slot write (PS-16, BE-2): a single
+/// `item replace block <pos> container.<slot> with <item> <count>` line,
+/// substituting whichever of `slot`/`item_id`/`count` are `Operand::Runtime`
+/// — much simpler than the read side's multi-line NBT-path rendering, since
+/// a write is always exactly one flat command with no default/fallback line.
+fn render_item_replace_block_as_macro(
+    command: &crate::ir::minecraft::ItemReplaceBlockCommand,
+    frame: &MacroFrame,
+    origin: OriginId,
+) -> MacroCommand {
+    use std::fmt::Write;
+
+    let position = command.position();
+    let mut segments: Vec<MacroSegment> = Vec::new();
+    let mut literal_buf = String::new();
+    write!(
+        literal_buf,
+        "item replace block {} {} {} container.",
+        position.x, position.y, position.z
+    )
+    .unwrap();
+
+    match command.slot() {
+        crate::ir::core::Operand::Const(slot) => write!(literal_buf, "{slot}").unwrap(),
+        crate::ir::core::Operand::Runtime(value) => {
+            segments.push(MacroSegment::Literal(std::mem::take(&mut literal_buf)));
+            segments.push(MacroSegment::Variable(macro_variable_for(frame, value)));
+        }
+    }
+
+    literal_buf.push_str(" with ");
+    match command.item_id() {
+        crate::ir::core::Operand::Const(item_id) => literal_buf.push_str(item_id),
+        crate::ir::core::Operand::Runtime(value) => {
+            segments.push(MacroSegment::Literal(std::mem::take(&mut literal_buf)));
+            segments.push(MacroSegment::Variable(macro_variable_for(frame, *value)));
+        }
+    }
+
+    literal_buf.push(' ');
+    match command.count() {
+        crate::ir::core::Operand::Const(count) => write!(literal_buf, "{count}").unwrap(),
+        crate::ir::core::Operand::Runtime(value) => {
+            segments.push(MacroSegment::Literal(std::mem::take(&mut literal_buf)));
+            segments.push(MacroSegment::Variable(macro_variable_for(frame, value)));
+        }
+    }
+
+    if !literal_buf.is_empty() {
+        segments.push(MacroSegment::Literal(literal_buf));
+    }
+
+    MacroCommand::new(
+        vec![MacroLine { segments }],
+        frame.arguments.clone(),
+        origin,
+    )
+    .expect("auto-generated macro command is valid")
+}
+
+/// Looks up the macro variable id bridging a runtime `ValueId`, built by
+/// `build_frame`. Shared by every macro-line renderer.
+fn macro_variable_for(frame: &MacroFrame, value: ValueId) -> MacroVariableId {
+    frame
+        .variables
+        .iter()
+        .find(|(v, _, _)| *v == value)
+        .map(|(_, _, id)| *id)
+        .expect("runtime operand not found in macro frame")
 }
 
 fn render_data_modify_as_macro(
@@ -338,9 +443,14 @@ pub(crate) fn render_entity_nbt_scalar_read_as_macro(
 
 // ── BRIDGE ──
 
-/// Emits `execute store result storage … run scoreboard players get …` bridges
-/// for every runtime operand in the frame, writing directly into the seeded
-/// `mdl:__mdl/macro args` compound.
+/// Emits a bridge command for every runtime operand in the frame, writing
+/// directly into the seeded `mdl:__mdl/macro args` compound. Score-homed
+/// values (`Bool`/`I32`, PS-11's original and still most common case) bridge
+/// via `execute store result storage … run scoreboard players get …`.
+/// Storage-homed values (`String` — PS-16, BE-2's runtime item id is the
+/// first user of this) bridge via a direct `data modify storage … set from
+/// storage …` copy instead: a string was never score-representable, so
+/// there is no score to read from.
 pub(crate) fn emit_bridges(
     context: &mut FunctionLoweringCx<'_, '_>,
     plan: &LoweringPlan,
@@ -352,10 +462,8 @@ pub(crate) fn emit_bridges(
 
     for (value_id, key, _) in &frame.variables {
         let home = plan.value_home(function, *value_id).ok_or_else(|| {
-            invariant_diagnostics("reachable Core value has no planned score home", origin)
+            invariant_diagnostics("reachable Core value has no planned home", origin)
         })?;
-        let score_ref = context.score(home)?;
-
         let target = StoragePath::new(
             arg_storage.clone(),
             NbtPath::new(
@@ -364,32 +472,47 @@ pub(crate) fn emit_bridges(
             ),
         );
 
-        let store_mod = ExecuteModifier::new(
-            ExecuteModifierKind::Store(
-                StoreChannel::Result,
-                StoreDestination::Storage {
+        let bridge = if let Some(crate::ir::core::CoreType::String) = plan.home_type(home) {
+            let source = plan.string_storage(home).ok_or_else(|| {
+                invariant_diagnostics(
+                    "runtime String macro operand has no planned string storage",
+                    origin,
+                )
+            })?;
+            command(
+                CommandKind::Data(DataCommand::Modify {
                     target,
-                    numeric_type: StorageNumericType::Int,
-                    scale: FiniteF64::new(1.0).expect("one is finite"),
-                },
-            ),
-            origin,
-        );
-
-        let get_cmd = command(
-            CommandKind::Score(ScoreCommand::PlayersGet {
-                score: score_ref.clone(),
-            }),
-            origin,
-        )?;
-
-        context.push(command(
-            CommandKind::Execute(ExecuteCommand::new(
-                ExecuteModifiers::new(store_mod, vec![]),
-                get_cmd,
-            )),
-            origin,
-        )?)?;
+                    mode: DataModifyMode::Set,
+                    source: DataSource::From(source),
+                }),
+                origin,
+            )?
+        } else {
+            let score_ref = context.score(home)?;
+            let store_mod = ExecuteModifier::new(
+                ExecuteModifierKind::Store(
+                    StoreChannel::Result,
+                    StoreDestination::Storage {
+                        target,
+                        numeric_type: StorageNumericType::Int,
+                        scale: FiniteF64::new(1.0).expect("one is finite"),
+                    },
+                ),
+                origin,
+            );
+            let get_cmd = command(
+                CommandKind::Score(ScoreCommand::PlayersGet { score: score_ref }),
+                origin,
+            )?;
+            command(
+                CommandKind::Execute(ExecuteCommand::new(
+                    ExecuteModifiers::new(store_mod, vec![]),
+                    get_cmd,
+                )),
+                origin,
+            )?
+        };
+        context.push(bridge)?;
     }
 
     Ok(())

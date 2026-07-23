@@ -21,10 +21,11 @@ use crate::entity::EntityId;
 use crate::ir::core::{
     BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
     CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, Criterion, EntityNbtPathSegment,
-    EntityNbtReceiver, EntityQueryDecl, EntityQueryStep, ExternalOpId, ExternalSemanticBinding,
-    FunctionBody, FunctionBuilder, FunctionId, I32ClosedRange, I32Predicate, InstId, ItemMatch,
-    MinecraftOperationAttributes, MinecraftOperationOrigins, Operand, ProgramError,
-    RunModifierInstance, TargetFragment, Terminator, TerminatorKind, ValueId, verify_program,
+    EntityNbtReceiver, EntityNbtWriteDecl, EntityQueryDecl, EntityQueryStep, ExternalOpId,
+    ExternalSemanticBinding, FunctionBody, FunctionBuilder, FunctionId, I32ClosedRange,
+    I32Predicate, InstId, ItemMatch, MinecraftOperationAttributes, MinecraftOperationOrigins,
+    Operand, ProgramError, RunModifierInstance, TargetFragment, Terminator, TerminatorKind,
+    ValueId, verify_program,
 };
 use crate::source::{OriginId, SourceContext};
 
@@ -1185,8 +1186,8 @@ fn declare_external_operations(
                     .declare_entity_nbt_write(
                         lower_entity_nbt_receiver(receiver),
                         lower_entity_nbt_segments(segments),
-                        item_id.clone(),
-                        *count,
+                        lower_entity_nbt_item_id(item_id),
+                        lower_entity_nbt_count(count),
                         *receiver_origin,
                     )
                     .map_err(|error| CoreGenerationFailure::ExternalDeclaration {
@@ -1267,11 +1268,17 @@ fn declare_external_operations(
             | HirExternalSemantic::EntityNbtWrite { .. } => vec![],
             HirExternalSemantic::EntityNbtRead { result_ty, .. } => vec![core_type(*result_ty)],
         };
-        let parameters = match &external.semantic {
-            HirExternalSemantic::EntityNbtRead { segments, .. }
-            | HirExternalSemantic::EntityNbtWrite { segments, .. } => {
+        let parameters = match (&external.semantic, &binding) {
+            (HirExternalSemantic::EntityNbtRead { segments, .. }, _) => {
                 vec![CoreType::I32; count_runtime_entity_nbt_segments(segments)]
             }
+            (
+                HirExternalSemantic::EntityNbtWrite { .. },
+                ExternalSemanticBinding::EntityNbtWrite(write),
+            ) => program
+                .entity_nbt_write(*write)
+                .map(EntityNbtWriteDecl::runtime_operand_types)
+                .unwrap_or_default(),
             _ => vec![],
         };
         let operation = program
@@ -1319,6 +1326,27 @@ fn lower_entity_nbt_segments(segments: &[HirEntityPathSegment]) -> Vec<EntityNbt
             },
         })
         .collect()
+}
+
+/// Const-folds a whole-slot write's item id expression, mirroring
+/// `lower_entity_nbt_segments`'s own `Index`/`Match` const-folding.
+fn lower_entity_nbt_item_id(item_id: &HirExpression) -> Operand<Box<str>> {
+    match &item_id.kind {
+        HirExpressionKind::String {
+            op: HirStringOp::Constant(text),
+            ..
+        } => Operand::Const(text.clone()),
+        _ => Operand::Runtime(ValueId::from_index(0)),
+    }
+}
+
+/// Const-folds a whole-slot write's count expression, mirroring
+/// `lower_entity_nbt_segments`'s own `Index`/`Match` const-folding.
+fn lower_entity_nbt_count(count: &HirExpression) -> Operand<i32> {
+    match count.kind {
+        HirExpressionKind::Int32(value) => Operand::Const(value),
+        _ => Operand::Runtime(ValueId::from_index(0)),
+    }
 }
 
 /// Counts `Index`/`Match` segments whose value is not a compile-time `Int32`
@@ -1463,8 +1491,8 @@ fn verify_source_semantic_correlation(
             };
             let write = program.entity_nbt_write(write).ok_or_else(invalid)?;
             if !entity_nbt_receiver_matches(receiver, write.receiver())
-                || write.item_id() != item_id.as_ref()
-                || write.count() != *count
+                || !entity_nbt_item_id_matches(item_id, write.item_id())
+                || !entity_nbt_count_matches(count, write.count())
                 || write.receiver_origin() != *receiver_origin
                 || !entity_nbt_segments_match(segments, write.segments())
             {
@@ -1634,6 +1662,35 @@ fn entity_nbt_receiver_matches(hir: &HirEntityNbtReceiver, core: EntityNbtReceiv
             HirEntityNbtReceiver::Block { kind, position },
             EntityNbtReceiver::Block(core_kind, core_position),
         ) => *kind == core_kind && *position == core_position,
+        _ => false,
+    }
+}
+
+/// Checks a whole-slot write's item id corresponds between HIR and Core: a
+/// `Const` value must match textually; a `Runtime` value only needs the HIR
+/// side to not itself be the constant form (real `ValueId` agreement is out
+/// of scope for this identity-only cross-check, matching
+/// `entity_nbt_segments_match`'s own `Operand::Runtime` leniency).
+fn entity_nbt_item_id_matches(hir: &HirExpression, core: &Operand<Box<str>>) -> bool {
+    match (&hir.kind, core) {
+        (
+            HirExpressionKind::String {
+                op: HirStringOp::Constant(text),
+                ..
+            },
+            Operand::Const(core_text),
+        ) => text == core_text,
+        (_, Operand::Runtime(_)) => true,
+        _ => false,
+    }
+}
+
+/// Checks a whole-slot write's count corresponds between HIR and Core —
+/// same rationale as `entity_nbt_item_id_matches`.
+fn entity_nbt_count_matches(hir: &HirExpression, core: Operand<i32>) -> bool {
+    match (&hir.kind, core) {
+        (HirExpressionKind::Int32(n), Operand::Const(core_n)) => *n == core_n,
+        (_, Operand::Runtime(_)) => true,
         _ => false,
     }
 }
@@ -2573,21 +2630,29 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 ))?;
         let sem = self.checked.external_op(external).map(|op| &op.semantic);
         let operands = match sem {
-            Some(
-                HirExternalSemantic::EntityNbtRead { segments, .. }
-                | HirExternalSemantic::EntityNbtWrite { segments, .. },
-            ) => {
-                let mut operands = Vec::new();
-                for segment in segments {
-                    let (HirEntityPathSegment::Index(index)
-                    | HirEntityPathSegment::Match { value: index, .. }) = segment
-                    else {
-                        continue;
-                    };
-                    if matches!(index.kind, HirExpressionKind::Int32(_)) {
-                        continue;
+            Some(HirExternalSemantic::EntityNbtRead { segments, .. }) => {
+                self.lower_runtime_entity_nbt_segments(block, environment, segments)?
+            }
+            Some(HirExternalSemantic::EntityNbtWrite {
+                segments,
+                item_id,
+                count,
+                ..
+            }) => {
+                let mut operands =
+                    self.lower_runtime_entity_nbt_segments(block, environment, segments)?;
+                if !matches!(
+                    item_id.kind,
+                    HirExpressionKind::String {
+                        op: HirStringOp::Constant(_),
+                        ..
                     }
-                    let bundle = self.lower_expression(block, environment, index)?;
+                ) {
+                    let bundle = self.lower_expression(block, environment, item_id)?;
+                    operands.extend(bundle.into_values());
+                }
+                if !matches!(count.kind, HirExpressionKind::Int32(_)) {
+                    let bundle = self.lower_expression(block, environment, count)?;
                     operands.extend(bundle.into_values());
                 }
                 operands
@@ -2609,6 +2674,31 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             self.record_semantic_operation(external, operation, instruction)?;
         }
         Ok(results)
+    }
+
+    /// Lowers every runtime `Index`/`Match` segment value into real SSA
+    /// operands, in path order — a compile-time-literal segment contributes
+    /// no operand. Shared by `EntityNbtRead`/`EntityNbtWrite` (PS-16).
+    fn lower_runtime_entity_nbt_segments(
+        &mut self,
+        block: &mut BlockId,
+        environment: &mut Environment,
+        segments: &[HirEntityPathSegment],
+    ) -> Result<Vec<ValueId>, CoreGenerationFailure> {
+        let mut operands = Vec::new();
+        for segment in segments {
+            let (HirEntityPathSegment::Index(index)
+            | HirEntityPathSegment::Match { value: index, .. }) = segment
+            else {
+                continue;
+            };
+            if matches!(index.kind, HirExpressionKind::Int32(_)) {
+                continue;
+            }
+            let bundle = self.lower_expression(block, environment, index)?;
+            operands.extend(bundle.into_values());
+        }
+        Ok(operands)
     }
 
     fn record_semantic_operation(

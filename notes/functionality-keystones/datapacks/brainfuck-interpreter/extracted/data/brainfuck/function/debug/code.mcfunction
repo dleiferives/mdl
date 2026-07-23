@@ -1,0 +1,1 @@
+return run tellraw @a {storage:"brainfuck:code",nbt:"code"}

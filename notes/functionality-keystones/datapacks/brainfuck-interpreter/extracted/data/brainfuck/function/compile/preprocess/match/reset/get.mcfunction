@@ -1,0 +1,1 @@
+$data modify storage brainfuck:re code.testing_char set from storage brainfuck:re code.list[$(diff)]

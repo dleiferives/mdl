@@ -1,0 +1,1 @@
+$data modify storage brainfuck:re array[$(ptr)] set value 0

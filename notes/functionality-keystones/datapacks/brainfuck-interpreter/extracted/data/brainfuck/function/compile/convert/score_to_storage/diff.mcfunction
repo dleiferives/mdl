@@ -1,0 +1,1 @@
+execute store result storage brainfuck:re diff int 1 run scoreboard players get #diff brainfuck.re

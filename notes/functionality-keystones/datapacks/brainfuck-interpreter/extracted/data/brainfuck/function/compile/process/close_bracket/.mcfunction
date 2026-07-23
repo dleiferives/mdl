@@ -1,0 +1,1 @@
+function brainfuck:compile/process/close_bracket/_

@@ -1,0 +1,1 @@
+execute store result storage brainfuck:re ptr int 1 run scoreboard players get #ptr brainfuck.re

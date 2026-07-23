@@ -1,0 +1,1 @@
+tellraw @a {score:{name:"#count",objective:"brainfuck.re"}}

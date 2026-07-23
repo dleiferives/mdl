@@ -1,0 +1,1 @@
+tellraw @a {text:"A program is already running!",color:"red"}

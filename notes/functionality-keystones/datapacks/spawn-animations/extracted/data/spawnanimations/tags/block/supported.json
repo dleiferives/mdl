@@ -1,0 +1,27 @@
+{
+  "replace": false,
+  "values": [
+    "#minecraft:sand",
+    "minecraft:sandstone",
+    "#spawnanimations:dirt",
+    "#minecraft:planks",
+    "#minecraft:logs",
+    "#minecraft:leaves",
+    "#minecraft:stone_bricks",
+    "#minecraft:base_stone_overworld",
+    "minecraft:cobblestone",
+    "minecraft:hay_block",
+    "minecraft:gravel",
+    "minecraft:snow",
+    "minecraft:snow_block",
+    "#minecraft:ice",
+    "minecraft:obsidian",
+    "minecraft:slime_block",
+    "minecraft:nether_bricks",
+    "minecraft:end_stone",
+    "#minecraft:nylium",
+    "#minecraft:base_stone_nether",
+    "#minecraft:soul_fire_base_blocks",
+    "minecraft:lava"
+  ]
+}

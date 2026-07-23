@@ -1,0 +1,13 @@
+{
+  "//comment": "Entities specified here will be affected by the [Hide armor and tools] option",
+  "replace": false,
+  "values": [
+    "minecraft:zombie",
+    "minecraft:husk",
+    "minecraft:drowned",
+    "#minecraft:skeletons",
+    "minecraft:piglin",
+    "minecraft:piglin_brute",
+    "minecraft:zombified_piglin"
+  ]
+}

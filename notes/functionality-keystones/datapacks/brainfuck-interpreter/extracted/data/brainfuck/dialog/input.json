@@ -1,0 +1,49 @@
+{
+    "type": "confirmation",
+    "title": "Brainfuck Code & Input Panel",
+    "inputs":[
+        {
+            "key": "code",
+            "type": "minecraft:text",
+            "label": "Code",
+            "label_visible": true,
+            "multiline": {
+                "height": 130
+            },
+            "width": 400,
+            "max_length":1145141919
+        },
+        {
+            "key": "input",
+            "type": "minecraft:text",
+            "label": "Input",
+            "label_visible": true,
+            "width": 400,
+            "max_length":1145
+        },
+        {
+            "key": "array_length",
+            "type": "number_range",
+            "start":20,
+            "end": 1000,
+            "label": "Array Length",
+            "initial": 100,
+            "step": 20,
+            "width": 400
+        }
+    ],
+    "no": {
+        "label": "save",
+        "action": {
+            "type": "dynamic/run_command",
+            "template": "function brainfuck:save/ {input:\"$(input)\",code:\"$(code)\",array_length:$(array_length)}"
+        }
+    },
+    "yes": {
+        "label": "run",
+        "action": {
+            "type": "run_command",
+            "command": "function brainfuck:init/"
+        }
+    }
+}

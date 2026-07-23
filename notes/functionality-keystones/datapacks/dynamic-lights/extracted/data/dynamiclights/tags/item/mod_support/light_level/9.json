@@ -1,0 +1,14 @@
+{
+  "//comment": "Items listed here will emit light level 9 - Intended to get populated by mods",
+  "replace": false,
+  "values": [
+    {"id": "#c:glow_berries", "required": false},
+    {"id": "#c:glowstone_dusts", "required": false},
+    {"id": "#c:dusts/glowstone", "required": false},
+    {"id": "#c:rods/blaze", "required": false},
+    {"id": "#c:obsidians/crying", "required": false},
+    {"id": "bonetorch:soul_bonetorch", "required": false},
+    {"id": "tfc:sea_pickle", "required": false},
+    {"id": "wardrobe:soul_lantern_on_a_stick", "required": false}
+  ]
+}

@@ -1,0 +1,1 @@
+$tellraw @a {text:"copy",click_event:{action:"copy_to_clipboard",value:'$(list)'}}

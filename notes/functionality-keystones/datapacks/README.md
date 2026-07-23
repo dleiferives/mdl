@@ -23,7 +23,13 @@ Each datapack gets `datapacks/<name>/`:
   project's own current Minecraft target version where one exists — check the source's version
   API rather than assuming its latest release matches).
 - `extracted/` — the unzipped contents, so `.mcfunction`/`.json` files are directly greppable and
-  readable in later sessions without re-downloading or re-extracting.
+  readable in later sessions without re-downloading or re-extracting. If the pack ships
+  version-range overlays (`pack.mcmeta`'s `overlays.entries`) or duplicate directory trees for an
+  old/new pack-format split (e.g. plural `functions/`/`predicates/` vs. singular
+  `function/`/`predicate/`), keep only whichever tree actually resolves for this project's current
+  Minecraft target (check the overlay `min_format`/`max_format` ranges against that target's pack
+  format) — the archive itself is the complete record if a future session ever needs the material
+  for a different target version.
 - `NOTES.md` — the actual deliverable. Not a description of the datapack's *feature list*
   (that's what its store page is for) — a technical account of **how it's actually implemented**
   (which vanilla mechanics/commands/NBT shapes it leans on) and, from that, **which MDL systems
@@ -35,6 +41,9 @@ Each datapack gets `datapacks/<name>/`:
 | Datapack | Source | Notes |
 |---|---|---|
 | [veinminer](veinminer/NOTES.md) | [Modrinth](https://modrinth.com/datapack/veinminer), v1.3.5 (datapack loader, `26.2`) | Vein-mining via per-block-type mined-stat polling + relative-frame recursive flood-fill |
+| [dynamic-lights](dynamic-lights/NOTES.md) | [Modrinth](https://modrinth.com/datapack/dynamic-lights), v1.9.3 (datapack loader, `26.2`) | Held-light-source tracking via self-rescheduling `schedule function` + marker-entity light handles + heavy predicate-tree use |
+| [spawn-animations](spawn-animations/NOTES.md) | [Modrinth](https://modrinth.com/datapack/spawn-animations), v1.11.5 (datapack loader, `26.2`) | Dig-up spawn animation via `#minecraft:tick` + `schedule function`/`schedule clear`, per-tick work-budget selectors, and direct entity-`Pos`/`equipment` NBT writes |
+| [brainfuck-interpreter](brainfuck-interpreter/NOTES.md) | [Modrinth](https://modrinth.com/datapack/brainfuck-interpreter), v0.5 (datapack loader, `1.21.11` only — no `26.2` build, weaker evidence, see its own note) | A real interpreter-in-a-datapack; direct comparison point for MDL's own PS-3 capstone and Stage 9's already-open static-command-bound question; one clean new gap (`minecraft:dialog`) |
 
 ## Why downloaded archives are tracked in git here, unlike server jars
 

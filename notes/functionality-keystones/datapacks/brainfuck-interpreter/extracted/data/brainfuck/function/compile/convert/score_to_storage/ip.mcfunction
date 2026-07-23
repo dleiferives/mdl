@@ -1,0 +1,1 @@
+execute store result storage brainfuck:re ip int 1 run scoreboard players get #ip brainfuck.re

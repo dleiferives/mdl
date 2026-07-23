@@ -1,0 +1,13 @@
+{
+  "//comment": "Blocks to avoid triggering block updates near them",
+  "replace": false,
+  "values": [
+    "minecraft:piston",
+    "minecraft:sticky_piston",
+    "minecraft:moving_piston",
+    "minecraft:observer",
+    "minecraft:slime_block",
+    "minecraft:honey_block",
+    "minecraft:lava"
+  ]
+}

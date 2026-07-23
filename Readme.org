@@ -152,4 +152,15 @@ and [[file:notes/compiler/stage-8-handoff.md][Stage 8 handoff]].
 
 Compiler architecture, pass proofs, semantic ambiguities, and the implementation
 roadmap live under [[file:notes/compiler/README.md][notes/compiler]]. Backend command
-research lives under [[file:notes/mcfunction/README.md][notes/mcfunction]].
+research lives under [[file:notes/mcfunction/README.md][notes/mcfunction]]. The full
+notes index is [[file:notes/README.md][notes/README.md]].
+
+* Feature scoping from real datapacks
+
+Rather than guess which language/compiler features to build next, MDL grounds that decision
+in real, published Minecraft datapacks: download one, read its actual =.mcfunction=/=.json=
+files directly, and record which MDL systems are missing, partial, or already sufficient to
+express the same program. A gap found this way still gets its own design note before becoming
+a milestone (the same discipline PS-15/BE-1 followed) — this practice only replaces guessing
+with evidence at the scoping stage. See
+[[file:notes/functionality-keystones/README.md][notes/functionality-keystones]].

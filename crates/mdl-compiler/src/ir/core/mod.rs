@@ -5,6 +5,7 @@
 //! joins, and loop-carried values. Instruction order is semantically significant
 //! for operations with unknown effects.
 
+mod advancement;
 mod ambient;
 mod analysis;
 mod builder;
@@ -25,6 +26,7 @@ use std::fmt;
 use crate::entity::{EntityLimitError, EntityVec, entity_id};
 use crate::source::OriginId;
 
+pub use advancement::{AdvancementDecl, Criterion, ItemMatch};
 pub use ambient::{CoreAmbientAnalysis, CoreAmbientAnalysisError};
 pub use analysis::{
     ControlFlowGraph, Dominance, DominatorTree, PlacementIndex, Reachability, UseIndex, UseSite,
@@ -83,6 +85,10 @@ entity_id!(
 entity_id!(
     /// Identity of one program-owned schema-typed entity-NBT path read.
     pub struct EntityNbtReadId;
+);
+entity_id!(
+    /// Identity of one program-owned advancement declaration.
+    pub struct AdvancementId;
 );
 entity_id!(
     /// Identity of a block within one Core function body.
@@ -738,6 +744,7 @@ pub struct CoreProgram {
     pub(crate) run_scopes: EntityVec<RunScopeId, RunScopeDecl>,
     pub(crate) minecraft_operations: EntityVec<MinecraftOperationId, MinecraftOperationDecl>,
     pub(crate) entity_nbt_reads: EntityVec<EntityNbtReadId, EntityNbtReadDecl>,
+    pub(crate) advancements: EntityVec<AdvancementId, AdvancementDecl>,
 }
 
 impl CoreProgram {
@@ -752,6 +759,7 @@ impl CoreProgram {
             run_scopes: EntityVec::new(),
             minecraft_operations: EntityVec::new(),
             entity_nbt_reads: EntityVec::new(),
+            advancements: EntityVec::new(),
         }
     }
 
@@ -928,6 +936,12 @@ pub enum ProgramError {
         /// Binding whose closed contract was violated.
         binding: ExternalSemanticBinding,
     },
+    /// An advancement names a reward function outside this program, or one
+    /// with nonzero parameters or results.
+    InvalidAdvancementReward {
+        /// Invalid or incompatible reward function identity.
+        function: FunctionId,
+    },
 }
 
 impl fmt::Display for ProgramError {
@@ -969,6 +983,12 @@ impl fmt::Display for ProgramError {
                 write!(
                     formatter,
                     "invalid signature for external binding {binding:?}"
+                )
+            }
+            Self::InvalidAdvancementReward { function } => {
+                write!(
+                    formatter,
+                    "invalid advancement reward function {function:?}"
                 )
             }
         }
@@ -1329,9 +1349,9 @@ pub struct EntityCounts {
 #[cfg(test)]
 mod tests {
     use super::{
-        CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EffectClass, ExternalSemanticBinding,
-        I32Predicate, OperandSymmetry, OriginId, ResultEquivalence, Speculation, TargetFragment,
-        TypedCoreConstant,
+        CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, Criterion, EffectClass,
+        ExternalSemanticBinding, I32Predicate, ItemMatch, OperandSymmetry, OriginId, ProgramError,
+        ResultEquivalence, Speculation, TargetFragment, TypedCoreConstant,
     };
 
     #[test]
@@ -1368,6 +1388,45 @@ mod tests {
                 .collect::<Vec<_>>(),
             [exported]
         );
+    }
+
+    #[test]
+    fn advancement_requires_a_zero_arity_reward_in_this_program() {
+        let mut program = CoreProgram::new();
+        let reward = program
+            .declare_function(Some("on0"), vec![], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        let criterion = Criterion::InventoryChanged {
+            items: vec![ItemMatch::new("minecraft:diamond")],
+        };
+        let advancement = program
+            .declare_advancement(reward, criterion.clone(), OriginId::UNKNOWN)
+            .unwrap();
+        assert_eq!(program.advancement(advancement).unwrap().reward(), reward);
+        assert_eq!(
+            program.advancement(advancement).unwrap().criterion(),
+            &criterion
+        );
+        assert_eq!(
+            program.advancements().map(|(id, _)| id).collect::<Vec<_>>(),
+            [advancement]
+        );
+
+        let with_parameter = program
+            .declare_function(Some("on1"), vec![CoreType::I32], vec![], OriginId::UNKNOWN)
+            .unwrap();
+        assert!(matches!(
+            program.declare_advancement(with_parameter, criterion.clone(), OriginId::UNKNOWN),
+            Err(ProgramError::InvalidAdvancementReward { function }) if function == with_parameter
+        ));
+
+        let with_result = program
+            .declare_function(Some("on2"), vec![], vec![CoreType::Bool], OriginId::UNKNOWN)
+            .unwrap();
+        assert!(matches!(
+            program.declare_advancement(with_result, criterion, OriginId::UNKNOWN),
+            Err(ProgramError::InvalidAdvancementReward { function }) if function == with_result
+        ));
     }
 
     #[test]

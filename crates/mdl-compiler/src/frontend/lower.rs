@@ -9,20 +9,20 @@ use std::cell::Cell;
 
 use super::hir::{
     CheckedFrontendOutput, FunctionResult, FunctionVisibility, HirBlock, HirCall, HirComparisonOp,
-    HirDestructureTargetRole, HirEntityNbtReceiver, HirEntityPathSegment, HirEntityQuery,
-    HirEntityQueryStep, HirExpression, HirExpressionKind, HirExternalOp, HirExternalSemantic,
-    HirFunction, HirIf, HirListI32Op, HirMinecraftOperationAttributes, HirRun, HirRunModifier,
-    HirStatement, HirStatementKind, HirStringOp, HirSwitchExpression, HirSwitchLabel,
-    HirSwitchPatternKind, HirSwitchStatement, HirWhile, HirWrappingArithmeticOp, LocalId,
-    SourceExternalOpId, SourceFunctionId, SourceRunId, SourceStructId, ValueType,
+    HirCriterion, HirDestructureTargetRole, HirEntityNbtReceiver, HirEntityPathSegment,
+    HirEntityQuery, HirEntityQueryStep, HirExpression, HirExpressionKind, HirExternalOp,
+    HirExternalSemantic, HirFunction, HirIf, HirListI32Op, HirMinecraftOperationAttributes, HirRun,
+    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirSwitchExpression,
+    HirSwitchLabel, HirSwitchPatternKind, HirSwitchStatement, HirWhile, HirWrappingArithmeticOp,
+    LocalId, SourceExternalOpId, SourceFunctionId, SourceRunId, SourceStructId, ValueType,
 };
 use crate::diagnostic::Diagnostics;
 use crate::entity::EntityId;
 use crate::ir::core::{
     BlockId, BlockTarget, BuildError, CoreAmbientAnalysis, CoreAmbientAnalysisError,
-    CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, EntityNbtPathSegment, EntityNbtReceiver,
-    EntityQueryDecl, EntityQueryStep, ExternalOpId, ExternalSemanticBinding, FunctionBody,
-    FunctionBuilder, FunctionId, I32ClosedRange, I32Predicate, InstId,
+    CoreFunctionLinkage, CoreOp, CoreProgram, CoreType, Criterion, EntityNbtPathSegment,
+    EntityNbtReceiver, EntityQueryDecl, EntityQueryStep, ExternalOpId, ExternalSemanticBinding,
+    FunctionBody, FunctionBuilder, FunctionId, I32ClosedRange, I32Predicate, InstId, ItemMatch,
     MinecraftOperationAttributes, MinecraftOperationOrigins, Operand, ProgramError,
     RunModifierInstance, TargetFragment, Terminator, TerminatorKind, ValueId, verify_program,
 };
@@ -580,6 +580,13 @@ pub enum CoreGenerationFailure {
         /// Concrete Core inventory failure.
         error: ProgramError,
     },
+    /// An event handler's advancement could not be linked into Core inventories.
+    AdvancementDeclaration {
+        /// Source reward function being linked.
+        source_function: SourceFunctionId,
+        /// Concrete Core inventory failure.
+        error: ProgramError,
+    },
     /// The Core body builder rejected a construction request.
     Construction {
         /// Source function being lowered.
@@ -640,6 +647,13 @@ impl fmt::Display for CoreGenerationFailure {
                 formatter,
                 "cannot declare Core run scope for {source_run:?}: {error}"
             ),
+            Self::AdvancementDeclaration {
+                source_function,
+                error,
+            } => write!(
+                formatter,
+                "cannot declare Core advancement for reward {source_function:?}: {error}"
+            ),
             Self::Construction {
                 source_function,
                 error,
@@ -689,6 +703,7 @@ impl Error for CoreGenerationFailure {
             Self::Declaration { error, .. }
             | Self::ExternalDeclaration { error, .. }
             | Self::RunDeclaration { error, .. }
+            | Self::AdvancementDeclaration { error, .. }
             | Self::Definition { error, .. } => Some(error),
             Self::Construction { error, .. } => Some(error),
             Self::BodyVerification { diagnostics, .. }
@@ -801,6 +816,8 @@ pub(super) fn lower_hir(
                 error,
             })?;
     }
+
+    declare_advancements(&mut program, checked, &source_to_core)?;
 
     verify_program(&program, sources)
         .map_err(|diagnostics| CoreGenerationFailure::ProgramVerification { diagnostics })?;
@@ -999,6 +1016,45 @@ fn lower_entity_query_decl(query: &HirEntityQuery) -> EntityQueryDecl {
         })
         .collect();
     EntityQueryDecl::new(query.semantic.clone(), steps)
+}
+
+fn declare_advancements(
+    program: &mut CoreProgram,
+    checked: &CheckedFrontendOutput,
+    source_to_core: &SourceToCoreMap,
+) -> Result<(), CoreGenerationFailure> {
+    for handler in checked.event_handlers() {
+        let core_function =
+            source_to_core
+                .function(handler.reward)
+                .ok_or(CoreGenerationFailure::Invariant(
+                    CoreGenerationInvariant::MissingFunctionMapping {
+                        source_function: handler.reward,
+                    },
+                ))?;
+        program
+            .declare_advancement(
+                core_function,
+                lower_criterion(&handler.criterion),
+                handler.origin,
+            )
+            .map_err(|error| CoreGenerationFailure::AdvancementDeclaration {
+                source_function: handler.reward,
+                error,
+            })?;
+    }
+    Ok(())
+}
+
+fn lower_criterion(criterion: &HirCriterion) -> Criterion {
+    match criterion {
+        HirCriterion::InventoryChanged { items, .. } => Criterion::InventoryChanged {
+            items: items
+                .iter()
+                .map(|item| ItemMatch::new(item.clone()))
+                .collect(),
+        },
+    }
 }
 
 fn collect_run_scopes(output: &CheckedFrontendOutput) -> Vec<(&HirFunction, &HirRun)> {
@@ -3470,7 +3526,7 @@ mod tests {
     use crate::frontend::lexer::lex;
     use crate::frontend::parser::parse;
     use crate::ir::core::{
-        CanonicalPrinter, CoreOp, EntityQueryStep, RunModifierInstance, TerminatorKind,
+        CanonicalPrinter, CoreOp, Criterion, EntityQueryStep, RunModifierInstance, TerminatorKind,
         reset_verifier_counters, verifier_counters,
     };
     use crate::source::SourceContext;
@@ -4085,5 +4141,25 @@ fn second(flag: Bool, left: Int32, right: Int32) -> Int32 {
         let (program, map): (_, SourceToCoreMap) = generated.into_parts();
         assert_eq!(program.len(), 1);
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn event_handler_declares_one_advancement_with_a_zero_arity_reward() {
+        let text = r#"on inventory_changed(.items = ["minecraft:diamond"]) |player| {
+    player.say("MDL_GOT_DIAMOND");
+}"#;
+        let (_, checked, generated) = lower(text);
+        let program = generated.program();
+        assert_eq!(program.len(), 1);
+        assert_eq!(checked.event_handlers().len(), 1);
+        let advancements = program.advancements().collect::<Vec<_>>();
+        assert_eq!(advancements.len(), 1);
+        let (_, declaration) = advancements[0];
+        let reward = program.function(declaration.reward()).unwrap();
+        assert!(reward.parameters().is_empty());
+        assert!(reward.results().is_empty());
+        let Criterion::InventoryChanged { items } = declaration.criterion();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].as_str(), "minecraft:diamond");
     }
 }

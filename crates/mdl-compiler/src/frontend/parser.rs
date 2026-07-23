@@ -912,18 +912,17 @@ impl<'a> Parser<'a> {
             TokenKind::KeywordBreak => self.parse_loop_control_statement(true),
             TokenKind::KeywordContinue => self.parse_loop_control_statement(false),
             TokenKind::KeywordReturn => self.parse_return_statement(),
-            TokenKind::KeywordRun if self.nth_kind(1) == TokenKind::Equal => {
-                self.parse_assignment()
-            }
-            TokenKind::KeywordRun if self.nth_kind(1) == TokenKind::LeftParenthesis => {
-                self.parse_call_statement()
+            TokenKind::KeywordRun
+                if matches!(
+                    self.nth_kind(1),
+                    TokenKind::Equal | TokenKind::LeftParenthesis
+                ) =>
+            {
+                self.parse_assignment_or_call()
             }
             TokenKind::KeywordRun => self.parse_run_statement(),
             TokenKind::KeywordUnsafe => self.parse_unsafe_minecraft_statement(),
-            kind if is_identifier_like(kind) && self.nth_kind(1) == TokenKind::Equal => {
-                self.parse_assignment()
-            }
-            kind if is_identifier_like(kind) => self.parse_call_statement(),
+            kind if is_identifier_like(kind) => self.parse_assignment_or_call(),
             _ => {
                 let span = self.current().span();
                 self.error(EXPECTED_STATEMENT, "expected a statement", span);
@@ -1289,39 +1288,39 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_assignment(&mut self) -> Result<AstStatement, SourceError> {
-        let name_token = self.bump();
-        let target = AstName {
-            span: name_token.span(),
-        };
-        self.bump();
-        let value = self.parse_expression()?;
-        let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the assignment");
-        let end = semicolon.map_or(value.span, Token::span);
-        let span = self.cover(name_token.span(), end)?;
-        if semicolon.is_none() || expression_has_error(&value) {
-            self.note_item_boundary();
-            return Ok(AstStatement::Error(span));
+    /// Parses either an assignment or a call statement — both begin with an
+    /// ordinary expression, disambiguated only by whether `=` follows it.
+    /// PS-16 widened assignment targets from a bare name to a general postfix
+    /// chain (`mc.block(Chest, x, y, z).Items[slot] = .{...}`), so the two
+    /// statements share this one parse instead of being told apart by a
+    /// single-token lookahead.
+    fn parse_assignment_or_call(&mut self) -> Result<AstStatement, SourceError> {
+        let target = self.parse_expression()?;
+        if self.at(TokenKind::Equal) {
+            self.bump();
+            let value = self.parse_expression()?;
+            let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the assignment");
+            let end = semicolon.map_or(value.span, Token::span);
+            let span = self.cover(target.span, end)?;
+            if semicolon.is_none() || expression_has_error(&value) {
+                self.note_item_boundary();
+                return Ok(AstStatement::Error(span));
+            }
+            return Ok(AstStatement::Assignment(AstAssignment {
+                target,
+                value,
+                span,
+            }));
         }
-        Ok(AstStatement::Assignment(AstAssignment {
-            target,
-            value,
-            span,
-        }))
-    }
-
-    fn parse_call_statement(&mut self) -> Result<AstStatement, SourceError> {
-        let expression = self.parse_expression()?;
-        let expression_span = expression.span;
-        let AstExpressionKind::Call(call) = expression.kind else {
+        let AstExpressionKind::Call(call) = target.kind else {
             self.error(
                 EXPECTED_ASSIGNMENT_OR_CALL,
                 "expected an assignment or call statement",
-                expression_span,
+                target.span,
             );
             self.recover_statement();
             return Ok(AstStatement::Error(
-                self.cover(expression_span, self.previous_or_current_span())?,
+                self.cover(target.span, self.previous_or_current_span())?,
             ));
         };
         let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the call");

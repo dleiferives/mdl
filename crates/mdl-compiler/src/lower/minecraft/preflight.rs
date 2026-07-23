@@ -6,9 +6,10 @@ use crate::analysis::minecraft::{
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
 use crate::entity::{EntityLimitError, EntityVec};
 use crate::ir::core::{
-    CoreOp, CoreProgram, EntityNbtPathSegment, EntityNbtReadDecl, EntityNbtReceiver, ExternalOpId,
-    ExternalSemanticBinding, MinecraftOperationAttributes, MinecraftOperationDecl,
-    MinecraftOperationId, Operand, RunModifierInstance, RunScopeId, ValueId,
+    CoreOp, CoreProgram, EntityNbtPathSegment, EntityNbtReadDecl, EntityNbtReceiver,
+    EntityNbtWriteDecl, ExternalOpId, ExternalSemanticBinding, MinecraftOperationAttributes,
+    MinecraftOperationDecl, MinecraftOperationId, Operand, RunModifierInstance, RunScopeId,
+    ValueId,
 };
 use crate::ir::minecraft::{
     CommandContract, CommandKind, ContextMask, ContextSummary, EffectCategories, EffectSummary,
@@ -423,6 +424,7 @@ pub(crate) struct TargetPreflight {
     selected_semantic_recipes: EntityVec<ExternalOpId, Option<SelectedSemanticRecipe>>,
     selected_run_modifiers: EntityVec<RunScopeId, Box<[SelectedRunModifierRecipe]>>,
     selected_entity_nbt_reads: EntityVec<ExternalOpId, Option<ResolvedEntityNbtRead>>,
+    selected_entity_nbt_writes: EntityVec<ExternalOpId, Option<ResolvedEntityNbtWrite>>,
 }
 
 impl TargetPreflight {
@@ -441,12 +443,14 @@ impl TargetPreflight {
         let selected_semantic_recipes = select_reachable_recipes(core, inventory, target)?;
         let selected_run_modifiers = select_run_modifier_recipes(core)?;
         let selected_entity_nbt_reads = select_reachable_entity_nbt_reads(core, inventory)?;
+        let selected_entity_nbt_writes = select_reachable_entity_nbt_writes(core, inventory)?;
         Ok(Self {
             target,
             command_limits,
             selected_semantic_recipes,
             selected_run_modifiers,
             selected_entity_nbt_reads,
+            selected_entity_nbt_writes,
         })
     }
 
@@ -492,6 +496,21 @@ impl TargetPreflight {
         operation: ExternalOpId,
     ) -> Option<&ResolvedEntityNbtRead> {
         self.selected_entity_nbt_reads
+            .get(operation)
+            .and_then(Option::as_ref)
+    }
+
+    /// Returns the resolved whole-slot entity-NBT path write for an external
+    /// declaration (PS-16, BE-2) — same rationale as
+    /// `selected_entity_nbt_read`'s own doc comment.
+    ///
+    /// `None` means either the identity is foreign, the declaration is not an
+    /// entity-NBT write, or it has no entry-reachable occurrence.
+    pub(crate) fn selected_entity_nbt_write(
+        &self,
+        operation: ExternalOpId,
+    ) -> Option<&ResolvedEntityNbtWrite> {
+        self.selected_entity_nbt_writes
             .get(operation)
             .and_then(Option::as_ref)
     }
@@ -574,6 +593,22 @@ impl TargetPreflight {
             findings.push(Diagnostic::new(
                 "lower.preflight.entity-nbt-read-mismatch",
                 "retained entity-NBT read table differs from independent preflight selection",
+                OriginId::UNKNOWN,
+            ));
+        }
+
+        let expected_entity_nbt_writes = select_reachable_entity_nbt_writes(core, inventory)?;
+        let entity_nbt_writes_match = self.selected_entity_nbt_writes.len()
+            == expected_entity_nbt_writes.len()
+            && self
+                .selected_entity_nbt_writes
+                .iter()
+                .zip(expected_entity_nbt_writes.iter())
+                .all(|((left_id, left), (right_id, right))| left_id == right_id && left == right);
+        if !entity_nbt_writes_match {
+            findings.push(Diagnostic::new(
+                "lower.preflight.entity-nbt-write-mismatch",
+                "retained entity-NBT write table differs from independent preflight selection",
                 OriginId::UNKNOWN,
             ));
         }
@@ -870,9 +905,30 @@ fn resolve_entity_nbt_read(
     declaration: &EntityNbtReadDecl,
     operands: &[ValueId],
 ) -> Result<ResolvedEntityNbtRead, Diagnostic> {
+    Ok(ResolvedEntityNbtRead {
+        receiver: declaration.receiver(),
+        segments: resolve_entity_nbt_segments(
+            declaration.segments(),
+            operands,
+            declaration.receiver_origin(),
+        )?,
+    })
+}
+
+/// Resolves an entity-NBT declaration's path segments against this
+/// occurrence's real instruction operands, discarding the `Operand::Runtime`
+/// placeholder written during Core generation in favor of the real
+/// per-occurrence `ValueId`. Shared by `resolve_entity_nbt_read` and
+/// `resolve_entity_nbt_write` (PS-16) — a write's path is the exact same
+/// shape as a read's, just without a terminal scalar field.
+fn resolve_entity_nbt_segments(
+    segments: &[EntityNbtPathSegment],
+    operands: &[ValueId],
+    receiver_origin: OriginId,
+) -> Result<Box<[ResolvedEntityNbtSegment]>, Diagnostic> {
     let mut operands = operands.iter().copied();
-    let mut segments = Vec::with_capacity(declaration.segments().len());
-    for segment in declaration.segments() {
+    let mut resolved_segments = Vec::with_capacity(segments.len());
+    for segment in segments {
         let resolved = match segment {
             EntityNbtPathSegment::Key(key) => ResolvedEntityNbtSegment::Key(key.clone()),
             EntityNbtPathSegment::Index(Operand::Const(n)) => {
@@ -883,7 +939,7 @@ fn resolve_entity_nbt_read(
                     Diagnostic::new(
                         "lower.preflight.missing-macro-operand",
                         "runtime entity-NBT index external is missing an index operand",
-                        declaration.receiver_origin(),
+                        receiver_origin,
                     )
                 })?;
                 ResolvedEntityNbtSegment::Index(Operand::Runtime(value))
@@ -900,17 +956,20 @@ fn resolve_entity_nbt_read(
                 value: Operand::Runtime(_),
             } => {
                 // No schema field reachable through a runtime-matched list
-                // is registered yet (BE-1 requires a literal container slot
-                // — see `frontend/check.rs`'s match-key literal-only guard).
-                // Kept structurally parallel to the `Index` arm above rather
-                // than silently omitted, so this stops compiling loudly
-                // instead of miscompiling quietly once a future slice lifts
-                // that restriction.
+                // is registered yet for reads without a literal container
+                // slot restriction lifted (BE-1 Slice 2), and writes still
+                // reject a runtime slot entirely in this release (PS-16
+                // Stage 1 — see `frontend/check.rs`'s
+                // `RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED` guard). Kept
+                // structurally parallel to the `Index` arm above rather than
+                // silently omitted, so this stops compiling loudly instead
+                // of miscompiling quietly once a future slice lifts that
+                // restriction.
                 let value = operands.next().ok_or_else(|| {
                     Diagnostic::new(
                         "lower.preflight.missing-macro-operand",
                         "runtime entity-NBT match external is missing a match-value operand",
-                        declaration.receiver_origin(),
+                        receiver_origin,
                     )
                 })?;
                 ResolvedEntityNbtSegment::Match {
@@ -919,11 +978,162 @@ fn resolve_entity_nbt_read(
                 }
             }
         };
-        segments.push(resolved);
+        resolved_segments.push(resolved);
     }
-    Ok(ResolvedEntityNbtRead {
+    Ok(resolved_segments.into_boxed_slice())
+}
+
+/// One fully resolved whole-slot entity-NBT path write (PS-16, BE-2),
+/// independent of `SelectedSemanticRecipe`/`MinecraftRecipeId` — same
+/// rationale as `ResolvedEntityNbtRead`'s own doc comment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedEntityNbtWrite {
+    receiver: EntityNbtReceiver,
+    segments: Box<[ResolvedEntityNbtSegment]>,
+    item_id: Box<str>,
+    count: i32,
+}
+
+impl ResolvedEntityNbtWrite {
+    pub(crate) const fn receiver(&self) -> EntityNbtReceiver {
+        self.receiver
+    }
+
+    pub(crate) fn segments(&self) -> &[ResolvedEntityNbtSegment] {
+        &self.segments
+    }
+
+    pub(crate) fn item_id(&self) -> &str {
+        &self.item_id
+    }
+
+    pub(crate) const fn count(&self) -> i32 {
+        self.count
+    }
+
+    /// Whether any segment carries a runtime `ValueId` — the derived
+    /// predicate deciding inline (`InstructionPlan::EntityNbtWrite`) vs.
+    /// macro-helper (`InstructionPlan::External`) lowering. Mirrors
+    /// `ResolvedEntityNbtRead::is_unusable_inline` exactly; always `false`
+    /// in Stage 1, since the checker forbids a runtime container slot.
+    pub(crate) fn is_unusable_inline(&self) -> bool {
+        self.segments.iter().any(|segment| {
+            matches!(
+                segment,
+                ResolvedEntityNbtSegment::Index(Operand::Runtime(_))
+                    | ResolvedEntityNbtSegment::Match {
+                        value: Operand::Runtime(_),
+                        ..
+                    }
+            )
+        })
+    }
+}
+
+/// Resolves every reachable whole-slot entity-NBT write's runtime index
+/// placeholders against their real per-occurrence instruction operands.
+/// Mirrors `select_reachable_entity_nbt_reads` exactly.
+fn select_reachable_entity_nbt_writes(
+    core: &CoreProgram,
+    inventory: &SemanticInventory,
+) -> Result<EntityVec<ExternalOpId, Option<ResolvedEntityNbtWrite>>, Diagnostics> {
+    let mut selections =
+        EntityVec::from_constrained_values(core.external_ops().map(|_| None).collect::<Vec<_>>());
+    let mut findings = Vec::new();
+
+    for (function, declaration) in core.functions() {
+        let Some(body) = declaration.body() else {
+            findings.push(Diagnostic::new(
+                "lower.preflight.missing-definition",
+                format!("cannot resolve entity-NBT writes for undefined function {function:?}"),
+                declaration.origin(),
+            ));
+            continue;
+        };
+        let Some(function_inventory) = inventory.function(function) else {
+            findings.push(Diagnostic::new(
+                "lower.preflight.missing-semantic-inventory",
+                format!("semantic inventory has no entry for {function:?}"),
+                declaration.origin(),
+            ));
+            continue;
+        };
+
+        for instruction in function_inventory.reachable_instructions().iter().copied() {
+            let Some(instruction_data) = body.instruction(instruction) else {
+                findings.push(Diagnostic::new(
+                    "lower.preflight.missing-instruction",
+                    format!(
+                        "semantic inventory names absent instruction {instruction:?} in {function:?}"
+                    ),
+                    declaration.origin(),
+                ));
+                continue;
+            };
+            let CoreOp::External(external) = instruction_data.op() else {
+                continue;
+            };
+            let Some(external_declaration) = core.external_op(*external) else {
+                findings.push(Diagnostic::new(
+                    "lower.preflight.invalid-external-operation",
+                    format!("reachable instruction refers to absent external {external:?}"),
+                    instruction_data.origin(),
+                ));
+                continue;
+            };
+            let ExternalSemanticBinding::EntityNbtWrite(write) = external_declaration.binding()
+            else {
+                continue;
+            };
+            let Some(slot) = selections.get_mut(*external) else {
+                findings.push(Diagnostic::new(
+                    "lower.preflight.entity-nbt-write-table-shape",
+                    format!(
+                        "reachable external {external:?} is outside the dense entity-NBT write table"
+                    ),
+                    instruction_data.origin(),
+                ));
+                continue;
+            };
+            if slot.is_some() {
+                continue;
+            }
+            let Some(write_declaration) = core.entity_nbt_write(write) else {
+                findings.push(Diagnostic::new(
+                    "lower.preflight.invalid-entity-nbt-write",
+                    format!(
+                        "reachable external {external:?} refers to absent entity-NBT write {write:?}"
+                    ),
+                    external_declaration.origin(),
+                ));
+                continue;
+            };
+            match resolve_entity_nbt_write(write_declaration, instruction_data.operands()) {
+                Ok(resolved) => *slot = Some(resolved),
+                Err(finding) => findings.push(finding),
+            }
+        }
+    }
+
+    match Diagnostics::from_findings(findings) {
+        Some(diagnostics) => Err(diagnostics),
+        None => Ok(selections),
+    }
+}
+
+fn resolve_entity_nbt_write(
+    declaration: &EntityNbtWriteDecl,
+    operands: &[ValueId],
+) -> Result<ResolvedEntityNbtWrite, Diagnostic> {
+    Ok(ResolvedEntityNbtWrite {
         receiver: declaration.receiver(),
-        segments: segments.into_boxed_slice(),
+        segments: resolve_entity_nbt_segments(
+            declaration.segments(),
+            operands,
+            declaration.receiver_origin(),
+        )?,
+        item_id: declaration.item_id().into(),
+        count: declaration.count(),
     })
 }
 
@@ -1305,6 +1515,9 @@ fn external_diagnostic_origin(core: &CoreProgram, external: ExternalOpId) -> Ori
         ExternalSemanticBinding::EntityNbtRead(read) => core
             .entity_nbt_read(read)
             .map_or(declaration.origin(), EntityNbtReadDecl::receiver_origin),
+        ExternalSemanticBinding::EntityNbtWrite(write) => core
+            .entity_nbt_write(write)
+            .map_or(declaration.origin(), EntityNbtWriteDecl::receiver_origin),
     }
 }
 

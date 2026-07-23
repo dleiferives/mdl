@@ -7,9 +7,9 @@ use crate::ir::core::{
 use crate::ir::minecraft::{
     AtMostOneSelector, CommandId, CommandKind, DataCommand, DataModifyMode, DataSource,
     ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FunctionCall,
-    InternalCallableRef, McFunctionId, MinecraftProgram, NbtMatchValueKind, NbtPath, NbtPathKey,
-    NbtPathSegment, NbtValue, Selector, StoreChannel, StoreDestination, SyntaxSlot,
-    UnsafeRawCommand,
+    InternalCallableRef, ItemReplaceBlockCommand, McFunctionId, MinecraftProgram,
+    NbtMatchValueKind, NbtPath, NbtPathKey, NbtPathSegment, NbtValue, Selector, StoreChannel,
+    StoreDestination, SyntaxSlot, UnsafeRawCommand,
 };
 use crate::source::OriginId;
 
@@ -414,6 +414,42 @@ fn lower_instruction(
             let read_source = entity_nbt_read_source(resolved, path);
             emit_entity_nbt_read_result(context, result.home(), read_source, data.origin())
         }
+        InstructionPlan::EntityNbtWrite { external, results } => {
+            let CoreOp::External(actual) = data.op() else {
+                return Err(invariant_diagnostics(
+                    "non-external instruction has an entity-NBT write physical plan",
+                    data.origin(),
+                ));
+            };
+            if actual != external {
+                return Err(invariant_diagnostics(
+                    "entity-NBT write plan names the wrong external declaration",
+                    data.origin(),
+                ));
+            }
+            if !results.is_empty() {
+                return Err(invariant_diagnostics(
+                    "entity-NBT write plan unexpectedly demands a result",
+                    data.origin(),
+                ));
+            }
+            let resolved = plan
+                .preflight()
+                .selected_entity_nbt_write(*external)
+                .ok_or_else(|| {
+                    invariant_diagnostics(
+                        "entity-NBT write plan has no retained preflight resolution",
+                        data.origin(),
+                    )
+                })?;
+            let write_command = item_replace_block_command(resolved, data.origin())?;
+            context
+                .push_correlated(command(
+                    CommandKind::ItemReplaceBlock(write_command),
+                    data.origin(),
+                )?)
+                .map(Some)
+        }
         InstructionPlan::Scalar { operands, results } => {
             if matches!(data.op(), CoreOp::Call(_)) {
                 return Err(invariant_diagnostics(
@@ -660,6 +696,11 @@ fn define_external_helper(
             let body = command(CommandKind::Macro(macro_cmd), data.origin())?;
             target.define_external_helper(helper, body)
         }
+        ExternalSemanticBinding::EntityNbtWrite(_) => Err(invariant_diagnostics(
+            "entity-NBT write incorrectly received an external helper — Stage 1 has no runtime \
+             container slot support yet, so a write is never plan-routed through External{helper}",
+            data.origin(),
+        )),
     }
 }
 
@@ -811,6 +852,40 @@ fn entity_nbt_read_source(
             DataSource::Block { position, path }
         }
     }
+}
+
+/// Builds the real `ItemReplaceBlockCommand` for a resolved whole-slot
+/// entity-NBT write (PS-16, BE-2). The written slot is the value carried by
+/// the resolved path's final `Match`/`Index` segment — `container.<slot>` is
+/// a Brigadier `slot` command argument (a plain decimal integer), not an NBT
+/// path match, so unlike the read side's `[{Slot:Nb}]` rendering there is no
+/// byte-suffix concern here at all.
+fn item_replace_block_command(
+    resolved: &super::preflight::ResolvedEntityNbtWrite,
+    origin: OriginId,
+) -> Result<ItemReplaceBlockCommand, Diagnostics> {
+    let crate::ir::core::EntityNbtReceiver::Block(_, position) = resolved.receiver() else {
+        return Err(invariant_diagnostics(
+            "entity-NBT write has a non-block receiver",
+            origin,
+        ));
+    };
+    let Some(
+        super::preflight::ResolvedEntityNbtSegment::Match { value: slot, .. }
+        | super::preflight::ResolvedEntityNbtSegment::Index(slot),
+    ) = resolved.segments().last()
+    else {
+        return Err(invariant_diagnostics(
+            "entity-NBT write path does not end in a container index",
+            origin,
+        ));
+    };
+    Ok(ItemReplaceBlockCommand::new(
+        position,
+        *slot,
+        resolved.item_id().into(),
+        resolved.count(),
+    ))
 }
 
 /// Emits the fail-soft two-command read (type-appropriate default, then
@@ -3217,7 +3292,8 @@ mod tests {
                 | CommandKind::Raw(_)
                 | CommandKind::Macro(_)
                 | CommandKind::FunctionWithStorage(_)
-                | CommandKind::AdvancementRevoke(_) => {
+                | CommandKind::AdvancementRevoke(_)
+                | CommandKind::ItemReplaceBlock(_) => {
                     panic!("loop lowering emitted a non-score primitive")
                 }
             }

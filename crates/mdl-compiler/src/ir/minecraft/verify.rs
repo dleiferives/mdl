@@ -105,7 +105,8 @@ fn verify_command_shape(
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Macro(_)
         | CommandKind::FunctionWithStorage(_)
-        | CommandKind::AdvancementRevoke(_) => {}
+        | CommandKind::AdvancementRevoke(_)
+        | CommandKind::ItemReplaceBlock(_) => {}
         CommandKind::Say(say) => {
             if let Err(error) = SayMessage::new_for_target(say.message().as_str(), target) {
                 verifier.report(
@@ -352,7 +353,8 @@ fn verify_command_references(
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Macro(_)
         | CommandKind::Raw(_)
-        | CommandKind::AdvancementRevoke(_) => {}
+        | CommandKind::AdvancementRevoke(_)
+        | CommandKind::ItemReplaceBlock(_) => {}
     }
 }
 
@@ -584,7 +586,8 @@ fn verify_command_origins(
         | CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail)
         | CommandKind::Raw(_)
         | CommandKind::Macro(_)
-        | CommandKind::AdvancementRevoke(_) => {}
+        | CommandKind::AdvancementRevoke(_)
+        | CommandKind::ItemReplaceBlock(_) => {}
     }
 }
 

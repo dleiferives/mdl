@@ -585,6 +585,20 @@ pub(super) enum HirExternalSemantic {
         result_ty: ValueType,
         receiver_origin: OriginId,
     },
+    /// A whole-slot entity-NBT write (PS-16, BE-2), e.g.
+    /// `mc.block(Chest, x, y, z).Items[slot] = .{id: "...", count: N}`.
+    /// `segments` ends in the `Match`/`Index` step selecting the written
+    /// element (mirrors `EntityNbtRead`'s own path, reused unchanged).
+    /// `item_id`/`count` are always compile-time literals — never routed
+    /// through `MinecraftSemanticKey` either, for the same schema-driven
+    /// reason `EntityNbtRead` isn't.
+    EntityNbtWrite {
+        receiver: HirEntityNbtReceiver,
+        segments: Box<[HirEntityPathSegment]>,
+        item_id: Box<str>,
+        count: i32,
+        receiver_origin: OriginId,
+    },
 }
 
 /// The root of a checked entity-NBT path chain (BE-1,
@@ -1248,40 +1262,31 @@ impl<'a> Dumper<'a> {
                     result_ty,
                     receiver_origin,
                 } => {
-                    let path = segments
-                        .iter()
-                        .map(|segment| match segment {
-                            HirEntityPathSegment::Key(key) => format!(".{key}"),
-                            HirEntityPathSegment::Index(index) => match &index.kind {
-                                HirExpressionKind::Int32(value) => format!("[{value}]"),
-                                _ => "[<runtime>]".to_string(),
-                            },
-                            HirEntityPathSegment::Match { match_key, value } => match &value.kind {
-                                HirExpressionKind::Int32(n) => {
-                                    format!("[{{{match_key}:{n}}}]")
-                                }
-                                _ => format!("[{{{match_key}:<runtime>}}]"),
-                            },
-                        })
-                        .collect::<String>();
-                    let receiver_text = match receiver {
-                        HirEntityNbtReceiver::Entity {
-                            kind,
-                            executor_proof,
-                        } => format!(
-                            "Executor<{kind}> proof=run@{}:modifier{}",
-                            executor_proof.run.index(),
-                            executor_proof.modifier_index
-                        ),
-                        HirEntityNbtReceiver::Block { kind, position } => format!(
-                            "Block<{kind}> position={} {} {}",
-                            position.x, position.y, position.z
-                        ),
-                    };
+                    let path = dump_entity_nbt_path(segments);
+                    let receiver_text = dump_entity_nbt_receiver(receiver);
                     self.line(
                         1,
                         &format!(
                             "external @{} entity-nbt-read receiver={receiver_text} path={path} result_ty={result_ty} receiver_origin={} {}",
+                            external.id.index(),
+                            self.location(*receiver_origin),
+                            self.location(external.origin),
+                        ),
+                    );
+                }
+                HirExternalSemantic::EntityNbtWrite {
+                    receiver,
+                    segments,
+                    item_id,
+                    count,
+                    receiver_origin,
+                } => {
+                    let path = dump_entity_nbt_path(segments);
+                    let receiver_text = dump_entity_nbt_receiver(receiver);
+                    self.line(
+                        1,
+                        &format!(
+                            "external @{} entity-nbt-write receiver={receiver_text} path={path} item={item_id:?} count={count} receiver_origin={} {}",
                             external.id.index(),
                             self.location(*receiver_origin),
                             self.location(external.origin),
@@ -1739,6 +1744,46 @@ fn render_behavior(behavior: FunctionBehavior) -> String {
     )
 }
 
+/// Renders an entity-NBT path's segments, dot/bracket style — shared by both
+/// `EntityNbtRead` and `EntityNbtWrite`'s dump text (PS-16).
+fn dump_entity_nbt_path(segments: &[HirEntityPathSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| match segment {
+            HirEntityPathSegment::Key(key) => format!(".{key}"),
+            HirEntityPathSegment::Index(index) => match &index.kind {
+                HirExpressionKind::Int32(value) => format!("[{value}]"),
+                _ => "[<runtime>]".to_string(),
+            },
+            HirEntityPathSegment::Match { match_key, value } => match &value.kind {
+                HirExpressionKind::Int32(n) => format!("[{{{match_key}:{n}}}]"),
+                _ => format!("[{{{match_key}:<runtime>}}]"),
+            },
+        })
+        .collect::<String>()
+}
+
+/// Renders an entity-NBT path's root receiver — shared by both
+/// `EntityNbtRead` and `EntityNbtWrite`'s dump text (PS-16).
+fn dump_entity_nbt_receiver(receiver: &HirEntityNbtReceiver) -> String {
+    match receiver {
+        HirEntityNbtReceiver::Entity {
+            kind,
+            executor_proof,
+        } => format!(
+            "Executor<{kind}> proof=run@{}:modifier{}",
+            executor_proof.run.index(),
+            executor_proof.modifier_index
+        ),
+        HirEntityNbtReceiver::Block { kind, position } => {
+            format!(
+                "Block<{kind}> position={} {} {}",
+                position.x, position.y, position.z
+            )
+        }
+    }
+}
+
 /// Internal HIR invariant failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HirVerificationError {
@@ -1974,21 +2019,35 @@ impl Verifier<'_> {
                             external.id
                         )));
                     }
-                    for segment in segments {
-                        let index = match segment {
-                            HirEntityPathSegment::Index(index) => Some(index),
-                            HirEntityPathSegment::Match { value, .. } => Some(value),
-                            HirEntityPathSegment::Key(_) => None,
-                        };
-                        if let Some(index) = index {
-                            if index.ty != ValueType::Int32 {
-                                return Err(HirVerificationError::new(format!(
-                                    "entity-NBT path {:?} has a non-Int32 index segment",
-                                    external.id
-                                )));
-                            }
-                        }
+                    verify_entity_nbt_segments_are_int32(segments, external.id)?;
+                }
+                HirExternalSemantic::EntityNbtWrite {
+                    receiver,
+                    segments,
+                    item_id,
+                    count: _,
+                    receiver_origin,
+                } => {
+                    self.origin(*receiver_origin, "entity-NBT write receiver")?;
+                    if !matches!(receiver, HirEntityNbtReceiver::Block { .. }) {
+                        return Err(HirVerificationError::new(format!(
+                            "entity-NBT write {:?} has a non-block receiver",
+                            external.id
+                        )));
                     }
+                    if segments.is_empty() {
+                        return Err(HirVerificationError::new(format!(
+                            "entity-NBT write {:?} has no path segments",
+                            external.id
+                        )));
+                    }
+                    if item_id.is_empty() {
+                        return Err(HirVerificationError::new(format!(
+                            "entity-NBT write {:?} has an empty item id",
+                            external.id
+                        )));
+                    }
+                    verify_entity_nbt_segments_are_int32(segments, external.id)?;
                 }
             }
         }
@@ -3296,6 +3355,29 @@ fn block_contains_return(block: &HirBlock) -> bool {
             | HirStatementKind::Break
             | HirStatementKind::Continue => false,
         })
+}
+
+/// Checks every `Index`/`Match` segment's runtime value type-checks as
+/// `Int32` — shared by `EntityNbtRead` and `EntityNbtWrite` self-verification.
+fn verify_entity_nbt_segments_are_int32(
+    segments: &[HirEntityPathSegment],
+    external: SourceExternalOpId,
+) -> Result<(), HirVerificationError> {
+    for segment in segments {
+        let index = match segment {
+            HirEntityPathSegment::Index(index) => Some(index),
+            HirEntityPathSegment::Match { value, .. } => Some(value),
+            HirEntityPathSegment::Key(_) => None,
+        };
+        if let Some(index) = index {
+            if index.ty != ValueType::Int32 {
+                return Err(HirVerificationError::new(format!(
+                    "entity-NBT path {external:?} has a non-Int32 index segment"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn verify_run_scope_ids(block: &HirBlock, next: &mut usize) -> Result<(), HirVerificationError> {

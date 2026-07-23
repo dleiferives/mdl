@@ -245,6 +245,29 @@ fn verify_linked_inventories(
             ));
         }
     }
+    for (write, declaration) in program.entity_nbt_writes() {
+        if sources.origin(declaration.receiver_origin()).is_none() {
+            findings.push(Diagnostic::new(
+                "core.invalid-origin",
+                format!(
+                    "entity-NBT write {write:?} has invalid receiver origin {:?}",
+                    declaration.receiver_origin()
+                ),
+                OriginId::UNKNOWN,
+            ));
+        }
+        let keys_are_non_empty = declaration
+            .segments()
+            .iter()
+            .all(|segment| !matches!(segment, EntityNbtPathSegment::Key(key) if key.is_empty()));
+        if !declaration.is_well_formed() || !keys_are_non_empty {
+            findings.push(Diagnostic::new(
+                "core.invalid-entity-nbt-write",
+                format!("entity-NBT write {write:?} is malformed"),
+                declaration.receiver_origin(),
+            ));
+        }
+    }
     for (scope, declaration) in program.run_scopes() {
         if sources.origin(declaration.origin()).is_none() {
             findings.push(Diagnostic::new(

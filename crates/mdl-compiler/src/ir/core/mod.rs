@@ -36,7 +36,9 @@ pub use edit::{EditError, FunctionEditor, ValueReplacement};
 pub(crate) use edit::{
     JumpFusionApplicationStatistics, JumpFusionFactStatistics, JumpFusionPreparation,
 };
-pub use entity_nbt::{EntityNbtPathSegment, EntityNbtReadDecl, EntityNbtReceiver};
+pub use entity_nbt::{
+    EntityNbtPathSegment, EntityNbtReadDecl, EntityNbtReceiver, EntityNbtWriteDecl,
+};
 pub use eval::{
     CoreCallEvent, CoreEvaluation, CoreEvaluationError, CoreEvaluationLimits, CoreEvaluator,
     CoreValue,
@@ -85,6 +87,10 @@ entity_id!(
 entity_id!(
     /// Identity of one program-owned schema-typed entity-NBT path read.
     pub struct EntityNbtReadId;
+);
+entity_id!(
+    /// Identity of one program-owned whole-slot entity-NBT path write (PS-16, BE-2).
+    pub struct EntityNbtWriteId;
 );
 entity_id!(
     /// Identity of one program-owned advancement declaration.
@@ -744,6 +750,7 @@ pub struct CoreProgram {
     pub(crate) run_scopes: EntityVec<RunScopeId, RunScopeDecl>,
     pub(crate) minecraft_operations: EntityVec<MinecraftOperationId, MinecraftOperationDecl>,
     pub(crate) entity_nbt_reads: EntityVec<EntityNbtReadId, EntityNbtReadDecl>,
+    pub(crate) entity_nbt_writes: EntityVec<EntityNbtWriteId, EntityNbtWriteDecl>,
     pub(crate) advancements: EntityVec<AdvancementId, AdvancementDecl>,
 }
 
@@ -759,6 +766,7 @@ impl CoreProgram {
             run_scopes: EntityVec::new(),
             minecraft_operations: EntityVec::new(),
             entity_nbt_reads: EntityVec::new(),
+            entity_nbt_writes: EntityVec::new(),
             advancements: EntityVec::new(),
         }
     }
@@ -931,6 +939,14 @@ pub enum ProgramError {
         /// Invalid entity-NBT read identity.
         read: EntityNbtReadId,
     },
+    /// A whole-slot entity-NBT write has an empty path, a non-block
+    /// receiver, or an empty item id.
+    InvalidEntityNbtWrite,
+    /// An external binding names an entity-NBT path write outside this program.
+    InvalidEntityNbtWriteReference {
+        /// Invalid entity-NBT write identity.
+        write: EntityNbtWriteId,
+    },
     /// A closed external binding was paired with an unsupported typed signature.
     InvalidExternalSignature {
         /// Binding whose closed contract was violated.
@@ -978,6 +994,10 @@ impl fmt::Display for ProgramError {
             Self::InvalidEntityNbtRead => formatter.write_str("invalid entity-NBT path read"),
             Self::InvalidEntityNbtReadReference { read } => {
                 write!(formatter, "invalid entity-NBT path read {read:?}")
+            }
+            Self::InvalidEntityNbtWrite => formatter.write_str("invalid entity-NBT path write"),
+            Self::InvalidEntityNbtWriteReference { write } => {
+                write!(formatter, "invalid entity-NBT path write {write:?}")
             }
             Self::InvalidExternalSignature { binding } => {
                 write!(

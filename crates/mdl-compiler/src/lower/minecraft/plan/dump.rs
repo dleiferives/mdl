@@ -215,6 +215,14 @@ fn dump_instruction(output: &mut String, instruction: usize, plan: &InstructionP
                 }
             }
         }
+        InstructionPlan::EntityNbtWrite { external, .. } => {
+            writeln!(
+                output,
+                "  instruction {instruction} entity-nbt-write external={}",
+                external.index(),
+            )
+            .unwrap();
+        }
         InstructionPlan::Scalar { operands, results } => {
             writeln!(output, "  instruction {instruction} scalar").unwrap();
             for (operand_index, home) in operands.iter().enumerate() {

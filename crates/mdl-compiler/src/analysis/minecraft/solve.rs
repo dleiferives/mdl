@@ -1077,14 +1077,15 @@ fn evaluate_command(command: &CommandKind, context: &SolverContext<'_>) -> Optio
         }
         // Raw commands and both macro-emission encodings are opaque unknown flow
         // until the PS-11 crossing engine gives macros a structured contract.
-        // Advancement-revoke's exact native return count is not yet measured
-        // against the pinned server (see `contract.rs`'s conservative
-        // `NativeCommandOutcome::Unknown` for this command) and folds into the
-        // same opaque bucket until it is.
+        // Advancement-revoke's and item-replace's exact native return counts
+        // are not yet measured against the pinned server (see `contract.rs`'s
+        // conservative `NativeCommandOutcome::Unknown` for both commands) and
+        // fold into the same opaque bucket until they are.
         CommandKind::Raw(_)
         | CommandKind::Macro(_)
         | CommandKind::FunctionWithStorage(_)
-        | CommandKind::AdvancementRevoke(_) => {
+        | CommandKind::AdvancementRevoke(_)
+        | CommandKind::ItemReplaceBlock(_) => {
             let metrics = MetricSet::raw_unknown();
             let mut output = CommandFlow::unknown(UnknownCostReason::RawCommand);
             for cell in output.continues.iter_mut().flatten() {

@@ -200,6 +200,17 @@ pub(crate) enum InstructionPlan {
         /// Demanded runtime results written by the read.
         results: Box<[ScalarResultPlacement]>,
     },
+    /// One all-constant whole-slot entity-NBT path write emitted in place
+    /// (PS-16, BE-2) — mirrors `EntityNbtRead`, but always zero results.
+    /// `results` is kept (always empty) purely so this variant can share the
+    /// same combined match arms `EntityNbtRead`'s own `results` field
+    /// already participates in.
+    EntityNbtWrite {
+        /// Core external declaration whose entity-NBT write was resolved.
+        external: ExternalOpId,
+        /// Always empty — a write produces no runtime result.
+        results: Box<[ScalarResultPlacement]>,
+    },
     Scalar {
         operands: Box<[HomeId]>,
         results: Box<[ScalarResultPlacement]>,

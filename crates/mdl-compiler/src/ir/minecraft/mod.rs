@@ -7,6 +7,7 @@ mod contract;
 mod data;
 mod dump;
 mod execute;
+mod item_replace;
 mod macro_command;
 mod names;
 mod nbt;
@@ -35,6 +36,7 @@ pub use execute::{
     Condition, ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers,
     ScoreComparison, StorageNumericType, StoreChannel, StoreDestination,
 };
+pub use item_replace::ItemReplaceBlockCommand;
 pub use macro_command::{
     IndirectRecipe, MacroArguments, MacroArgumentsError, MacroArgumentsErrorReason, MacroCommand,
     MacroKeyError, MacroLine, MacroSegment, MacroVariable, MacroVariableId, SyntaxSlot,

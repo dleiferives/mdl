@@ -171,6 +171,129 @@ impl CoreProgram {
     ) -> impl ExactSizeIterator<Item = (super::EntityNbtReadId, &EntityNbtReadDecl)> + '_ {
         self.entity_nbt_reads.iter()
     }
+
+    /// Declares one normalized whole-slot entity-NBT write in stable order
+    /// (PS-16, BE-2).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty path, a non-block receiver, an empty
+    /// item id, or exhaustion of the declaration identity space.
+    pub fn declare_entity_nbt_write(
+        &mut self,
+        receiver: EntityNbtReceiver,
+        segments: Vec<EntityNbtPathSegment>,
+        item_id: Box<str>,
+        count: i32,
+        receiver_origin: OriginId,
+    ) -> Result<super::EntityNbtWriteId, ProgramError> {
+        let declaration = EntityNbtWriteDecl {
+            receiver,
+            segments: segments.into_boxed_slice(),
+            item_id,
+            count,
+            receiver_origin,
+        };
+        if !declaration.is_well_formed() {
+            return Err(ProgramError::InvalidEntityNbtWrite);
+        }
+        self.entity_nbt_writes
+            .push(declaration)
+            .map_err(|EntityLimitError| ProgramError::EntityLimit)
+    }
+
+    /// Returns an entity-NBT write declaration, or `None` for a foreign identity.
+    #[must_use]
+    pub fn entity_nbt_write(&self, write: super::EntityNbtWriteId) -> Option<&EntityNbtWriteDecl> {
+        self.entity_nbt_writes.get(write)
+    }
+
+    /// Iterates entity-NBT write declarations in stable declaration order.
+    #[must_use]
+    pub fn entity_nbt_writes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (super::EntityNbtWriteId, &EntityNbtWriteDecl)> + '_ {
+        self.entity_nbt_writes.iter()
+    }
+}
+
+/// One normalized whole-slot entity-NBT write declaration (PS-16, BE-2) —
+/// lowers unconditionally to `item replace block <pos> container.<slot> with
+/// <item> <count>`, confirmed clean for both an occupied and unoccupied slot
+/// by direct measurement against the real pinned server (see
+/// `notes/compiler/pre-scheduler/ps-16-block-entity-nbt-writes.md`), so no
+/// occupancy check is needed. `item_id`/`count` are always compile-time
+/// constants — only `segments`' final `Match`/`Index` value may ever be a
+/// runtime `Operand`, reusing `EntityNbtPathSegment` unchanged, the same as
+/// `EntityNbtReadDecl`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntityNbtWriteDecl {
+    receiver: EntityNbtReceiver,
+    segments: Box<[EntityNbtPathSegment]>,
+    item_id: Box<str>,
+    count: i32,
+    receiver_origin: OriginId,
+}
+
+impl EntityNbtWriteDecl {
+    /// Returns the write's root receiver.
+    #[must_use]
+    pub const fn receiver(&self) -> EntityNbtReceiver {
+        self.receiver
+    }
+
+    /// Returns the checked path steps, root-relative, ending in the segment
+    /// selecting the written element.
+    #[must_use]
+    pub fn segments(&self) -> &[EntityNbtPathSegment] {
+        &self.segments
+    }
+
+    /// Returns the written item's `namespace:path` resource id.
+    #[must_use]
+    pub fn item_id(&self) -> &str {
+        &self.item_id
+    }
+
+    /// Returns the written stack count.
+    #[must_use]
+    pub const fn count(&self) -> i32 {
+        self.count
+    }
+
+    /// Returns retained receiver source provenance.
+    #[must_use]
+    pub const fn receiver_origin(&self) -> OriginId {
+        self.receiver_origin
+    }
+
+    /// Returns the number of `Index`/`Match` segments carrying a runtime
+    /// `ValueId` — exactly the number of instruction operands this
+    /// declaration expects (mirrors `EntityNbtReadDecl::runtime_index_count`;
+    /// always `0` until Stage 2 lifts the checker's literal-only slot
+    /// restriction).
+    #[must_use]
+    pub fn runtime_operand_count(&self) -> usize {
+        self.segments
+            .iter()
+            .filter(|segment| {
+                matches!(
+                    segment,
+                    EntityNbtPathSegment::Index(Operand::Runtime(_))
+                        | EntityNbtPathSegment::Match {
+                            value: Operand::Runtime(_),
+                            ..
+                        }
+                )
+            })
+            .count()
+    }
+
+    pub(crate) fn is_well_formed(&self) -> bool {
+        !self.segments.is_empty()
+            && !self.item_id.is_empty()
+            && matches!(self.receiver, EntityNbtReceiver::Block(..))
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +425,121 @@ mod tests {
                 OriginId::UNKNOWN,
             ),
             Err(ProgramError::InvalidEntityNbtRead)
+        );
+    }
+
+    fn container_write_segments() -> Vec<EntityNbtPathSegment> {
+        vec![
+            EntityNbtPathSegment::Key("Items".into()),
+            EntityNbtPathSegment::Match {
+                match_key: "Slot".into(),
+                value: Operand::Const(0),
+            },
+        ]
+    }
+
+    #[test]
+    fn well_formed_write_declarations_round_trip() {
+        let mut program = CoreProgram::new();
+        let position = BlockPosition { x: 0, y: 4, z: 0 };
+        let write = program
+            .declare_entity_nbt_write(
+                EntityNbtReceiver::Block(BlockEntityKind::Chest, position),
+                container_write_segments(),
+                "minecraft:diamond".into(),
+                5,
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        let declaration = program.entity_nbt_write(write).unwrap();
+        assert_eq!(
+            declaration.receiver(),
+            EntityNbtReceiver::Block(BlockEntityKind::Chest, position)
+        );
+        assert_eq!(declaration.item_id(), "minecraft:diamond");
+        assert_eq!(declaration.count(), 5);
+        assert_eq!(declaration.segments().len(), 2);
+        assert_eq!(declaration.runtime_operand_count(), 0);
+        assert_eq!(program.entity_nbt_writes().len(), 1);
+    }
+
+    #[test]
+    fn runtime_write_match_segments_are_counted() {
+        let mut program = CoreProgram::new();
+        let mut segments = container_write_segments();
+        segments[1] = EntityNbtPathSegment::Match {
+            match_key: "Slot".into(),
+            value: Operand::Runtime(ValueId::from_index(0)),
+        };
+        let write = program
+            .declare_entity_nbt_write(
+                EntityNbtReceiver::Block(
+                    BlockEntityKind::Chest,
+                    BlockPosition { x: 0, y: 4, z: 0 },
+                ),
+                segments,
+                "minecraft:diamond".into(),
+                5,
+                OriginId::UNKNOWN,
+            )
+            .unwrap();
+        assert_eq!(
+            program
+                .entity_nbt_write(write)
+                .unwrap()
+                .runtime_operand_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_empty_write_path_is_rejected() {
+        let mut program = CoreProgram::new();
+        assert_eq!(
+            program.declare_entity_nbt_write(
+                EntityNbtReceiver::Block(
+                    BlockEntityKind::Chest,
+                    BlockPosition { x: 0, y: 4, z: 0 }
+                ),
+                vec![],
+                "minecraft:diamond".into(),
+                5,
+                OriginId::UNKNOWN,
+            ),
+            Err(ProgramError::InvalidEntityNbtWrite)
+        );
+    }
+
+    #[test]
+    fn an_empty_write_item_id_is_rejected() {
+        let mut program = CoreProgram::new();
+        assert_eq!(
+            program.declare_entity_nbt_write(
+                EntityNbtReceiver::Block(
+                    BlockEntityKind::Chest,
+                    BlockPosition { x: 0, y: 4, z: 0 }
+                ),
+                container_write_segments(),
+                "".into(),
+                5,
+                OriginId::UNKNOWN,
+            ),
+            Err(ProgramError::InvalidEntityNbtWrite)
+        );
+    }
+
+    #[test]
+    fn an_entity_receiver_write_is_rejected() {
+        let mut program = CoreProgram::new();
+        assert_eq!(
+            program.declare_entity_nbt_write(
+                EntityNbtReceiver::Entity(EntityKind::ArmorStand),
+                container_write_segments(),
+                "minecraft:diamond".into(),
+                5,
+                OriginId::UNKNOWN,
+            ),
+            Err(ProgramError::InvalidEntityNbtWrite)
         );
     }
 }

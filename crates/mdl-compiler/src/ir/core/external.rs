@@ -4,8 +4,8 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    CoreProgram, CoreType, EntityNbtReadId, ExternalOpId, FunctionReference, ProgramError,
-    RunScopeId, TargetFragmentId,
+    CoreProgram, CoreType, EntityNbtReadId, EntityNbtWriteId, ExternalOpId, FunctionReference,
+    ProgramError, RunScopeId, TargetFragmentId,
 };
 use crate::entity::EntityLimitError;
 use crate::ir::command_line::{CommandLineShapeError, validate_command_line_shape};
@@ -121,6 +121,8 @@ pub enum ExternalSemanticBinding {
     MinecraftOperation(super::MinecraftOperationId),
     /// Read one program-owned schema-typed entity-NBT path.
     EntityNbtRead(EntityNbtReadId),
+    /// Write one program-owned whole-slot entity-NBT path (PS-16, BE-2).
+    EntityNbtWrite(EntityNbtWriteId),
 }
 
 impl ExternalSemanticBinding {
@@ -132,7 +134,8 @@ impl ExternalSemanticBinding {
             Self::MinecraftRunScope(scope) => program.run_scope(scope),
             Self::UnsafeTargetFragment(_)
             | Self::MinecraftOperation(_)
-            | Self::EntityNbtRead(_) => None,
+            | Self::EntityNbtRead(_)
+            | Self::EntityNbtWrite(_) => None,
         };
         scope
             .into_iter()
@@ -179,6 +182,12 @@ impl ExternalSemanticBinding {
                     && parameters.len() == read.runtime_index_count()
                     && parameters.iter().all(|ty| *ty == CoreType::I32)
                     && results == [read.result_ty()]
+            }),
+            Self::EntityNbtWrite(write) => program.entity_nbt_write(write).is_some_and(|write| {
+                write.is_well_formed()
+                    && parameters.len() == write.runtime_operand_count()
+                    && parameters.iter().all(|ty| *ty == CoreType::I32)
+                    && results.is_empty()
             }),
         }
     }
@@ -305,6 +314,11 @@ impl CoreProgram {
             ExternalSemanticBinding::EntityNbtRead(read) => {
                 if self.entity_nbt_read(read).is_none() {
                     return Err(ProgramError::InvalidEntityNbtReadReference { read });
+                }
+            }
+            ExternalSemanticBinding::EntityNbtWrite(write) => {
+                if self.entity_nbt_write(write).is_none() {
+                    return Err(ProgramError::InvalidEntityNbtWriteReference { write });
                 }
             }
         }

@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
 
+use crate::ir::core::Operand;
 use crate::source::OriginId;
 
 use super::{
@@ -179,6 +180,23 @@ fn render_command(
         CommandKind::AdvancementRevoke(command) => {
             sink.push_checked("advancement revoke @s only ")?;
             sink.write_arguments(format_args!("{}", command.resource()))
+        }
+        CommandKind::ItemReplaceBlock(command) => {
+            let position = command.position();
+            let Operand::Const(slot) = command.slot() else {
+                panic!(
+                    "runtime container slot rendered outside a macro context; \
+                     PS-11C extract_crossings handles $(key) substitution"
+                );
+            };
+            sink.write_arguments(format_args!(
+                "item replace block {} {} {} container.{slot} with {} {}",
+                position.x,
+                position.y,
+                position.z,
+                command.item_id(),
+                command.count(),
+            ))
         }
     }
 }

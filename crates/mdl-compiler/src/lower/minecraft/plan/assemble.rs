@@ -840,6 +840,22 @@ fn flatten_instruction_plan(
                     results: flatten_results(results)?,
                 });
             }
+            if let Some(resolved) = preflight.selected_entity_nbt_write(*external) {
+                if resolved.is_unusable_inline() {
+                    return Ok(InstructionPlan::External {
+                        helper: resources
+                            .external_helper(instruction)
+                            .ok_or_else(|| invalid_resources(function))?,
+                    });
+                }
+                if resources.external_helper(instruction).is_some() {
+                    return Err(invalid_resources(function));
+                }
+                return Ok(InstructionPlan::EntityNbtWrite {
+                    external: *external,
+                    results: flatten_results(results)?,
+                });
+            }
             Ok(InstructionPlan::External {
                 helper: resources
                     .external_helper(instruction)

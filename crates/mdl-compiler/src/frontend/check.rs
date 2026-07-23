@@ -106,6 +106,12 @@ const UNKNOWN_EVENT_ARGUMENT: &str = "frontend.check.unknown-event-argument";
 const DUPLICATE_EVENT_ARGUMENT: &str = "frontend.check.duplicate-event-argument";
 const MISSING_EVENT_ARGUMENT: &str = "frontend.check.missing-event-argument";
 const INVALID_EVENT_ITEM: &str = "frontend.check.invalid-event-item";
+const INVALID_ASSIGNMENT_TARGET: &str = "frontend.check.invalid-assignment-target";
+const PARTIAL_ENTITY_NBT_WRITE: &str = "frontend.check.partial-entity-nbt-write";
+const NOT_AN_ENTITY_NBT_WRITE_TARGET: &str = "frontend.check.not-an-entity-nbt-write-target";
+const ENTITY_NBT_WRITE_VALUE_REQUIRED: &str = "frontend.check.entity-nbt-write-value-required";
+const RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED: &str =
+    "frontend.check.runtime-container-slot-write-unsupported";
 
 /// Closed event-trigger vocabulary (PS-15 Slice 1: one variant). Growing this
 /// to a second trigger is "add a variant", not a redesign of the argument-
@@ -2983,14 +2989,29 @@ impl<'a> BodyChecker<'a> {
         assignment: &AstAssignment,
         assigned: &mut Assigned,
     ) -> Result<CheckedStatement, CheckError> {
-        let name = self.spelling(assignment.target.span)?;
+        if self.expression_roots_in_nbt_path_receiver(&assignment.target) {
+            return self.check_entity_nbt_write_assignment(assignment, assigned);
+        }
+        let AstExpressionKind::Name(target_name) = assignment.target.kind else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    INVALID_ASSIGNMENT_TARGET,
+                    "this expression cannot be assigned to",
+                    assignment.target.span,
+                )
+                .primary("expected a local binding or a whole-slot entity-NBT write target"),
+            );
+            let _ = self.check_expression(&assignment.value, assigned)?;
+            return self.finish_statement(None, assignment.span, true);
+        };
+        let name = self.spelling(target_name.span)?;
         let target = self.active_binding(name.as_ref());
         if target.is_none() {
             self.diagnostics.push(
                 PendingDiagnostic::new(
                     UNKNOWN_NAME,
                     format!("unknown binding `{name}`"),
-                    assignment.target.span,
+                    target_name.span,
                 )
                 .primary("no active binding has this name"),
             );
@@ -3010,7 +3031,7 @@ impl<'a> BodyChecker<'a> {
                 PendingDiagnostic::new(
                     UNSUPPORTED_RUN_SCALAR_CAPTURE,
                     format!("run block cannot access outer scalar `{name}`"),
-                    assignment.target.span,
+                    target_name.span,
                 )
                 .primary("ordinary scalar captures are not supported by this Stage 7 slice")
                 .support(binding.name_span, "outer binding is declared here"),
@@ -3030,7 +3051,7 @@ impl<'a> BodyChecker<'a> {
                     PendingDiagnostic::new(
                         IMMUTABLE_ASSIGNMENT,
                         format!("binding `{name}` is immutable"),
-                        assignment.target.span,
+                        target_name.span,
                     )
                     .primary("cannot assign to this binding")
                     .support(target.name_span, "binding was declared immutable here"),
@@ -3064,6 +3085,222 @@ impl<'a> BodyChecker<'a> {
             _ => None,
         };
         self.finish_statement(kind, assignment.span, true)
+    }
+
+    /// Checks a whole-slot entity-NBT write assignment (PS-16, BE-2):
+    /// `mc.block(Chest, x, y, z).Items[slot] = .{.id = "...", .count = N};`.
+    /// Only called once `expression_roots_in_nbt_path_receiver` has already
+    /// recognized `assignment.target`'s shape. Reuses BE-1's
+    /// `check_entity_nbt_path_step` unchanged to resolve the target's
+    /// receiver/segments/terminal schema node — a `Scalar` terminal is the
+    /// deferred `.count`-only partial write; a schema-confirmed
+    /// `{id: String, count: Int32}` compound is the only writable shape this
+    /// slice supports.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive per-rejection-reason function keeps every whole-slot-write diagnostic local to its cause"
+    )]
+    fn check_entity_nbt_write_assignment(
+        &mut self,
+        assignment: &AstAssignment,
+        assigned: &Assigned,
+    ) -> Result<CheckedStatement, CheckError> {
+        let Some(step) = self.check_entity_nbt_path_step(&assignment.target, assigned)? else {
+            self.check_entity_nbt_write_value_only(assignment, assigned)?;
+            return self.finish_statement(None, assignment.span, true);
+        };
+        if step.node.scalar_type().is_some() {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    PARTIAL_ENTITY_NBT_WRITE,
+                    "partial-field entity-NBT writes are not supported",
+                    assignment.target.span,
+                )
+                .primary(
+                    "assign the whole slot with `.{.id = \"...\", .count = N}` instead of a single field",
+                ),
+            );
+            self.check_entity_nbt_write_value_only(assignment, assigned)?;
+            return self.finish_statement(None, assignment.span, true);
+        }
+        let id_field_ty = step
+            .node
+            .field_by_name("id")
+            .and_then(SchemaNode::scalar_type);
+        let count_field_ty = step
+            .node
+            .field_by_name("count")
+            .and_then(SchemaNode::scalar_type);
+        if id_field_ty != Some(ValueType::String) || count_field_ty != Some(ValueType::Int32) {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    NOT_AN_ENTITY_NBT_WRITE_TARGET,
+                    "this entity-NBT path is not a writable `{id: String, count: Int32}` slot",
+                    assignment.target.span,
+                )
+                .primary(format!(
+                    "chain reached {}, which is not a whole-slot write target",
+                    step.node.kind_label()
+                )),
+            );
+            self.check_entity_nbt_write_value_only(assignment, assigned)?;
+            return self.finish_statement(None, assignment.span, true);
+        }
+        let Some(HirEntityPathSegment::Match { value, .. }) = step.segments.last() else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    NOT_AN_ENTITY_NBT_WRITE_TARGET,
+                    "a whole-slot entity-NBT write target must end in a container index",
+                    assignment.target.span,
+                )
+                .primary("expected `...Items[slot]`, matched by a schema `MatchList`"),
+            );
+            self.check_entity_nbt_write_value_only(assignment, assigned)?;
+            return self.finish_statement(None, assignment.span, true);
+        };
+        if !matches!(value.kind, HirExpressionKind::Int32(_)) {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED,
+                    "runtime container slots are not supported for writes in this release",
+                    assignment.target.span,
+                )
+                .primary("expected a compiler-known constant slot index"),
+            );
+            self.check_entity_nbt_write_value_only(assignment, assigned)?;
+            return self.finish_statement(None, assignment.span, true);
+        }
+
+        let expected = self.entity_nbt_item_write_type(assignment.span)?;
+        let checked_value =
+            self.check_expression_expected(&assignment.value, assigned, Some(expected))?;
+        let Some(HirExpression {
+            kind: HirExpressionKind::AnonymousStructConstruct { fields, .. },
+            ..
+        }) = checked_value.expression
+        else {
+            self.diagnostics.push(
+                PendingDiagnostic::new(
+                    ENTITY_NBT_WRITE_VALUE_REQUIRED,
+                    "expected a `.{.id = \"...\", .count = N}` item literal",
+                    assignment.value.span,
+                )
+                .primary("a whole-slot write's id and count must be compile-time literals"),
+            );
+            return self.finish_statement(None, assignment.span, true);
+        };
+        let mut item_id: Option<Box<str>> = None;
+        let mut count: Option<i32> = None;
+        for field in &fields {
+            match field.field {
+                0 => match &field.value.kind {
+                    HirExpressionKind::String {
+                        op: HirStringOp::Constant(text),
+                        ..
+                    } if is_valid_item_resource_id(text) => item_id = Some(text.clone()),
+                    _ => {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                ENTITY_NBT_WRITE_VALUE_REQUIRED,
+                                "item id must be a compile-time `namespace:path` string literal",
+                                assignment.value.span,
+                            )
+                            .primary("this `id` field is not a valid compile-time resource id"),
+                        );
+                    }
+                },
+                1 => match field.value.kind {
+                    HirExpressionKind::Int32(value) => count = Some(value),
+                    _ => {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                ENTITY_NBT_WRITE_VALUE_REQUIRED,
+                                "item count must be a compile-time integer literal",
+                                assignment.value.span,
+                            )
+                            .primary("this `count` field is not a compile-time literal"),
+                        );
+                    }
+                },
+                _ => {}
+            }
+        }
+        let (Some(item_id), Some(count)) = (item_id, count) else {
+            return self.finish_statement(None, assignment.span, true);
+        };
+
+        let id = SourceExternalOpId::from_index(self.external_ops.len()).ok_or(
+            CheckError::IdentitySpaceExhausted(CheckedEntityKind::ExternalOperation),
+        )?;
+        // The pushed external declaration's own origin and this statement's
+        // origin must be the exact same `OriginId` (not just the same span —
+        // `self.origin` is not idempotent per span), mirroring
+        // `check_call_statement`'s identical `CheckedCallTarget::External`
+        // handling: compute it once, use it for both.
+        let origin = self.origin(assignment.span)?;
+        self.external_ops.push(HirExternalOp {
+            id,
+            semantic: HirExternalSemantic::EntityNbtWrite {
+                receiver: step.receiver,
+                segments: step.segments.into_boxed_slice(),
+                item_id,
+                count,
+                receiver_origin: step.receiver_origin,
+            },
+            origin,
+        });
+        Ok(CheckedStatement::continuing(HirStatement {
+            kind: HirStatementKind::External(id),
+            origin,
+        }))
+    }
+
+    /// Checks a whole-slot write's right-hand side against the
+    /// `{id: String, count: Int32}` expected type without doing anything
+    /// else with the result — used by every rejection branch above so a
+    /// `.{.id = ..., .count = ...}` value still checks against its natural
+    /// expected type even when the target itself was rejected first,
+    /// instead of falling back to no expected type at all (which would spuriously
+    /// also raise `LITERAL_CONTEXT_REQUIRED` for an otherwise-valid literal).
+    fn check_entity_nbt_write_value_only(
+        &mut self,
+        assignment: &AstAssignment,
+        assigned: &Assigned,
+    ) -> Result<(), CheckError> {
+        let expected = self.entity_nbt_item_write_type(assignment.span)?;
+        let _ = self.check_expression_expected(&assignment.value, assigned, Some(expected))?;
+        Ok(())
+    }
+
+    /// Lazily interns the `{id: String, count: Int32}` named anonymous struct
+    /// type a whole-slot entity-NBT write's right-hand side is checked
+    /// against — same on-the-fly interning `resolve_value_type`'s
+    /// `AstValueTypeKind::Anonymous` case uses for an explicit `{}` type.
+    /// `span` (the assignment's own span — this type has no explicit source
+    /// declaration) is only retained for diagnostics that never fire against
+    /// a compiler-synthesized type.
+    fn entity_nbt_item_write_type(&mut self, span: Span) -> Result<ValueType, CheckError> {
+        let key = AnonymousTypeKey::Named(
+            vec![
+                (Box::from("id"), ValueType::String),
+                (Box::from("count"), ValueType::Int32),
+            ]
+            .into_boxed_slice(),
+        );
+        let mut interner = self.signatures.anonymous.borrow_mut();
+        if let Some(id) = interner.by_key.get(&key).copied() {
+            return Ok(ValueType::AnonymousStruct(id));
+        }
+        let id = SourceAnonymousStructId::from_index(interner.entries.len()).ok_or(
+            CheckError::IdentitySpaceExhausted(CheckedEntityKind::Struct),
+        )?;
+        interner.entries.push(AnonymousSignature {
+            id,
+            key: key.clone(),
+            span,
+        });
+        interner.by_key.insert(key, id);
+        Ok(ValueType::AnonymousStruct(id))
     }
 
     fn check_call_statement(
@@ -6460,13 +6697,15 @@ const fn comparison_op(op: AstComparisonOp) -> HirComparisonOp {
 mod tests {
     use super::{
         ARGUMENT_COUNT, CheckOutput, DIRTY_AST, DUPLICATE_BINDING, DUPLICATE_EVENT_ARGUMENT,
-        DUPLICATE_FUNCTION, ENUM_CONTEXT_REQUIRED, ENUM_EXPORT_ABI, IMMUTABLE_ASSIGNMENT,
-        INTEGER_OUT_OF_RANGE, INVALID_ENTITY_TAG, INVALID_EVENT_ITEM, INVALID_EXECUTOR_CAPTURE,
-        INVALID_MESSAGE_LITERAL, INVALID_MINECRAFT_METHOD_RECEIVER, INVALID_SWITCH_ELSE,
-        INVALID_SWITCH_PATTERN, INVALID_UNSAFE_COMMAND, LITERAL_CONTEXT_REQUIRED,
-        MESSAGE_LITERAL_REQUIRED, MISSING_EVENT_ARGUMENT, MISSING_RETURN, NON_EXHAUSTIVE_SWITCH,
-        OVERLAPPING_SWITCH_PATTERN, RESERVED_COMPILER_NAME, RETURN_IN_RUN_SCOPE,
-        RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED, SCOPED_CAPABILITY_VALUE, TRUNCATED,
+        DUPLICATE_FUNCTION, ENTITY_NBT_WRITE_VALUE_REQUIRED, ENUM_CONTEXT_REQUIRED,
+        ENUM_EXPORT_ABI, IMMUTABLE_ASSIGNMENT, INTEGER_OUT_OF_RANGE, INVALID_ASSIGNMENT_TARGET,
+        INVALID_ENTITY_TAG, INVALID_EVENT_ITEM, INVALID_EXECUTOR_CAPTURE, INVALID_MESSAGE_LITERAL,
+        INVALID_MINECRAFT_METHOD_RECEIVER, INVALID_SWITCH_ELSE, INVALID_SWITCH_PATTERN,
+        INVALID_UNSAFE_COMMAND, LITERAL_CONTEXT_REQUIRED, MESSAGE_LITERAL_REQUIRED,
+        MISSING_EVENT_ARGUMENT, MISSING_RETURN, NON_EXHAUSTIVE_SWITCH,
+        NOT_AN_ENTITY_NBT_WRITE_TARGET, OVERLAPPING_SWITCH_PATTERN, PARTIAL_ENTITY_NBT_WRITE,
+        RESERVED_COMPILER_NAME, RETURN_IN_RUN_SCOPE, RETURN_VALUE_FORBIDDEN, RETURN_VALUE_REQUIRED,
+        RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED, SCOPED_CAPABILITY_VALUE, TRUNCATED,
         TYPE_MISMATCH, UNINITIALIZED_READ, UNKNOWN_EVENT_ARGUMENT, UNKNOWN_EVENT_TRIGGER,
         UNKNOWN_MEMBER, UNKNOWN_NAME, UNRESOLVED_MEMBER, UNSUPPORTED_RUN_SCALAR_CAPTURE,
         VOID_VALUE, check,
@@ -7364,5 +7603,126 @@ fn returning(condition: Bool) -> Int32 {
         }"#;
         let (_, _, output) = check_text(source);
         assert_eq!(codes(&output), [TYPE_MISMATCH]);
+    }
+
+    // PS-16 (BE-2): whole-slot entity-NBT writes. See
+    // notes/compiler/pre-scheduler/ps-16-block-entity-nbt-writes.md.
+
+    // Stage 0: the smallest possible structural proof of the doc's central
+    // hypothesis — widening assignment to a general expression, reusing
+    // `check_entity_nbt_path_step` for target recognition and PS-5's
+    // context-inferred `.{}` literal for the value — actually holds
+    // together end to end, before anything else is built on top of it.
+    #[test]
+    fn full_entity_nbt_write_type_checks_with_a_literal_slot() {
+        let source = r#"fn write() {
+            mc.block(Chest, 0, 4, 0).Items[0] = .{.id = "minecraft:diamond", .count = 5};
+        }"#;
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let checked = output.checked().unwrap();
+        assert_eq!(checked.external_operation_count(), 1);
+        let dump = checked.dump(&sources);
+        assert!(
+            dump.contains("entity-nbt-write receiver=Block<Chest> position=0 4 0"),
+            "{dump}"
+        );
+        assert!(dump.contains("path=.Items[{Slot:0}]"), "{dump}");
+        assert!(dump.contains("item=\"minecraft:diamond\""), "{dump}");
+        assert!(dump.contains("count=5"), "{dump}");
+    }
+
+    #[test]
+    fn full_entity_nbt_write_type_checks_regardless_of_field_order() {
+        let source = r#"fn write() {
+            mc.block(Chest, 0, 4, 0).Items[0] = .{.count = 5, .id = "minecraft:diamond"};
+        }"#;
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let dump = output.checked().unwrap().dump(&sources);
+        assert!(dump.contains("item=\"minecraft:diamond\""), "{dump}");
+        assert!(dump.contains("count=5"), "{dump}");
+    }
+
+    #[test]
+    fn partial_entity_nbt_write_is_rejected() {
+        // The exact case the doc's own measurement proved dangerous —
+        // deferred entirely, not just discouraged.
+        let source = r"fn bad() {
+            mc.block(Chest, 0, 4, 0).Items[0].count = 5;
+        }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [PARTIAL_ENTITY_NBT_WRITE]);
+    }
+
+    #[test]
+    fn a_non_writable_entity_nbt_target_is_rejected() {
+        let source = r"fn bad() {
+            mc.block(Chest, 0, 4, 0).Items[0].components = 5;
+        }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [NOT_AN_ENTITY_NBT_WRITE_TARGET]);
+    }
+
+    #[test]
+    fn a_non_literal_item_id_is_rejected() {
+        let source = r"fn bad(id: String) {
+            mc.block(Chest, 0, 4, 0).Items[0] = .{.id = id, .count = 5};
+        }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [ENTITY_NBT_WRITE_VALUE_REQUIRED]);
+    }
+
+    #[test]
+    fn a_non_literal_count_is_rejected() {
+        let source = r#"fn bad(count: Int32) {
+            mc.block(Chest, 0, 4, 0).Items[0] = .{.id = "minecraft:diamond", .count = count};
+        }"#;
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [ENTITY_NBT_WRITE_VALUE_REQUIRED]);
+    }
+
+    #[test]
+    fn a_non_struct_literal_write_value_is_rejected() {
+        let source = r#"fn helper() -> { id: String, count: Int32 } {
+            return .{.id = "minecraft:diamond", .count = 5};
+        }
+        fn bad() {
+            mc.block(Chest, 0, 4, 0).Items[0] = helper();
+        }"#;
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [ENTITY_NBT_WRITE_VALUE_REQUIRED]);
+    }
+
+    #[test]
+    fn runtime_container_slot_write_is_rejected() {
+        // Stage 1's own explicit restriction, mirroring BE-1 Slice 1's own
+        // literal-only precedent — lifted in Stage 2.
+        let source = r#"fn bad(slot: Int32) {
+            mc.block(Chest, 0, 4, 0).Items[slot] = .{.id = "minecraft:diamond", .count = 5};
+        }"#;
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [RUNTIME_CONTAINER_SLOT_WRITE_UNSUPPORTED]);
+    }
+
+    #[test]
+    fn ordinary_bare_name_assignment_is_unaffected_by_widened_targets() {
+        let source = r"fn ordinary() {
+            var x: Int32 = 0;
+            x = 5;
+        }";
+        let (sources, _, output) = check_text(source);
+        assert_eq!(output.diagnostics(), None);
+        let checked = output.checked().unwrap();
+        assert_eq!(checked.external_operation_count(), 0);
+        let dump = checked.dump(&sources);
+        assert!(dump.contains("assign %0 = 5"), "{dump}");
+    }
+
+    #[test]
+    fn assignment_to_a_non_assignable_expression_is_rejected() {
+        let source = "fn bad(pair: { Int32, Int32 }) { pair[0] = 5; }";
+        let (_, _, output) = check_text(source);
+        assert_eq!(codes(&output), [INVALID_ASSIGNMENT_TARGET]);
     }
 }

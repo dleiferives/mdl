@@ -1161,37 +1161,10 @@ fn declare_external_operations(
                 receiver_origin,
                 ..
             } => {
-                let core_receiver = match receiver {
-                    HirEntityNbtReceiver::Entity { kind, .. } => EntityNbtReceiver::Entity(*kind),
-                    HirEntityNbtReceiver::Block { kind, position } => {
-                        EntityNbtReceiver::Block(*kind, *position)
-                    }
-                };
-                let core_segments = segments
-                    .iter()
-                    .map(|segment| match segment {
-                        HirEntityPathSegment::Key(key) => EntityNbtPathSegment::Key(key.clone()),
-                        HirEntityPathSegment::Index(index) => {
-                            EntityNbtPathSegment::Index(match index.kind {
-                                HirExpressionKind::Int32(value) => Operand::Const(value),
-                                _ => Operand::Runtime(ValueId::from_index(0)),
-                            })
-                        }
-                        HirEntityPathSegment::Match { match_key, value } => {
-                            EntityNbtPathSegment::Match {
-                                match_key: match_key.clone(),
-                                value: match value.kind {
-                                    HirExpressionKind::Int32(value) => Operand::Const(value),
-                                    _ => Operand::Runtime(ValueId::from_index(0)),
-                                },
-                            }
-                        }
-                    })
-                    .collect::<Vec<_>>();
                 let read = program
                     .declare_entity_nbt_read(
-                        core_receiver,
-                        core_segments,
+                        lower_entity_nbt_receiver(receiver),
+                        lower_entity_nbt_segments(segments),
                         core_type(*result_ty),
                         *receiver_origin,
                     )
@@ -1200,6 +1173,27 @@ fn declare_external_operations(
                         error,
                     })?;
                 ExternalSemanticBinding::EntityNbtRead(read)
+            }
+            HirExternalSemantic::EntityNbtWrite {
+                receiver,
+                segments,
+                item_id,
+                count,
+                receiver_origin,
+            } => {
+                let write = program
+                    .declare_entity_nbt_write(
+                        lower_entity_nbt_receiver(receiver),
+                        lower_entity_nbt_segments(segments),
+                        item_id.clone(),
+                        *count,
+                        *receiver_origin,
+                    )
+                    .map_err(|error| CoreGenerationFailure::ExternalDeclaration {
+                        source_external: external.id,
+                        error,
+                    })?;
+                ExternalSemanticBinding::EntityNbtWrite(write)
             }
             HirExternalSemantic::UnsafeMinecraftCommand { command, .. } => {
                 let fragment = TargetFragment::unsafe_minecraft_command(command).map_err(|_| {
@@ -1269,23 +1263,14 @@ fn declare_external_operations(
         };
         let results = match &external.semantic {
             HirExternalSemantic::UnsafeMinecraftCommand { .. }
-            | HirExternalSemantic::MinecraftOperation { .. } => vec![],
+            | HirExternalSemantic::MinecraftOperation { .. }
+            | HirExternalSemantic::EntityNbtWrite { .. } => vec![],
             HirExternalSemantic::EntityNbtRead { result_ty, .. } => vec![core_type(*result_ty)],
         };
         let parameters = match &external.semantic {
-            HirExternalSemantic::EntityNbtRead { segments, .. } => {
-                let runtime_indices = segments
-                    .iter()
-                    .filter(|segment| {
-                        matches!(
-                            segment,
-                            HirEntityPathSegment::Index(index)
-                                | HirEntityPathSegment::Match { value: index, .. }
-                                if !matches!(index.kind, HirExpressionKind::Int32(_))
-                        )
-                    })
-                    .count();
-                vec![CoreType::I32; runtime_indices]
+            HirExternalSemantic::EntityNbtRead { segments, .. }
+            | HirExternalSemantic::EntityNbtWrite { segments, .. } => {
+                vec![CoreType::I32; count_runtime_entity_nbt_segments(segments)]
             }
             _ => vec![],
         };
@@ -1298,6 +1283,59 @@ fn declare_external_operations(
         external_correlations.push((external.id, operation));
     }
     Ok(ExternalToCoreMap::new(external_correlations))
+}
+
+/// Maps a checked HIR entity-NBT receiver to its Core-level counterpart.
+/// Shared by `EntityNbtRead`/`EntityNbtWrite` declaration (PS-16).
+fn lower_entity_nbt_receiver(receiver: &HirEntityNbtReceiver) -> EntityNbtReceiver {
+    match receiver {
+        HirEntityNbtReceiver::Entity { kind, .. } => EntityNbtReceiver::Entity(*kind),
+        HirEntityNbtReceiver::Block { kind, position } => {
+            EntityNbtReceiver::Block(*kind, *position)
+        }
+    }
+}
+
+/// Maps checked HIR entity-NBT path segments to their Core-level
+/// counterparts, const-folding a compile-time-literal `Int32` index/match
+/// value and marking any other value a runtime placeholder (resolved to its
+/// real per-occurrence `ValueId` later, in `lower_external`). Shared by
+/// `EntityNbtRead`/`EntityNbtWrite` declaration (PS-16).
+fn lower_entity_nbt_segments(segments: &[HirEntityPathSegment]) -> Vec<EntityNbtPathSegment> {
+    segments
+        .iter()
+        .map(|segment| match segment {
+            HirEntityPathSegment::Key(key) => EntityNbtPathSegment::Key(key.clone()),
+            HirEntityPathSegment::Index(index) => EntityNbtPathSegment::Index(match index.kind {
+                HirExpressionKind::Int32(value) => Operand::Const(value),
+                _ => Operand::Runtime(ValueId::from_index(0)),
+            }),
+            HirEntityPathSegment::Match { match_key, value } => EntityNbtPathSegment::Match {
+                match_key: match_key.clone(),
+                value: match value.kind {
+                    HirExpressionKind::Int32(value) => Operand::Const(value),
+                    _ => Operand::Runtime(ValueId::from_index(0)),
+                },
+            },
+        })
+        .collect()
+}
+
+/// Counts `Index`/`Match` segments whose value is not a compile-time `Int32`
+/// literal — exactly the number of runtime operands the declared external
+/// operation expects. Shared by `EntityNbtRead`/`EntityNbtWrite` (PS-16).
+fn count_runtime_entity_nbt_segments(segments: &[HirEntityPathSegment]) -> usize {
+    segments
+        .iter()
+        .filter(|segment| {
+            matches!(
+                segment,
+                HirEntityPathSegment::Index(index)
+                    | HirEntityPathSegment::Match { value: index, .. }
+                    if !matches!(index.kind, HirExpressionKind::Int32(_))
+            )
+        })
+        .count()
 }
 
 fn verify_source_semantic_correlations(
@@ -1398,70 +1436,47 @@ fn verify_source_semantic_correlation(
                 return Err(invalid());
             };
             let read = program.entity_nbt_read(read).ok_or_else(invalid)?;
-            let segments_match = segments.len() == read.segments().len()
-                && segments
-                    .iter()
-                    .zip(read.segments())
-                    .all(|(hir, core)| match (hir, core) {
-                        (HirEntityPathSegment::Key(key), EntityNbtPathSegment::Key(core_key)) => {
-                            key.as_ref() == core_key.as_ref()
-                        }
-                        (
-                            HirEntityPathSegment::Index(index),
-                            EntityNbtPathSegment::Index(core_index),
-                        ) => match (&index.kind, core_index) {
-                            (HirExpressionKind::Int32(n), Operand::Const(core_n)) => n == core_n,
-                            (_, Operand::Runtime(_)) => true,
-                            _ => false,
-                        },
-                        (
-                            HirEntityPathSegment::Match { match_key, value },
-                            EntityNbtPathSegment::Match {
-                                match_key: core_match_key,
-                                value: core_value,
-                            },
-                        ) => {
-                            match_key.as_ref() == core_match_key.as_ref()
-                                && match (&value.kind, core_value) {
-                                    (HirExpressionKind::Int32(n), Operand::Const(core_n)) => {
-                                        n == core_n
-                                    }
-                                    (_, Operand::Runtime(_)) => true,
-                                    _ => false,
-                                }
-                        }
-                        _ => false,
-                    });
-            let receiver_matches = match (receiver, read.receiver()) {
-                (
-                    HirEntityNbtReceiver::Entity { kind, .. },
-                    EntityNbtReceiver::Entity(core_kind),
-                ) => *kind == core_kind,
-                (
-                    HirEntityNbtReceiver::Block { kind, position },
-                    EntityNbtReceiver::Block(core_kind, core_position),
-                ) => *kind == core_kind && *position == core_position,
-                _ => false,
-            };
-            if !receiver_matches
+            if !entity_nbt_receiver_matches(receiver, read.receiver())
                 || read.result_ty() != core_type(*result_ty)
                 || read.receiver_origin() != *receiver_origin
-                || !segments_match
+                || !entity_nbt_segments_match(segments, read.segments())
             {
                 return Err(invalid());
             }
-            match attached.get(&core_external).map_or(&[][..], Vec::as_slice) {
-                [] if slot.is_none() => {}
-                [(function, instruction, instruction_origin)]
-                    if *instruction_origin == external.origin
-                        && slot
-                            == Some(SourceSemanticCoreOccurrence::new(
-                                core_external,
-                                *function,
-                                *instruction,
-                            )) => {}
-                _ => return Err(invalid()),
+            verify_single_or_absent_occurrence(
+                core_external,
+                attached,
+                slot,
+                external.origin,
+                &invalid,
+            )?;
+        }
+        HirExternalSemantic::EntityNbtWrite {
+            receiver,
+            segments,
+            item_id,
+            count,
+            receiver_origin,
+        } => {
+            let ExternalSemanticBinding::EntityNbtWrite(write) = declaration.binding() else {
+                return Err(invalid());
+            };
+            let write = program.entity_nbt_write(write).ok_or_else(invalid)?;
+            if !entity_nbt_receiver_matches(receiver, write.receiver())
+                || write.item_id() != item_id.as_ref()
+                || write.count() != *count
+                || write.receiver_origin() != *receiver_origin
+                || !entity_nbt_segments_match(segments, write.segments())
+            {
+                return Err(invalid());
             }
+            verify_single_or_absent_occurrence(
+                core_external,
+                attached,
+                slot,
+                external.origin,
+                &invalid,
+            )?;
         }
         HirExternalSemantic::UnsafeMinecraftCommand { .. } => {
             if !matches!(
@@ -1532,21 +1547,95 @@ fn verify_source_semantic_correlation(
                 return Err(invalid());
             }
 
-            match attached.get(&core_external).map_or(&[][..], Vec::as_slice) {
-                [] if slot.is_none() => {}
-                [(function, instruction, instruction_origin)]
-                    if *instruction_origin == external.origin
-                        && slot
-                            == Some(SourceSemanticCoreOccurrence::new(
-                                core_external,
-                                *function,
-                                *instruction,
-                            )) => {}
-                _ => return Err(invalid()),
-            }
+            verify_single_or_absent_occurrence(
+                core_external,
+                attached,
+                slot,
+                external.origin,
+                &invalid,
+            )?;
         }
     }
     Ok(())
+}
+
+/// Checks that an external declaration's Core-side occurrence bookkeeping
+/// agrees with its retained semantic-operation slot — either both report no
+/// occurrence, or both agree on the exact same one. Shared by every
+/// semantic-operation kind's cross-check above (`EntityNbtRead`,
+/// `EntityNbtWrite`, `MinecraftOperation`).
+fn verify_single_or_absent_occurrence(
+    core_external: ExternalOpId,
+    attached: &BTreeMap<ExternalOpId, Vec<(FunctionId, InstId, OriginId)>>,
+    slot: Option<SourceSemanticCoreOccurrence>,
+    external_origin: OriginId,
+    invalid: &impl Fn() -> CoreGenerationFailure,
+) -> Result<(), CoreGenerationFailure> {
+    match attached.get(&core_external).map_or(&[][..], Vec::as_slice) {
+        [] if slot.is_none() => Ok(()),
+        [(function, instruction, instruction_origin)]
+            if *instruction_origin == external_origin
+                && slot
+                    == Some(SourceSemanticCoreOccurrence::new(
+                        core_external,
+                        *function,
+                        *instruction,
+                    )) =>
+        {
+            Ok(())
+        }
+        _ => Err(invalid()),
+    }
+}
+
+/// Checks an entity-NBT path's segments correspond one-to-one between HIR and
+/// Core (`Key` names match; `Index`/`Match` const values match, runtime
+/// values are only checked for `Operand::Runtime`-ness). Shared by
+/// `EntityNbtRead`/`EntityNbtWrite`'s cross-checks above.
+fn entity_nbt_segments_match(hir: &[HirEntityPathSegment], core: &[EntityNbtPathSegment]) -> bool {
+    hir.len() == core.len()
+        && hir.iter().zip(core).all(|(hir, core)| match (hir, core) {
+            (HirEntityPathSegment::Key(key), EntityNbtPathSegment::Key(core_key)) => {
+                key.as_ref() == core_key.as_ref()
+            }
+            (HirEntityPathSegment::Index(index), EntityNbtPathSegment::Index(core_index)) => {
+                match (&index.kind, core_index) {
+                    (HirExpressionKind::Int32(n), Operand::Const(core_n)) => n == core_n,
+                    (_, Operand::Runtime(_)) => true,
+                    _ => false,
+                }
+            }
+            (
+                HirEntityPathSegment::Match { match_key, value },
+                EntityNbtPathSegment::Match {
+                    match_key: core_match_key,
+                    value: core_value,
+                },
+            ) => {
+                match_key.as_ref() == core_match_key.as_ref()
+                    && match (&value.kind, core_value) {
+                        (HirExpressionKind::Int32(n), Operand::Const(core_n)) => n == core_n,
+                        (_, Operand::Runtime(_)) => true,
+                        _ => false,
+                    }
+            }
+            _ => false,
+        })
+}
+
+/// Checks an entity-NBT path's root receiver corresponds between HIR and
+/// Core. Shared by `EntityNbtRead`/`EntityNbtWrite`'s cross-checks above.
+fn entity_nbt_receiver_matches(hir: &HirEntityNbtReceiver, core: EntityNbtReceiver) -> bool {
+    match (hir, core) {
+        (HirEntityNbtReceiver::Entity { kind, .. }, EntityNbtReceiver::Entity(core_kind)) => {
+            *kind == core_kind
+        }
+        (
+            HirEntityNbtReceiver::Block { kind, position },
+            EntityNbtReceiver::Block(core_kind, core_position),
+        ) => *kind == core_kind && *position == core_position,
+        _ => false,
+    }
 }
 
 fn function_name(
@@ -2484,7 +2573,10 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
                 ))?;
         let sem = self.checked.external_op(external).map(|op| &op.semantic);
         let operands = match sem {
-            Some(HirExternalSemantic::EntityNbtRead { segments, .. }) => {
+            Some(
+                HirExternalSemantic::EntityNbtRead { segments, .. }
+                | HirExternalSemantic::EntityNbtWrite { segments, .. },
+            ) => {
                 let mut operands = Vec::new();
                 for segment in segments {
                     let (HirEntityPathSegment::Index(index)
@@ -2511,6 +2603,7 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             Some(
                 HirExternalSemantic::MinecraftOperation { .. }
                     | HirExternalSemantic::EntityNbtRead { .. }
+                    | HirExternalSemantic::EntityNbtWrite { .. }
             )
         ) {
             self.record_semantic_operation(external, operation, instruction)?;

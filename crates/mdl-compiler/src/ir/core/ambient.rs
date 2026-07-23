@@ -5,8 +5,9 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    ControlFlowGraph, CoreOp, CoreProgram, EntityNbtReadId, ExternalOpId, ExternalSemanticBinding,
-    FunctionId, MinecraftOperationId, Reachability, RunModifierInstance, RunScopeId,
+    ControlFlowGraph, CoreOp, CoreProgram, EntityNbtReadId, EntityNbtWriteId, ExternalOpId,
+    ExternalSemanticBinding, FunctionId, MinecraftOperationId, Reachability, RunModifierInstance,
+    RunScopeId,
 };
 use crate::entity::EntityId;
 use crate::ir::semantic::{AmbientContextRequirements, ContextRequirement, EntityCapability};
@@ -36,6 +37,11 @@ pub enum CoreAmbientAnalysisError {
     InvalidEntityNbtRead {
         function: FunctionId,
         read: EntityNbtReadId,
+    },
+    /// An external binding names an entity-NBT path write outside this program.
+    InvalidEntityNbtWrite {
+        function: FunctionId,
+        write: EntityNbtWriteId,
     },
     /// An external binding names a malformed or absent run scope.
     InvalidRunScope {
@@ -80,6 +86,10 @@ impl fmt::Display for CoreAmbientAnalysisError {
             Self::InvalidEntityNbtRead { function, read } => write!(
                 formatter,
                 "Core function {function:?} references invalid entity-NBT read {read:?}"
+            ),
+            Self::InvalidEntityNbtWrite { function, write } => write!(
+                formatter,
+                "Core function {function:?} references invalid entity-NBT write {write:?}"
             ),
             Self::InvalidRunScope { function, scope } => write!(
                 formatter,
@@ -331,6 +341,18 @@ fn include_operation(
                         super::EntityNbtReceiver::Block(..) => AmbientContextRequirements::NONE,
                     };
                     equation.direct = equation.direct.join(requirement);
+                }
+                ExternalSemanticBinding::EntityNbtWrite(write) => {
+                    // Always a block receiver (`EntityNbtWriteDecl::is_well_formed`),
+                    // self-contained in its position — no ambient context, like
+                    // `EntityNbtRead`'s own `Block` case.
+                    program.entity_nbt_write(write).ok_or(
+                        CoreAmbientAnalysisError::InvalidEntityNbtWrite {
+                            function: equation.function,
+                            write,
+                        },
+                    )?;
+                    equation.direct = equation.direct.join(AmbientContextRequirements::NONE);
                 }
             }
         }

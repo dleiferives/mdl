@@ -304,6 +304,7 @@ impl<'a> SymbolicChecker<'a> {
             }
             InstructionPlan::Minecraft { results, .. }
             | InstructionPlan::EntityNbtRead { results, .. }
+            | InstructionPlan::EntityNbtWrite { results, .. }
             | InstructionPlan::Scalar { results, .. } => {
                 self.finish_scalar_outputs(function, data, results, state, false)
             }
@@ -643,6 +644,20 @@ impl<'a> SymbolicChecker<'a> {
                 }
                 for result in results {
                     state.kill(result.home());
+                }
+                self.finish_scalar_outputs(function, data, results, state, true)
+            }
+            InstructionPlan::EntityNbtWrite { results, .. } => {
+                if !matches!(data.op(), CoreOp::External(_))
+                    || !data.operands().is_empty()
+                    || !results.is_empty()
+                {
+                    self.record(SymbolicIssue::shape(
+                        Some(function),
+                        None,
+                        format!("{instruction:?} has an invalid entity-NBT write plan shape"),
+                        data.origin(),
+                    ));
                 }
                 self.finish_scalar_outputs(function, data, results, state, true)
             }
@@ -3590,7 +3605,8 @@ mod tests {
             InstructionPlan::OmittedPure
             | InstructionPlan::External { .. }
             | InstructionPlan::Minecraft { .. }
-            | InstructionPlan::EntityNbtRead { .. } => true,
+            | InstructionPlan::EntityNbtRead { .. }
+            | InstructionPlan::EntityNbtWrite { .. } => true,
             InstructionPlan::Scalar { results, .. } => {
                 let mut valid = true;
                 for result in results.iter().copied() {
@@ -3705,7 +3721,8 @@ mod tests {
                 InstructionPlan::OmittedPure
                 | InstructionPlan::External { .. }
                 | InstructionPlan::Minecraft { .. }
-                | InstructionPlan::EntityNbtRead { .. } => &[],
+                | InstructionPlan::EntityNbtRead { .. }
+                | InstructionPlan::EntityNbtWrite { .. } => &[],
                 InstructionPlan::Scalar { operands, .. } => operands,
                 InstructionPlan::Call { arguments, .. } => arguments,
             };

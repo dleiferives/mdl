@@ -881,6 +881,9 @@ fn external_requires_helper(operation: &CoreOp, preflight: Option<&TargetPreflig
         if let Some(resolved) = preflight.selected_entity_nbt_read(*external) {
             return resolved.is_unusable_inline();
         }
+        if let Some(resolved) = preflight.selected_entity_nbt_write(*external) {
+            return resolved.is_unusable_inline();
+        }
         true
     })
 }

@@ -132,6 +132,19 @@ fn write_command(
                 command.resource()
             )?;
         }
+        CommandKind::ItemReplaceBlock(command) => {
+            let position = command.position();
+            write!(
+                output,
+                "item.replace_block position={} {} {} slot={:?} item={:?} count={}",
+                position.x,
+                position.y,
+                position.z,
+                command.slot(),
+                command.item_id(),
+                command.count()
+            )?;
+        }
     }
     output.write_char('\n')
 }

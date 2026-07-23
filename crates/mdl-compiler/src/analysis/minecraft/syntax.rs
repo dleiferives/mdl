@@ -250,6 +250,7 @@ pub enum CommandStepClass {
     Say,
     Teleport,
     AdvancementRevoke,
+    ItemReplaceBlock,
     Execute {
         modifiers: Box<[ExecuteModifierClass]>,
         run: Box<CommandStepClass>,
@@ -270,6 +271,7 @@ impl CommandStepClass {
             CommandKind::Say(_) => Self::Say,
             CommandKind::Teleport(_) => Self::Teleport,
             CommandKind::AdvancementRevoke(_) => Self::AdvancementRevoke,
+            CommandKind::ItemReplaceBlock(_) => Self::ItemReplaceBlock,
             CommandKind::Execute(command) => Self::Execute {
                 modifiers: command
                     .modifiers()

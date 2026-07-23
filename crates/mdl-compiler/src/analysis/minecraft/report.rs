@@ -69,6 +69,7 @@ pub struct TargetExecutionCensus {
     say_commands: usize,
     teleport_commands: usize,
     advancement_revoke_commands: usize,
+    item_replace_block_commands: usize,
     return_commands: usize,
     raw_commands: usize,
 }
@@ -97,6 +98,7 @@ impl TargetExecutionCensus {
         (say_commands, say_commands),
         (teleport_commands, teleport_commands),
         (advancement_revoke_commands, advancement_revoke_commands),
+        (item_replace_block_commands, item_replace_block_commands),
         (return_commands, return_commands),
         (raw_commands, raw_commands),
     );
@@ -143,6 +145,10 @@ impl TargetExecutionCensus {
             CommandKind::AdvancementRevoke(_) => {
                 self.advancement_revoke_commands =
                     self.advancement_revoke_commands.checked_add(1)?;
+            }
+            CommandKind::ItemReplaceBlock(_) => {
+                self.item_replace_block_commands =
+                    self.item_replace_block_commands.checked_add(1)?;
             }
             CommandKind::Execute(command) => {
                 self.execute_stages = self.execute_stages.checked_add(command.modifiers().len())?;

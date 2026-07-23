@@ -184,10 +184,14 @@ pub(super) enum AstDestructureTargetKind {
     Assign,
 }
 
-/// One parsed assignment to a source name.
+/// One parsed assignment. `target` was a bare `AstName` before PS-16; it is now
+/// a general postfix expression so a whole-slot entity-NBT write
+/// (`mc.block(Chest, x, y, z).Items[slot] = .{...}`) can parse through this
+/// same statement. Semantic checking narrows which target shapes are
+/// actually assignable (a local name, or an entity-NBT path receiver).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AstAssignment {
-    pub(super) target: AstName,
+    pub(super) target: AstExpression,
     pub(super) value: AstExpression,
     pub(super) span: Span,
 }

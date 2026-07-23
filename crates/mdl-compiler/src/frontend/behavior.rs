@@ -632,6 +632,21 @@ impl BehaviorEvaluator<'_> {
                     false,
                 ))
             }
+            HirExternalSemantic::EntityNbtWrite { .. } => {
+                // A whole-slot write (PS-16, BE-2): lowers unconditionally to
+                // `item replace`, a pure, finite, non-forking world mutation.
+                // Always a block receiver, self-contained in its position —
+                // no ambient context, mirroring `EntityNbtRead`'s own `Block`
+                // case.
+                Ok(FunctionBehavior::new(
+                    AmbientContextRequirements::NONE,
+                    WorldEffect::Write,
+                    ObservableEffect::None,
+                    ForkBound::None,
+                    TransitiveWork::Finite,
+                    false,
+                ))
+            }
         }
     }
 

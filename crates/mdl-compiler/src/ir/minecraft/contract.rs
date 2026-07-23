@@ -79,6 +79,11 @@ impl EffectCategories {
     /// advancement progress is not entity NBT/position state, and optimizer
     /// passes must not assume the two commute or alias the same way.
     pub const ADVANCEMENT_WRITE: Self = Self(1 << 9);
+    /// Mutates a block/block-entity at a fixed position (PS-16, BE-2).
+    /// Distinct from `BLOCK_QUERY`: a write is never fail-soft the way a
+    /// read is, and optimizer passes must not assume a read and a write
+    /// commute.
+    pub const BLOCK_WRITE: Self = Self(1 << 10);
 
     /// Returns the union of two category sets.
     #[must_use]
@@ -380,6 +385,19 @@ fn contract_for_kind(kind: &CommandKind) -> CommandContract {
             EffectSummary::Known(EffectCategories::ADVANCEMENT_WRITE),
             ContextSummary::Known {
                 reads: ContextMask::EXECUTOR,
+                changes: ContextMask::NONE,
+            },
+            ForkClass::NEVER,
+        ),
+        // Native outcome is deliberately left at the `new` default of
+        // `Unknown`, mirroring `AdvancementRevoke` above: only the
+        // occupied/unoccupied-slot case was actually measured against the
+        // real pinned server (both clean), not the exact success/fail
+        // semantics against an arbitrary (possibly non-container) block.
+        CommandKind::ItemReplaceBlock(_) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::BLOCK_WRITE),
+            ContextSummary::Known {
+                reads: ContextMask::NONE,
                 changes: ContextMask::NONE,
             },
             ForkClass::NEVER,

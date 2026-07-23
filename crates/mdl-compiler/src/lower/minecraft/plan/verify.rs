@@ -765,24 +765,30 @@ impl<'a> PlanVerifier<'a> {
                         }
                     }
                 }
-                let is_macro_external = match data.op() {
-                    CoreOp::External(external) => {
-                        self.plan
-                            .preflight()
-                            .selected_recipe(*external)
-                            .is_some_and(
+                let is_macro_external =
+                    match data.op() {
+                        CoreOp::External(external) => {
+                            self.plan
+                                .preflight()
+                                .selected_recipe(*external)
+                                .is_some_and(
                                 super::super::preflight::SelectedSemanticRecipe::is_unusable_inline,
-                            )
-                            || self
+                            ) || self
                                 .plan
                                 .preflight()
                                 .selected_entity_nbt_read(*external)
                                 .is_some_and(
                                 super::super::preflight::ResolvedEntityNbtRead::is_unusable_inline,
+                            ) || self
+                                .plan
+                                .preflight()
+                                .selected_entity_nbt_write(*external)
+                                .is_some_and(
+                                super::super::preflight::ResolvedEntityNbtWrite::is_unusable_inline,
                             )
-                    }
-                    _ => false,
-                };
+                        }
+                        _ => false,
+                    };
                 if !matches!(data.op(), CoreOp::External(_))
                     || (!is_macro_external && !data.operands().is_empty())
                     || (!is_macro_external && !data.results().is_empty())
@@ -900,6 +906,37 @@ impl<'a> PlanVerifier<'a> {
                     results,
                     &expected_types,
                 );
+            }
+            InstructionPlan::EntityNbtWrite { external, results } => {
+                let CoreOp::External(actual) = data.op() else {
+                    self.report(
+                        "lower.plan.instruction-kind",
+                        format!(
+                            "{function:?} {instruction:?} has an entity-NBT write plan for a non-external operation"
+                        ),
+                        data.origin(),
+                    );
+                    return;
+                };
+                if actual != external || !data.operands().is_empty() || !results.is_empty() {
+                    self.report(
+                        "lower.plan.entity-nbt-write-shape",
+                        format!(
+                            "{function:?} {instruction:?} has an invalid entity-NBT write plan shape"
+                        ),
+                        data.origin(),
+                    );
+                }
+                match self.plan.preflight().selected_entity_nbt_write(*external) {
+                    Some(resolved) if !resolved.is_unusable_inline() => {}
+                    selected => self.report(
+                        "lower.plan.entity-nbt-write-selection",
+                        format!(
+                            "{function:?} {instruction:?} retains an inline entity-NBT write plan, but preflight selected {selected:?}"
+                        ),
+                        data.origin(),
+                    ),
+                }
             }
             InstructionPlan::Scalar { operands, results } => {
                 if matches!(data.op(), CoreOp::Call(_)) {

@@ -91,7 +91,12 @@ VarDeclarationStatement = "var", Name, ":", ValueType,
                           [ "=", Expression ], ";"
                         | "var", Name, ":=", Expression, ";" ;
 
-AssignmentStatement = Name, "=", Expression, ";" ;
+(* PS-16: the target widened from a bare Name to a general postfix chain so a
+   whole-slot entity-NBT write (`mc.block(Chest, x, y, z).Items[slot] = .{...}`)
+   parses through the same statement, disambiguated from CallStatement by
+   whether `=` follows the parsed expression. Semantic checking narrows which
+   postfix chains are actually assignable. *)
+AssignmentStatement = PostfixExpression, "=", Expression, ";" ;
 
 CallStatement = StatementCallExpression, ";" ;
 

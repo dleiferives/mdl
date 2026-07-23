@@ -1,0 +1,27 @@
+// MDL: success
+// PS-16 Stage 1: whole-slot entity-NBT writes, lowered unconditionally to
+// `item replace block <pos> container.<slot> with <item> <count>`. Each
+// function writes to its own literal slot (Stage 1 requires a compile-time
+// slot), then reads its own write back via BE-1's already-proven read path
+// and only announces success if the read confirms the written count — a
+// self-verifying round trip, not just "the write command ran".
+// HIR: entity-nbt-write
+// HIR: entity-nbt-read
+// CORE: entity_nbt_write
+// CORE: entity_nbt_read
+
+export fn write_unoccupied_slot() {
+    mc.block(Chest, 0, 4, 0).Items[7] = .{.id = "minecraft:diamond", .count = 5};
+    const count: Int32 = mc.block(Chest, 0, 4, 0).Items[7].count;
+    if (count == 5) {
+        unsafe minecraft("say BE2_UNOCCUPIED_OK");
+    }
+}
+
+export fn write_occupied_slot() {
+    mc.block(Chest, 0, 4, 0).Items[12] = .{.id = "minecraft:emerald", .count = 3};
+    const count: Int32 = mc.block(Chest, 0, 4, 0).Items[12].count;
+    if (count == 3) {
+        unsafe minecraft("say BE2_OCCUPIED_OK");
+    }
+}

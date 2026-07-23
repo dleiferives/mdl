@@ -88,7 +88,11 @@ fn reconcile_semantic_commands(
                 let location = construction.location(function, instruction);
                 let expects_direct_command = matches!(
                     planned,
-                    Some(InstructionPlan::Minecraft { .. } | InstructionPlan::EntityNbtRead { .. })
+                    Some(
+                        InstructionPlan::Minecraft { .. }
+                            | InstructionPlan::EntityNbtRead { .. }
+                            | InstructionPlan::EntityNbtWrite { .. }
+                    )
                 );
                 if expects_direct_command != location.is_some() {
                     return Err(recipe_mismatch(format!(
@@ -178,6 +182,38 @@ fn reconcile_semantic_commands(
                         reconcile_entity_nbt_read_command(
                             plan, program, resolved, location, command,
                         )?;
+                    }
+                    InstructionPlan::EntityNbtWrite { external, .. } => {
+                        if !matches!(data.op(), CoreOp::External(actual) if actual == external) {
+                            return Err(recipe_mismatch(
+                                "entity-NBT write command no longer names its planned external declaration",
+                            ));
+                        }
+                        let resolved = plan
+                            .preflight()
+                            .selected_entity_nbt_write(*external)
+                            .ok_or_else(|| {
+                                recipe_mismatch(
+                                    "entity-NBT write command lost its selected preflight resolution",
+                                )
+                            })?;
+                        if resolved.is_unusable_inline() {
+                            return Err(recipe_mismatch(
+                                "inline entity-NBT write command retains a runtime index segment",
+                            ));
+                        }
+                        let command = program
+                            .function(location.function())
+                            .and_then(|function| function.body().command(location.command()))
+                            .ok_or_else(|| {
+                                recipe_mismatch("correlated target command does not exist")
+                            })?;
+                        if command.origin() != data.origin() {
+                            return Err(recipe_mismatch(
+                                "entity-NBT write command lost its exact occurrence origin",
+                            ));
+                        }
+                        reconcile_entity_nbt_write_command(resolved, command)?;
                     }
                     InstructionPlan::OmittedPure
                     | InstructionPlan::Scalar { .. }
@@ -346,6 +382,49 @@ fn reconcile_entity_nbt_read_command(
             "entity-NBT read command has an unexpected shape",
         )),
     }
+}
+
+/// Verifies one constructed inline whole-slot entity-NBT write against its
+/// resolved write (PS-16, BE-2) — a single flat `item replace` command, much
+/// simpler than the read's shape: no default/fallback line, no
+/// execute/store branching, since a write produces no result to convert.
+fn reconcile_entity_nbt_write_command(
+    resolved: &super::super::preflight::ResolvedEntityNbtWrite,
+    command: &crate::ir::minecraft::CommandNode,
+) -> Result<(), Diagnostics> {
+    let crate::ir::core::EntityNbtReceiver::Block(_, expected_position) = resolved.receiver()
+    else {
+        return Err(recipe_mismatch(
+            "entity-NBT write command has a non-block resolved receiver",
+        ));
+    };
+    let Some(
+        super::super::preflight::ResolvedEntityNbtSegment::Match {
+            value: expected_slot,
+            ..
+        }
+        | super::super::preflight::ResolvedEntityNbtSegment::Index(expected_slot),
+    ) = resolved.segments().last()
+    else {
+        return Err(recipe_mismatch(
+            "entity-NBT write command's resolved path does not end in a container index",
+        ));
+    };
+    let CommandKind::ItemReplaceBlock(item_replace) = command.kind() else {
+        return Err(recipe_mismatch(
+            "entity-NBT write command has an unexpected shape",
+        ));
+    };
+    if item_replace.position() != expected_position
+        || item_replace.slot() != *expected_slot
+        || item_replace.item_id() != resolved.item_id()
+        || item_replace.count() != resolved.count()
+    {
+        return Err(recipe_mismatch(
+            "entity-NBT write command differs from its resolved segments",
+        ));
+    }
+    Ok(())
 }
 
 fn preceding_command(
@@ -740,7 +819,8 @@ fn command_node_count(command: &crate::ir::minecraft::CommandNode) -> u64 {
         | CommandKind::Raw(_)
         | CommandKind::Macro(_)
         | CommandKind::FunctionWithStorage(_)
-        | CommandKind::AdvancementRevoke(_) => 0,
+        | CommandKind::AdvancementRevoke(_)
+        | CommandKind::ItemReplaceBlock(_) => 0,
     }
 }
 

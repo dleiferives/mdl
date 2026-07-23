@@ -575,31 +575,19 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             data.receiver(),
             data.result_ty()
         );
-        for segment in data.segments() {
-            match segment {
-                super::EntityNbtPathSegment::Key(key) => {
-                    let _ = write!(output, ".{key}");
-                }
-                super::EntityNbtPathSegment::Index(Operand::Const(n)) => {
-                    let _ = write!(output, "[{n}]");
-                }
-                super::EntityNbtPathSegment::Index(Operand::Runtime(v)) => {
-                    let _ = write!(output, "[@{}]", v.index());
-                }
-                super::EntityNbtPathSegment::Match {
-                    match_key,
-                    value: Operand::Const(n),
-                } => {
-                    let _ = write!(output, "[{{{match_key}:{n}}}]");
-                }
-                super::EntityNbtPathSegment::Match {
-                    match_key,
-                    value: Operand::Runtime(v),
-                } => {
-                    let _ = write!(output, "[{{{match_key}:@{}}}]", v.index());
-                }
-            }
-        }
+        print_entity_nbt_segments(output, data.segments());
+        let _ = writeln!(output);
+    }
+    for (write, data) in program.entity_nbt_writes() {
+        let _ = write!(
+            output,
+            "entity_nbt_write @nbtw{} receiver={} item={:?} count={} path=",
+            write.index(),
+            data.receiver(),
+            data.item_id(),
+            data.count()
+        );
+        print_entity_nbt_segments(output, data.segments());
         let _ = writeln!(output);
     }
     for (operation, declaration) in program.external_ops() {
@@ -616,6 +604,9 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             }
             ExternalSemanticBinding::EntityNbtRead(read) => {
                 let _ = write!(output, "minecraft.entity_nbt_read @nbt{}", read.index());
+            }
+            ExternalSemanticBinding::EntityNbtWrite(write) => {
+                let _ = write!(output, "minecraft.entity_nbt_write @nbtw{}", write.index());
             }
         }
         output.push_str(" : (");
@@ -654,6 +645,36 @@ fn render_linked_inventories(output: &mut String, program: &CoreProgram) {
             }
         }
         let _ = writeln!(output);
+    }
+}
+
+/// Renders an entity-NBT path's segments, dot/bracket style — shared by the
+/// `entity_nbt_read`/`entity_nbt_write` dump lines above.
+fn print_entity_nbt_segments(output: &mut String, segments: &[super::EntityNbtPathSegment]) {
+    for segment in segments {
+        match segment {
+            super::EntityNbtPathSegment::Key(key) => {
+                let _ = write!(output, ".{key}");
+            }
+            super::EntityNbtPathSegment::Index(Operand::Const(n)) => {
+                let _ = write!(output, "[{n}]");
+            }
+            super::EntityNbtPathSegment::Index(Operand::Runtime(v)) => {
+                let _ = write!(output, "[@{}]", v.index());
+            }
+            super::EntityNbtPathSegment::Match {
+                match_key,
+                value: Operand::Const(n),
+            } => {
+                let _ = write!(output, "[{{{match_key}:{n}}}]");
+            }
+            super::EntityNbtPathSegment::Match {
+                match_key,
+                value: Operand::Runtime(v),
+            } => {
+                let _ = write!(output, "[{{{match_key}:@{}}}]", v.index());
+            }
+        }
     }
 }
 

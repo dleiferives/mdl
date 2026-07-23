@@ -369,6 +369,17 @@ fn audit_external_operation(
                 ));
             }
         }
+        ExternalSemanticBinding::EntityNbtWrite(write) => {
+            if core.entity_nbt_write(write).is_none() {
+                output.findings.push(Diagnostic::new(
+                    "lower.invalid-entity-nbt-write",
+                    format!(
+                        "external operation {operation:?} refers to an absent entity-NBT path write"
+                    ),
+                    origin,
+                ));
+            }
+        }
     }
 }
 

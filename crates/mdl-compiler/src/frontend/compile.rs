@@ -16,6 +16,7 @@ use super::input::{
 use super::lexer::{LexerError, lex};
 use super::lower::{CoreGenerationFailure, SourceToCoreMap, lower_hir};
 use super::parser::{ParserError, parse};
+use super::target_contract::check_one_tick_contracts;
 use crate::analysis::minecraft::{
     TargetExecutionAnalysisFailure, TargetExecutionAnalysisLimits, TargetExecutionCostReport,
 };
@@ -597,6 +598,22 @@ pub enum CompilationFailure {
         /// Concrete phase-aware Minecraft lowering failure.
         failure: Box<LoweringFailure>,
     },
+    /// A `one_tick`-marked function's bound contract was not proven within the
+    /// configured target-execution limits.
+    TargetContract {
+        /// Retained source text and provenance.
+        sources: Box<SourceContext>,
+        /// Complete checked frontend product.
+        checked_frontend: Box<CheckedFrontendOutput>,
+        /// Retained source/Core correlation.
+        source_to_core: SourceToCoreMap,
+        /// Verified optimized Core and its report.
+        core_optimization: Box<CoreOptimizationOutput>,
+        /// Complete verified Minecraft lowering product.
+        lowering: Box<LoweringOutput>,
+        /// One or more `one_tick` contract violations; no partial artifact is retained.
+        diagnostics: Diagnostics,
+    },
     /// The verified target program could not be emitted as a complete datapack.
     DatapackEmission {
         /// Retained source text and provenance.
@@ -627,6 +644,7 @@ impl CompilationFailure {
             | Self::CoreGeneration { .. }
             | Self::CoreOptimization { .. }
             | Self::MinecraftLowering { .. }
+            | Self::TargetContract { .. }
             | Self::DatapackEmission { .. } => None,
         }
     }
@@ -643,6 +661,7 @@ impl CompilationFailure {
             | Self::CoreGeneration { .. }
             | Self::CoreOptimization { .. }
             | Self::MinecraftLowering { .. }
+            | Self::TargetContract { .. }
             | Self::DatapackEmission { .. } => None,
         }
     }
@@ -659,6 +678,7 @@ impl CompilationFailure {
             | Self::CoreGeneration { .. }
             | Self::CoreOptimization { .. }
             | Self::MinecraftLowering { .. }
+            | Self::TargetContract { .. }
             | Self::DatapackEmission { .. } => None,
         }
     }
@@ -675,6 +695,7 @@ impl CompilationFailure {
             | Self::Semantic { .. }
             | Self::CoreOptimization { .. }
             | Self::MinecraftLowering { .. }
+            | Self::TargetContract { .. }
             | Self::DatapackEmission { .. } => None,
         }
     }
@@ -691,6 +712,7 @@ impl CompilationFailure {
             | Self::Semantic { .. }
             | Self::CoreGeneration { .. }
             | Self::MinecraftLowering { .. }
+            | Self::TargetContract { .. }
             | Self::DatapackEmission { .. } => None,
         }
     }
@@ -707,6 +729,7 @@ impl CompilationFailure {
             | Self::Semantic { .. }
             | Self::CoreGeneration { .. }
             | Self::CoreOptimization { .. }
+            | Self::TargetContract { .. }
             | Self::DatapackEmission { .. } => None,
         }
     }
@@ -722,6 +745,7 @@ impl CompilationFailure {
             | Self::CoreGeneration { sources, .. }
             | Self::CoreOptimization { sources, .. }
             | Self::MinecraftLowering { sources, .. }
+            | Self::TargetContract { sources, .. }
             | Self::DatapackEmission { sources, .. } => Some(sources.as_ref()),
         }
     }
@@ -737,6 +761,9 @@ impl CompilationFailure {
                 checked_frontend, ..
             }
             | Self::MinecraftLowering {
+                checked_frontend, ..
+            }
+            | Self::TargetContract {
                 checked_frontend, ..
             }
             | Self::DatapackEmission {
@@ -756,6 +783,7 @@ impl CompilationFailure {
         match self {
             Self::CoreOptimization { source_to_core, .. }
             | Self::MinecraftLowering { source_to_core, .. }
+            | Self::TargetContract { source_to_core, .. }
             | Self::DatapackEmission { source_to_core, .. } => Some(source_to_core),
             Self::PackageInput(_)
             | Self::SourceInput(_)
@@ -773,6 +801,9 @@ impl CompilationFailure {
             Self::MinecraftLowering {
                 core_optimization, ..
             }
+            | Self::TargetContract {
+                core_optimization, ..
+            }
             | Self::DatapackEmission {
                 core_optimization, ..
             } => Some(core_optimization),
@@ -786,11 +817,14 @@ impl CompilationFailure {
         }
     }
 
-    /// Returns verified lowering retained when only datapack emission failed.
+    /// Returns verified lowering retained when target-contract checking or
+    /// datapack emission was the failed stage.
     #[must_use]
     pub fn lowering(&self) -> Option<&LoweringOutput> {
         match self {
-            Self::DatapackEmission { lowering, .. } => Some(lowering),
+            Self::TargetContract { lowering, .. } | Self::DatapackEmission { lowering, .. } => {
+                Some(lowering)
+            }
             Self::PackageInput(_)
             | Self::SourceInput(_)
             | Self::FrontendInfrastructure { .. }
@@ -808,6 +842,7 @@ impl CompilationFailure {
         match self {
             Self::Syntax { diagnostics, .. }
             | Self::Semantic { diagnostics, .. }
+            | Self::TargetContract { diagnostics, .. }
             | Self::DatapackEmission { diagnostics, .. } => Some(diagnostics),
             Self::PackageInput(_)
             | Self::SourceInput(_)
@@ -836,6 +871,9 @@ impl fmt::Display for CompilationFailure {
             }
             Self::CoreOptimization { failure, .. } => write!(formatter, "{failure}"),
             Self::MinecraftLowering { failure, .. } => write!(formatter, "{failure}"),
+            Self::TargetContract { diagnostics, .. } => {
+                write!(formatter, "one-tick contract violated: {diagnostics}")
+            }
             Self::DatapackEmission { diagnostics, .. } => {
                 write!(formatter, "datapack emission failed: {diagnostics}")
             }
@@ -851,6 +889,7 @@ impl Error for CompilationFailure {
             Self::FrontendInfrastructure { failure, .. } => Some(failure),
             Self::Syntax { diagnostics, .. }
             | Self::Semantic { diagnostics, .. }
+            | Self::TargetContract { diagnostics, .. }
             | Self::DatapackEmission { diagnostics, .. } => Some(diagnostics),
             Self::CoreGeneration { failure, .. } => Some(failure.as_ref()),
             Self::CoreOptimization { failure, .. } => Some(failure.as_ref()),
@@ -943,6 +982,20 @@ pub fn compile_package(
     };
 
     let target_analysis = lowering.analyze_target_execution(options.target_analysis());
+    if let Some(diagnostics) = check_one_tick_contracts(
+        core_optimization.program(),
+        &lowering,
+        target_analysis.as_ref(),
+    ) {
+        return Err(CompilationFailure::TargetContract {
+            sources: Box::new(sources),
+            checked_frontend: Box::new(checked_frontend),
+            source_to_core,
+            core_optimization: Box::new(core_optimization),
+            lowering: Box::new(lowering),
+            diagnostics,
+        });
+    }
     let emission = match emit_datapack(lowering.program(), &sources, options.emission()) {
         Ok(output) => output,
         Err(diagnostics) => {

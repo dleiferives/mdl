@@ -461,6 +461,7 @@ mod tests {
             .declare_function_with_linkage(
                 Some("exported"),
                 CoreFunctionLinkage::DatapackExport,
+                false,
                 vec![],
                 vec![],
                 OriginId::UNKNOWN,

@@ -681,6 +681,11 @@ pub(super) struct HirFunction {
     pub(super) module: SourceModuleId,
     pub(super) visibility: FunctionVisibility,
     pub(super) visibility_origin: Option<OriginId>,
+    /// Whether the source `one_tick` modifier was present (Stage 9A). Checked
+    /// during signature collection to require `visibility ==
+    /// FunctionVisibility::DatapackExport`; carried here only to reach Core
+    /// generation.
+    pub(super) one_tick: bool,
     pub(super) name_origin: OriginId,
     pub(super) parameter_count: usize,
     pub(super) result: FunctionResult,

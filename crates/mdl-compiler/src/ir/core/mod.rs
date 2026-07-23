@@ -696,6 +696,12 @@ impl<'a> OperationSignature<'a> {
 pub struct Function {
     pub(crate) name_hint: Option<Box<str>>,
     pub(crate) linkage: CoreFunctionLinkage,
+    /// Source `one_tick` contract marker (Stage 9A): asserts this function's
+    /// command sequence and fork expansion are proven within one tick under the
+    /// configured target-execution limits. Only ever `true` on a
+    /// `CoreFunctionLinkage::DatapackExport` function, enforced during semantic
+    /// checking, well before this field is set.
+    pub(crate) one_tick_contract: bool,
     pub(crate) parameters: Vec<CoreType>,
     pub(crate) results: Vec<CoreType>,
     pub(crate) origin: OriginId,
@@ -713,6 +719,13 @@ impl Function {
     #[must_use]
     pub const fn linkage(&self) -> CoreFunctionLinkage {
         self.linkage
+    }
+
+    /// Returns whether this function carries the source `one_tick` contract
+    /// marker (Stage 9A).
+    #[must_use]
+    pub const fn one_tick_contract(&self) -> bool {
+        self.one_tick_contract
     }
 
     /// Returns the declared parameter types.
@@ -800,16 +813,22 @@ impl CoreProgram {
         self.declare_function_with_linkage(
             name_hint,
             CoreFunctionLinkage::Internal,
+            false,
             parameters,
             results,
             origin,
         )
     }
 
-    /// Declares a function with explicit target-entry linkage.
+    /// Declares a function with explicit target-entry linkage and one-tick
+    /// contract marker (Stage 9A).
     ///
     /// Linkage does not affect whether another Core function may reference the
-    /// declaration. Name hints need not be present or unique.
+    /// declaration. Name hints need not be present or unique. `one_tick_contract`
+    /// asserts (checked later, against the target-execution cost report) that
+    /// this function's command sequence and fork expansion fit one Minecraft
+    /// tick; only a `CoreFunctionLinkage::DatapackExport` function may set it,
+    /// enforced earlier during semantic checking.
     ///
     /// # Errors
     ///
@@ -818,6 +837,7 @@ impl CoreProgram {
         &mut self,
         name_hint: Option<impl Into<Box<str>>>,
         linkage: CoreFunctionLinkage,
+        one_tick_contract: bool,
         parameters: Vec<CoreType>,
         results: Vec<CoreType>,
         origin: OriginId,
@@ -826,6 +846,7 @@ impl CoreProgram {
             .push(Function {
                 name_hint: name_hint.map(Into::into),
                 linkage,
+                one_tick_contract,
                 parameters,
                 results,
                 origin,
@@ -1391,6 +1412,7 @@ mod tests {
             .declare_function_with_linkage(
                 Some("entry"),
                 CoreFunctionLinkage::DatapackExport,
+                false,
                 vec![],
                 vec![],
                 OriginId::UNKNOWN,

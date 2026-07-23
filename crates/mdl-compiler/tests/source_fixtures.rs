@@ -528,6 +528,7 @@ fn failure_phase(failure: &CompilationFailure) -> &'static str {
         CompilationFailure::CoreGeneration { .. } => "core-generation",
         CompilationFailure::CoreOptimization { .. } => "core-optimization",
         CompilationFailure::MinecraftLowering { .. } => "minecraft-lowering",
+        CompilationFailure::TargetContract { .. } => "target-contract",
         CompilationFailure::DatapackEmission { .. } => "datapack-emission",
         _ => "unknown",
     }

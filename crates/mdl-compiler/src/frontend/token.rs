@@ -12,6 +12,7 @@ pub(crate) enum TokenKind {
     KeywordFn,
     KeywordPub,
     KeywordExport,
+    KeywordOneTick,
     KeywordImport,
     KeywordStruct,
     KeywordEnum,

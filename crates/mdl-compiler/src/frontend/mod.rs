@@ -14,6 +14,7 @@ mod input;
 mod lexer;
 mod lower;
 mod parser;
+mod target_contract;
 mod token;
 
 pub use crate::ir::semantic::{

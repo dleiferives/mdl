@@ -1,0 +1,10 @@
+// MDL: failure target-contract target-cost.one-tick-not-proven
+export one_tick fn unbounded_countdown(value: Int32) -> Int32 {
+    var current: Int32 = value;
+    var result: Int32 = 0;
+    while (current > 0) {
+        result = result +% current;
+        current = current -% 1;
+    }
+    return result;
+}

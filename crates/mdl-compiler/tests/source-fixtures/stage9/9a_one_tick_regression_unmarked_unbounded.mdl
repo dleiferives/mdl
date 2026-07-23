@@ -1,0 +1,11 @@
+// MDL: success
+// TARGET: score.players_operation
+export fn unbounded_countdown_unmarked(value: Int32) -> Int32 {
+    var current: Int32 = value;
+    var result: Int32 = 0;
+    while (current > 0) {
+        result = result +% current;
+        current = current -% 1;
+    }
+    return result;
+}

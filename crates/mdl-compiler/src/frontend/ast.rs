@@ -122,6 +122,10 @@ pub(super) struct AstParameter {
 pub(super) struct AstFunction {
     pub(super) visibility: AstFunctionVisibility,
     pub(super) visibility_span: Option<Span>,
+    /// Whether the source `one_tick` modifier was present, asserting this
+    /// function completes within one Minecraft tick.
+    pub(super) one_tick: bool,
+    pub(super) one_tick_span: Option<Span>,
     pub(super) name: AstName,
     pub(super) parameters: Vec<AstParameter>,
     /// Omission means the same result contract as explicit `Void`.

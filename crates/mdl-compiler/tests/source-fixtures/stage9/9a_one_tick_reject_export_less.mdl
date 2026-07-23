@@ -1,0 +1,3 @@
+// MDL: failure semantic frontend.check.one-tick-requires-export
+one_tick fn missing_export() {
+}

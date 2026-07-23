@@ -1134,6 +1134,7 @@ fn declare_functions(
             .declare_function_with_linkage(
                 Some(name),
                 linkage,
+                function.one_tick,
                 parameters,
                 results,
                 function.origin,

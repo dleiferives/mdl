@@ -1286,6 +1286,7 @@ fn declare_export(
     core.declare_function_with_linkage(
         Some(name),
         CoreFunctionLinkage::DatapackExport,
+        false,
         parameters,
         results,
         OriginId::UNKNOWN,

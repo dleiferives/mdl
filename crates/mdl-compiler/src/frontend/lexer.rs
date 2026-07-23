@@ -520,6 +520,7 @@ fn identifier_kind(identifier: &str) -> TokenKind {
         "fn" => TokenKind::KeywordFn,
         "pub" => TokenKind::KeywordPub,
         "export" => TokenKind::KeywordExport,
+        "one_tick" => TokenKind::KeywordOneTick,
         "import" => TokenKind::KeywordImport,
         "struct" => TokenKind::KeywordStruct,
         "enum" => TokenKind::KeywordEnum,

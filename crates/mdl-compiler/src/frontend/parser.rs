@@ -192,7 +192,10 @@ impl<'a> Parser<'a> {
                         structs.push(struct_);
                     }
                 }
-                TokenKind::KeywordFn | TokenKind::KeywordPub | TokenKind::KeywordExport => {
+                TokenKind::KeywordFn
+                | TokenKind::KeywordPub
+                | TokenKind::KeywordExport
+                | TokenKind::KeywordOneTick => {
                     if let Some(function) = self.parse_function()? {
                         functions.push(function);
                     }
@@ -417,6 +420,11 @@ impl<'a> Parser<'a> {
             _ => (AstFunctionVisibility::Private, None),
         };
         let start = visibility_span.unwrap_or_else(|| self.current().span());
+        let (one_tick, one_tick_span) = if self.at(TokenKind::KeywordOneTick) {
+            (true, Some(self.bump().span()))
+        } else {
+            (false, None)
+        };
         if self
             .expect(TokenKind::KeywordFn, "expected `fn` after visibility")
             .is_none()
@@ -471,6 +479,8 @@ impl<'a> Parser<'a> {
         Ok(clean.then_some(AstFunction {
             visibility,
             visibility_span,
+            one_tick,
+            one_tick_span,
             name,
             parameters,
             result,
@@ -1892,7 +1902,10 @@ impl<'a> Parser<'a> {
                 self.error(EXPECTED_EXPRESSION, "expected an expression", token.span());
                 if matches!(
                     token.kind(),
-                    TokenKind::KeywordFn | TokenKind::KeywordPub | TokenKind::KeywordExport
+                    TokenKind::KeywordFn
+                        | TokenKind::KeywordPub
+                        | TokenKind::KeywordExport
+                        | TokenKind::KeywordOneTick
                 ) {
                     self.item_boundary = true;
                 }
@@ -1911,6 +1924,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::KeywordFn
                         | TokenKind::KeywordPub
                         | TokenKind::KeywordExport
+                        | TokenKind::KeywordOneTick
                         | TokenKind::KeywordOn
                         | TokenKind::EndOfFile
                 ) {
@@ -2222,6 +2236,7 @@ impl<'a> Parser<'a> {
             TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOneTick
                 | TokenKind::KeywordOn
         )
     }
@@ -2310,6 +2325,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOneTick
                 | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {
@@ -2325,6 +2341,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOneTick
                 | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {
@@ -2373,6 +2390,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOneTick
                 | TokenKind::KeywordOn
                 | TokenKind::Identifier
                 | TokenKind::EndOfFile
@@ -2391,6 +2409,7 @@ impl<'a> Parser<'a> {
             && !self.at(TokenKind::KeywordFn)
             && !self.at(TokenKind::KeywordPub)
             && !self.at(TokenKind::KeywordExport)
+            && !self.at(TokenKind::KeywordOneTick)
             && !self.at(TokenKind::KeywordRun)
             && !self.at(TokenKind::KeywordUnsafe)
             && !self.at(TokenKind::KeywordOn)
@@ -2417,6 +2436,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
+                | TokenKind::KeywordOneTick
                 | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {

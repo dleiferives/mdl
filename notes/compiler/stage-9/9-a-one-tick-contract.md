@@ -1,6 +1,14 @@
 # Stage 9A — One-Tick Bound Contract
 
-Status: **planned; not started**
+Status: **implemented** (2026-07-23). Fast-suite gate reached: 4 source fixtures
+(accept, reject-unbounded, reject-export-less, regression) plus 4 dedicated
+`crates/mdl-compiler/tests/stage9a_one_tick_contract.rs` integration tests
+(two-configured-limits accept/reject, four-policy disagreement, byte-identical
+marked-vs-unmarked emission, multiple-violations-all-reported), all green,
+alongside the full pre-existing `mdl-compiler` suite (789 lib tests + every
+integration test file). See "Implementation notes (2026-07-23)" below for the
+handful of places reality diverged from the plan below — the plan text is left
+otherwise unchanged as the original design record.
 
 ## Problem and non-goals
 
@@ -415,6 +423,111 @@ the regression and no-emission-change fixtures, before 9A is considered complete
   reconstruction as open, and a reader might wonder whether that blocks 9A. It
   does not: 9A checks only sequence/fork bounds, never ambient context.
 
+## Implementation notes (2026-07-23)
+
+Every codebase anchor above was re-verified against source before landing this
+tranche, per the project's standing rule; all held except line-number drift
+from unrelated intervening edits. The following are real discoveries or
+deliberate deviations from the plan text above, kept here rather than silently
+edited into the original design prose:
+
+- **Diagnostic code namespace corrected to match this file's actual
+  convention, not the plan's proposal.** `check.rs` uses `frontend.check.*`
+  for every existing diagnostic (`frontend.check.duplicate-function`,
+  `frontend.check.missing-return`, etc.), not bare `frontend.*`. The shipped
+  code is **`frontend.check.one-tick-requires-export`**, not
+  `frontend.one-tick-requires-export`. `target-cost.one-tick-not-proven` and
+  `target-cost.one-tick-analysis-incomplete` landed exactly as proposed (that
+  namespace's existing convention already matched). One additional code was
+  needed and is not in the original proposal: **`target-cost.one-tick-missing-root`**,
+  an internal-invariant-violation diagnostic (mirroring
+  `target-cost.lowering-map-root`'s existing shape) for the defensive,
+  believed-unreachable case where a marked function's resource cannot be
+  resolved back to an analyzed root at all.
+- **The check pass lives in a new dedicated module,
+  `crates/mdl-compiler/src/frontend/target_contract.rs`**, not inline in
+  `compile.rs` — `check_one_tick_contracts(core: &CoreProgram, lowering:
+  &LoweringOutput, analysis: Result<&TargetExecutionCostReport,
+  &TargetExecutionAnalysisFailure>) -> Option<Diagnostics>`, called from
+  `compile_package` between `analyze_target_execution` and `emit_datapack`
+  exactly as planned. It resolves a marked Core `FunctionId` to its
+  `McFunctionId` root by matching `LoweringMap::function(id)`'s
+  `entry_resource()` against `MinecraftProgram::functions()`'s resources (the
+  same technique `LoweringOutput::analyze_target_execution` already uses
+  internally), then finds that id's `ResolvedTargetExecutionRoot::Function`
+  entry in the report's roots.
+- **`ir::core::Function::declare_function_with_linkage` gained a new
+  `one_tick_contract: bool` parameter** (immediately after `linkage`), the
+  same threading `linkage` itself already uses. This is a public API
+  signature change; the only call sites (2 in-crate unit tests plus one
+  `crates/mdl-compiler/tests/stage5_baseline_lowering.rs` helper) were updated
+  to pass `false`. `declare_function` (the internal-linkage convenience
+  constructor) always passes `false` and gained no new parameter.
+- **The cost analysis cannot prove *any* loop finite, regardless of
+  optimization policy or trip-count constancy — this is new, load-bearing
+  information the plan's prose did not anticipate.** Empirically confirmed
+  (throwaway probe compiled and dumped `TargetExecutionCostReport`s directly)
+  before writing fixtures: a `while` loop with a literal, fully compile-time-
+  constant trip count (e.g. `while (current < 3)`) is `sequence_limit_status:
+  NoFiniteBoundProven(PositiveCycle)` under **every** tested policy
+  combination (`None|None` through `Baseline|Baseline`), because every
+  structured loop lowers to target-level self-recursion (Minecraft has no
+  native loop primitive) and the analysis's cycle detection is a pure
+  reachability fact with no trip-count reasoning — "does a cycle exist",
+  not "how many times does it run". Consequences for the test plan:
+  - The dossier's phrase "a statically bounded loop (fixed iteration count)"
+    for the **accept** fixture does not correspond to any real passing
+    program. The shipped accept fixture (`9a_one_tick_accept.mdl`) is a
+    straight-line, loop-free function instead — trivially and
+    policy-invariantly `ProvenWithin`, which is the correct falsifiable
+    instance of "a function that fits one tick" and is what the dossier's
+    own core claim ("prove a function fits one tick or reject it") actually
+    requires; it does not require the bounded thing to be a loop.
+  - The **reject-unbounded** and **regression** fixtures therefore do not
+    need a *runtime-data-dependent* loop specifically (as the dossier
+    speculated) — any `while` loop at all is `NoFiniteBoundProven`. The
+    shipped fixtures use an ordinary parameter-bounded countdown loop.
+  - This also directly supplied the mechanism for the **four-policy
+    disagreement** test: it is not loop-elimination that differs by policy
+    (loops never get eliminated), it is straight-line **redundant-operation
+    folding** — the same 3-statement straight-line body has
+    `sequence_operations` `Finite(12)` under `None|None` and `Finite(3)`
+    under `Baseline|Baseline` (measured directly), so a configured limit of 5
+    accepts under `Baseline|Baseline` and rejects under `None|None` for the
+    identical source. Written up as
+    `one_tick_verdict_may_legitimately_disagree_across_optimization_policies`.
+- **"Multiple violations," "four-policy disagreement," and "byte-identical
+  marked-vs-unmarked emission" are dedicated Rust integration tests, not
+  `.mdl` fixtures**, in
+  `crates/mdl-compiler/tests/stage9a_one_tick_contract.rs` alongside the
+  two-configured-limits gate test. Two structural reasons, not convenience:
+  the fixture harness's failure path (`ExpectedResult::Failure`) asserts
+  `checks.is_empty()` — a failing fixture cannot inspect *any* artifact, so it
+  cannot count how many `target-cost.one-tick-not-proven` diagnostics were
+  produced, only that the code is present at least once; and comparing two
+  independently compiled sources' emitted output, or deliberately selecting
+  two different optimization policies against one fixed source, both fall
+  outside what one `.mdl` file plus the standard four-policy auto-run
+  expresses at all. The dossier's own "Interaction with the four optimization
+  policies" section already anticipated needing something "separate from the
+  standard fixture auto-run" for this reason.
+- **Every one of the 9 function-start token-set sites the plan enumerated
+  still existed and needed `TokenKind::KeywordOneTick`** at re-verification
+  time (exact line numbers had drifted slightly from intervening commits but
+  the sites themselves — `parse_function`'s own dispatch, the top-level item
+  dispatch, `at_function_item_start`, `recover_item`, `recover_item_body`,
+  `recover_statement`, `recover_list`, `recover_call_arguments`, and the
+  expression-error-recovery boundary check — were unchanged in kind). This
+  matters beyond mechanical completeness: because `one_tick` is accepted on a
+  function with **no** preceding `pub`/`export` token (rejected only later,
+  in semantic checking, so the friendlier diagnostic can fire), a bare
+  `one_tick fn f() {}` can be the *first* token of a declaration, so every one
+  of these sites genuinely needed the new keyword, not just the obviously
+  mechanical ones.
+- **No change was needed to `AnalysisArithmeticCaps`, `TargetExecutionAnalysisLimits`,
+  or any type in `analysis/minecraft/`** — 9A is purely a new caller-side
+  consumer of already-existing public surface, exactly as scoped.
+
 ## References
 
 Internal:
@@ -459,3 +572,16 @@ Codebase anchors (verified 2026-07-23; re-check before building on any line):
   `compile_package`, the exact insertion point for the new check between
   `lowering` (line 928) and `emission` (line 946)
 - `crates/mdl-compiler/src/diagnostic.rs:44-70` — `Diagnostic::new`
+
+Shipped (2026-07-23), not in the original plumbing list above:
+
+- `crates/mdl-compiler/src/frontend/target_contract.rs` — new module,
+  `check_one_tick_contracts`, the entire check pass
+- `crates/mdl-compiler/src/frontend/check.rs` — `ONE_TICK_REQUIRES_EXPORT`,
+  `one_tick_requires_export_diagnostic`, and the call site inside
+  `collect_module_signatures`
+- `crates/mdl-compiler/src/frontend/hir.rs` — `HirFunction::one_tick`
+- `crates/mdl-compiler/src/frontend/token.rs` — `TokenKind::KeywordOneTick`
+- `crates/mdl-compiler/tests/source-fixtures/stage9/` — the 4 shipped fixtures
+- `crates/mdl-compiler/tests/stage9a_one_tick_contract.rs` — the 4 dedicated
+  integration tests

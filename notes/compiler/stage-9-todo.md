@@ -60,30 +60,44 @@ player-presence selector leakage), which do not block 9A/9B.**
 
 ## 9A — One-tick bound contract (capability 1)
 
-Status: **designed, not implemented.** Full design in
+Status: **implemented (2026-07-23).** Full design and implementation notes in
 [`stage-9/9-a-one-tick-contract.md`](stage-9/9-a-one-tick-contract.md), including a
 correction to this checklist's own `ForkBound` citation below (that type lives in
 `ir/semantic/behavior.rs`, not `analysis/minecraft/`; the actual target-level
-primitive is `RootExecutionSummary::fork_limit_status() -> CommandLimitStatus`).
+primitive is `RootExecutionSummary::fork_limit_status() -> CommandLimitStatus`), and
+a load-bearing implementation discovery: the cost analysis cannot prove *any* loop
+finite under *any* optimization policy (every structured loop lowers to target-level
+self-recursion; the analysis's cycle detection is reachability-only, not
+trip-count-aware) — see the dossier's "Implementation notes" for what this changed
+about the accept/regression fixtures and where the four-policy-disagreement
+mechanism actually came from instead (redundant straight-line operation folding).
 
-- [ ] Add an opt-in source marker (`export one_tick fn`, new `KeywordOneTick`
+- [x] Add an opt-in source marker (`export one_tick fn`, new `KeywordOneTick`
       token; scoped to exported functions only — see dossier for why) asserting a
       function completes within one tick.
-- [ ] Wire it to the existing bound analysis (`analysis/minecraft/`:
+- [x] Wire it to the existing bound analysis (`analysis/minecraft/`:
       `CommandLimitStatus`, `RootExecutionSummary`) so a non-`ProvenWithin`
       result under configured limits becomes a hard error with a readable diagnostic
       (which root, which limit, the proven/unknown bound) — new
       `CompilationFailure::TargetContract` variant, inserted between `lowering` and
       `emission` in `compile_package`.
-- [ ] Keep the contract purely a checking discipline — no new IR carrier, no lowering
-      change to the checked function (dossier specifies a same-output fixture pair
-      to prove this directly).
-- [ ] Prove the error fires for a runtime-unbounded loop and passes for a bounded
+- [x] Keep the contract purely a checking discipline — no new IR carrier, no lowering
+      change to the checked function (proved directly: a dedicated integration test,
+      `one_tick_marker_does_not_change_emitted_commands`, asserts byte-identical
+      `MinecraftDebugDumper` output and emitted pack for a marked/unmarked pair under
+      all four optimization policies).
+- [x] Prove the error fires for a runtime-unbounded loop and passes for a bounded
       one; prove a lower configured limit flips a passing function to rejected (via
       `LoweringOptions::with_command_limit_assumptions`, not a fixture — fixtures
       run under fixed default limits).
 - [x] Write `stage-9/9-a-one-tick-contract.md`.
 - Gate: fast-suite proof of accept/reject at two configured limit settings.
+  **Reached.** `cargo test -p mdl-compiler --test source_fixtures` (4 new
+  `stage9/9a_one_tick_*` fixtures plus every pre-existing fixture) and
+  `cargo test -p mdl-compiler --test stage9a_one_tick_contract` (4 dedicated
+  tests: two-configured-limits, four-policy disagreement, byte-identical
+  emission, multiple-violations-all-reported) are both green, alongside the
+  full pre-existing `mdl-compiler` suite (789 lib tests unaffected).
 
 ## 9B — Recurring scheduling without continuation (capability 2)
 

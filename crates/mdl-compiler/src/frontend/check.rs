@@ -110,6 +110,7 @@ const INVALID_ASSIGNMENT_TARGET: &str = "frontend.check.invalid-assignment-targe
 const PARTIAL_ENTITY_NBT_WRITE: &str = "frontend.check.partial-entity-nbt-write";
 const NOT_AN_ENTITY_NBT_WRITE_TARGET: &str = "frontend.check.not-an-entity-nbt-write-target";
 const ENTITY_NBT_WRITE_VALUE_REQUIRED: &str = "frontend.check.entity-nbt-write-value-required";
+const ONE_TICK_REQUIRES_EXPORT: &str = "frontend.check.one-tick-requires-export";
 
 /// Closed event-trigger vocabulary (PS-15 Slice 1: one variant). Growing this
 /// to a second trigger is "add a variant", not a redesign of the argument-
@@ -162,6 +163,22 @@ fn reserved_compiler_name_diagnostic(name: &str, span: Span) -> PendingDiagnosti
         span,
     )
     .primary("choose a different source binding name")
+}
+
+/// `one_tick` (Stage 9A) is accepted only on an already-`export`ed function —
+/// only `DatapackExport`-linked functions are analyzed as independent
+/// target-execution roots today, so the contract can only be checked on one.
+fn one_tick_requires_export_diagnostic(name: &str, function: &AstFunction) -> PendingDiagnostic {
+    PendingDiagnostic::new(
+        ONE_TICK_REQUIRES_EXPORT,
+        format!("function `{name}` marks `one_tick` without `export`"),
+        function.one_tick_span.unwrap_or(function.span),
+    )
+    .primary("`one_tick` requires an exported function")
+    .support(
+        function.visibility_span.unwrap_or(function.name.span),
+        "function is not declared `export`",
+    )
 }
 
 /// Semantic result: checked HIR on success, or diagnostics without partial HIR.
@@ -1226,6 +1243,9 @@ fn collect_module_signatures(
             first_spans.insert(name.clone(), function.name.span);
             by_name.insert(name.clone(), FunctionLookup::Unique(id));
         }
+        if function.one_tick && !matches!(function.visibility, AstFunctionVisibility::Export) {
+            diagnostics.push(one_tick_requires_export_diagnostic(&name, function));
+        }
         let mut parameters = Vec::with_capacity(function.parameters.len());
         for parameter in &function.parameters {
             let ty = resolve_value_type(
@@ -1444,6 +1464,7 @@ impl<'a> BodyChecker<'a> {
                 .visibility_span
                 .map(|span| self.origin(span))
                 .transpose()?,
+            one_tick: ast.one_tick,
             name_origin,
             parameter_count: ast.parameters.len(),
             result: self.signature.result,
@@ -1509,6 +1530,7 @@ impl<'a> BodyChecker<'a> {
             module: self.signature.module,
             visibility: FunctionVisibility::Private,
             visibility_origin: None,
+            one_tick: false,
             name_origin,
             parameter_count: 0,
             result: FunctionResult::Void,

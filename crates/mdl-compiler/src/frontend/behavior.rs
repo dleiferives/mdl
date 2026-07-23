@@ -870,6 +870,7 @@ mod tests {
             module: SourceModuleId::from_index(0).unwrap(),
             visibility: FunctionVisibility::Private,
             visibility_origin: None,
+            one_tick: false,
             name_origin: OriginId::UNKNOWN,
             parameter_count: 0,
             result: FunctionResult::Void,

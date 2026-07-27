@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/mdl-cli", "crates/mdl-compiler", "crates/mdl-test"]
+members = ["crates/mdl-cli", "crates/mdl-compiler", "crates/mdl-test", "crates/mcfunction-executor"]
 resolver = "3"
 
 [workspace.package]

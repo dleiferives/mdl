@@ -470,6 +470,16 @@ fn render_operation(output: &mut String, op: &CoreOp) {
         CoreOp::External(operation) => {
             let _ = write!(output, " @ext{}", operation.index());
         }
+        CoreOp::Schedule(function, delay_ticks, mode) => {
+            let mode = match mode {
+                crate::ir::core::ScheduleMode::Append => "append",
+                crate::ir::core::ScheduleMode::Replace => "replace",
+            };
+            let _ = write!(output, " @fn{} {delay_ticks}t {mode}", function.index());
+        }
+        CoreOp::ScheduleClear(function) => {
+            let _ = write!(output, " @fn{}", function.index());
+        }
         CoreOp::I32AddWrapping
         | CoreOp::I32SubWrapping
         | CoreOp::I32AddOverflowing

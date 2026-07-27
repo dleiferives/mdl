@@ -15,6 +15,7 @@ mod number;
 mod program;
 mod render;
 mod say;
+mod schedule;
 mod score;
 mod selector;
 mod spatial;
@@ -58,6 +59,7 @@ pub use program::{
     MinecraftProgram,
 };
 pub use say::{MAX_SAY_MESSAGE_UTF16_UNITS, SayCommand, SayMessage, SayMessageError};
+pub use schedule::{ScheduleClearCommand, ScheduleCommand};
 pub use score::{
     BackwardsScoreRange, FakeScoreHolder, NegativeScoreAmount, NonNegativeI32, ObjectiveName,
     ScoreCommand, ScoreHolders, ScoreNameError, ScoreNameErrorReason, ScoreNameKind,

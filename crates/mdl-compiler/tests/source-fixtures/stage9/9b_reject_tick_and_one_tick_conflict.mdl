@@ -1,0 +1,3 @@
+// MDL: failure semantic frontend.check.tick-and-one-tick-conflict
+export one_tick tick fn conflicted() {
+}

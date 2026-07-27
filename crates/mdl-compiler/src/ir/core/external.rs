@@ -462,6 +462,8 @@ mod tests {
                 Some("exported"),
                 CoreFunctionLinkage::DatapackExport,
                 false,
+                false,
+                false,
                 vec![],
                 vec![],
                 OriginId::UNKNOWN,

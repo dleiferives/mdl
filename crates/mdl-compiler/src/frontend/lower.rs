@@ -1099,6 +1099,8 @@ fn collect_run_scopes_in_block<'a>(
             | HirStatementKind::External(_)
             | HirStatementKind::Return(_)
             | HirStatementKind::Destructure { .. }
+            | HirStatementKind::Schedule(_)
+            | HirStatementKind::ScheduleClear(_)
             | HirStatementKind::Break
             | HirStatementKind::Continue => {}
         }
@@ -1113,6 +1115,7 @@ fn declare_functions(
     // Signatures are deliberately predeclared before any body is constructed, so
     // forward calls, direct recursion, and mutual recursion all have ordinary Core
     // call targets.
+    let schedule_targets = collect_schedule_targets(checked);
     let mut correlations = Vec::with_capacity(checked.function_count());
     for function in checked.functions() {
         let name = function_name(sources, function)?;
@@ -1135,6 +1138,8 @@ fn declare_functions(
                 Some(name),
                 linkage,
                 function.one_tick,
+                function.tick,
+                schedule_targets.contains(&function.id),
                 parameters,
                 results,
                 function.origin,
@@ -1146,6 +1151,59 @@ fn declare_functions(
         correlations.push((function.id, core_function));
     }
     Ok(SourceToCoreMap::new(correlations))
+}
+
+/// Collects every function named by a `schedule` (arm) statement anywhere in
+/// the whole package (Stage 9B). Deliberately excludes `schedule clear`
+/// targets — a function referenced only by `schedule clear` needs no root
+/// registration or contract enforcement (see the 9B dossier).
+fn collect_schedule_targets(checked: &CheckedFrontendOutput) -> std::collections::BTreeSet<SourceFunctionId> {
+    let mut targets = std::collections::BTreeSet::new();
+    for function in checked.functions() {
+        collect_schedule_targets_in_block(&function.body, &mut targets);
+    }
+    targets
+}
+
+fn collect_schedule_targets_in_block(
+    block: &HirBlock,
+    targets: &mut std::collections::BTreeSet<SourceFunctionId>,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            HirStatementKind::Schedule(schedule) => {
+                targets.insert(schedule.callee);
+            }
+            HirStatementKind::Run(run) => {
+                collect_schedule_targets_in_block(&run.body, targets);
+            }
+            HirStatementKind::If(conditional) => {
+                for arm in &conditional.arms {
+                    collect_schedule_targets_in_block(&arm.body, targets);
+                }
+                if let Some(body) = &conditional.else_body {
+                    collect_schedule_targets_in_block(body, targets);
+                }
+            }
+            HirStatementKind::While(statement) => {
+                collect_schedule_targets_in_block(&statement.body, targets);
+            }
+            HirStatementKind::Switch(switch) => {
+                for arm in &switch.arms {
+                    collect_schedule_targets_in_block(&arm.body, targets);
+                }
+            }
+            HirStatementKind::Declaration { .. }
+            | HirStatementKind::Assignment { .. }
+            | HirStatementKind::Call(_)
+            | HirStatementKind::External(_)
+            | HirStatementKind::Return(_)
+            | HirStatementKind::Destructure { .. }
+            | HirStatementKind::ScheduleClear(_)
+            | HirStatementKind::Break
+            | HirStatementKind::Continue => {}
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2352,6 +2410,30 @@ impl<'program, 'budget> BodyLowerer<'program, 'budget> {
             }
             HirStatementKind::Run(run) => {
                 self.lower_run(run, statement.origin)?;
+                Ok(Some(block))
+            }
+            HirStatementKind::Schedule(schedule) => {
+                self.switch_to(block)?;
+                let core_callee = self.links.functions.function(schedule.callee).ok_or(
+                    CoreGenerationFailure::Invariant(CoreGenerationInvariant::MissingFunctionMapping {
+                        source_function: schedule.callee,
+                    }),
+                )?;
+                self.builder
+                    .schedule(core_callee, schedule.delay_ticks, schedule.mode, schedule.origin)
+                    .map_err(|error| self.construction(error))?;
+                Ok(Some(block))
+            }
+            HirStatementKind::ScheduleClear(clear) => {
+                self.switch_to(block)?;
+                let core_callee = self.links.functions.function(clear.callee).ok_or(
+                    CoreGenerationFailure::Invariant(CoreGenerationInvariant::MissingFunctionMapping {
+                        source_function: clear.callee,
+                    }),
+                )?;
+                self.builder
+                    .schedule_clear(core_callee, clear.origin)
+                    .map_err(|error| self.construction(error))?;
                 Ok(Some(block))
             }
             HirStatementKind::Return(value) => {

@@ -12,11 +12,11 @@ use super::ast::{
     AstExpression, AstExpressionKind, AstFunction, AstFunctionVisibility, AstIfArm, AstIfStatement,
     AstImport, AstInferredStructEntries, AstInferredStructLiteral, AstModule, AstName,
     AstParameter, AstResultType, AstResultTypeKind, AstReturnStatement, AstRunModifier,
-    AstRunStatement, AstSignedInteger, AstStatement, AstStruct, AstStructField,
-    AstStructFieldInitializer, AstStructLiteral, AstSwitchExpression, AstSwitchExpressionArm,
-    AstSwitchLabel, AstSwitchPattern, AstSwitchPatternKind, AstSwitchStatement,
-    AstSwitchStatementArm, AstUnsafeMinecraftStatement, AstValueType, AstValueTypeKind,
-    AstWhileStatement, AstWrappingArithmeticOp,
+    AstRunStatement, AstScheduleClearStatement, AstScheduleStatement, AstSignedInteger,
+    AstStatement, AstStruct, AstStructField, AstStructFieldInitializer, AstStructLiteral,
+    AstSwitchExpression, AstSwitchExpressionArm, AstSwitchLabel, AstSwitchPattern,
+    AstSwitchPatternKind, AstSwitchStatement, AstSwitchStatementArm, AstUnsafeMinecraftStatement,
+    AstValueType, AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::token::{Token, TokenBuffer, TokenKind};
 use crate::diagnostic::{Diagnostic, Diagnostics};
@@ -195,7 +195,8 @@ impl<'a> Parser<'a> {
                 TokenKind::KeywordFn
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
-                | TokenKind::KeywordOneTick => {
+                | TokenKind::KeywordOneTick
+                | TokenKind::KeywordTick => {
                     if let Some(function) = self.parse_function()? {
                         functions.push(function);
                     }
@@ -425,6 +426,11 @@ impl<'a> Parser<'a> {
         } else {
             (false, None)
         };
+        let (tick, tick_span) = if self.at(TokenKind::KeywordTick) {
+            (true, Some(self.bump().span()))
+        } else {
+            (false, None)
+        };
         if self
             .expect(TokenKind::KeywordFn, "expected `fn` after visibility")
             .is_none()
@@ -481,6 +487,8 @@ impl<'a> Parser<'a> {
             visibility_span,
             one_tick,
             one_tick_span,
+            tick,
+            tick_span,
             name,
             parameters,
             result,
@@ -932,6 +940,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::KeywordRun => self.parse_run_statement(),
             TokenKind::KeywordUnsafe => self.parse_unsafe_minecraft_statement(),
+            TokenKind::KeywordSchedule => self.parse_schedule_statement(),
             kind if is_identifier_like(kind) => self.parse_assignment_or_call(),
             _ => {
                 let span = self.current().span();
@@ -1388,6 +1397,86 @@ impl<'a> Parser<'a> {
         if clean {
             Ok(AstStatement::UnsafeMinecraft(AstUnsafeMinecraftStatement {
                 command,
+                span,
+            }))
+        } else {
+            self.note_item_boundary();
+            Ok(AstStatement::Error(span))
+        }
+    }
+
+    /// `schedule clear <name>;` or `schedule <name>, <delay>[, mode];`. The
+    /// target is always a bare function name, never a call expression — see
+    /// the 9B dossier for why reusing `AstCall` here was rejected.
+    fn parse_schedule_statement(&mut self) -> Result<AstStatement, SourceError> {
+        let start = self.bump().span();
+        if self.at(TokenKind::KeywordClear) {
+            self.bump();
+            let Some(target) = self.expect_identifier("expected a function name after `clear`")
+            else {
+                self.recover_statement();
+                return self.error_statement(start);
+            };
+            let target = AstName {
+                span: target.span(),
+            };
+            let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after `schedule clear`");
+            let end = semicolon.map_or_else(|| self.previous_or_current_span(), Token::span);
+            let span = self.cover(start, end)?;
+            return Ok(if semicolon.is_some() {
+                AstStatement::ScheduleClear(AstScheduleClearStatement { target, span })
+            } else {
+                self.note_item_boundary();
+                AstStatement::Error(span)
+            });
+        }
+        let mut clean = true;
+        let Some(target) = self.expect_identifier("expected a function name after `schedule`")
+        else {
+            self.recover_statement();
+            return self.error_statement(start);
+        };
+        let target = AstName {
+            span: target.span(),
+        };
+        clean &= self
+            .expect(TokenKind::Comma, "expected `,` after the schedule target")
+            .is_some();
+        let delay = if self.at(TokenKind::DecimalInteger) {
+            Some(self.bump().span())
+        } else {
+            self.error(
+                EXPECTED_TOKEN,
+                "expected a tick-count integer literal",
+                self.current().span(),
+            );
+            clean = false;
+            None
+        };
+        let mode = if self.eat(TokenKind::Comma).is_some() {
+            match self.expect_identifier("expected a schedule mode identifier") {
+                Some(token) => Some(AstName { span: token.span() }),
+                None => {
+                    clean = false;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let semicolon = self.expect(TokenKind::Semicolon, "expected `;` after the schedule statement");
+        clean &= semicolon.is_some();
+        let end = semicolon.map_or_else(|| self.previous_or_current_span(), Token::span);
+        let span = self.cover(start, end)?;
+        let Some(delay) = delay else {
+            self.recover_statement();
+            return Ok(AstStatement::Error(span));
+        };
+        if clean {
+            Ok(AstStatement::Schedule(AstScheduleStatement {
+                target,
+                delay,
+                mode,
                 span,
             }))
         } else {
@@ -1906,6 +1995,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::KeywordPub
                         | TokenKind::KeywordExport
                         | TokenKind::KeywordOneTick
+                        | TokenKind::KeywordTick
                 ) {
                     self.item_boundary = true;
                 }
@@ -1925,6 +2015,7 @@ impl<'a> Parser<'a> {
                         | TokenKind::KeywordPub
                         | TokenKind::KeywordExport
                         | TokenKind::KeywordOneTick
+                        | TokenKind::KeywordTick
                         | TokenKind::KeywordOn
                         | TokenKind::EndOfFile
                 ) {
@@ -2237,6 +2328,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
                 | TokenKind::KeywordOneTick
+                | TokenKind::KeywordTick
                 | TokenKind::KeywordOn
         )
     }
@@ -2326,6 +2418,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
                 | TokenKind::KeywordOneTick
+                | TokenKind::KeywordTick
                 | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {
@@ -2342,6 +2435,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
                 | TokenKind::KeywordOneTick
+                | TokenKind::KeywordTick
                 | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {
@@ -2391,6 +2485,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
                 | TokenKind::KeywordOneTick
+                | TokenKind::KeywordTick
                 | TokenKind::KeywordOn
                 | TokenKind::Identifier
                 | TokenKind::EndOfFile
@@ -2410,6 +2505,7 @@ impl<'a> Parser<'a> {
             && !self.at(TokenKind::KeywordPub)
             && !self.at(TokenKind::KeywordExport)
             && !self.at(TokenKind::KeywordOneTick)
+            && !self.at(TokenKind::KeywordTick)
             && !self.at(TokenKind::KeywordRun)
             && !self.at(TokenKind::KeywordUnsafe)
             && !self.at(TokenKind::KeywordOn)
@@ -2437,6 +2533,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::KeywordPub
                 | TokenKind::KeywordExport
                 | TokenKind::KeywordOneTick
+                | TokenKind::KeywordTick
                 | TokenKind::KeywordOn
                 | TokenKind::EndOfFile
         ) {

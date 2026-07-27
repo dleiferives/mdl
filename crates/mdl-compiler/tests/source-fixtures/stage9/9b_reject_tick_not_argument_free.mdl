@@ -1,0 +1,3 @@
+// MDL: failure semantic frontend.check.schedule-target-not-argument-free
+tick fn handler(x: Int32) {
+}

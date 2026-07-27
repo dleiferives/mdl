@@ -106,7 +106,9 @@ fn verify_command_shape(
         | CommandKind::Macro(_)
         | CommandKind::FunctionWithStorage(_)
         | CommandKind::AdvancementRevoke(_)
-        | CommandKind::ItemReplaceBlock(_) => {}
+        | CommandKind::ItemReplaceBlock(_)
+        | CommandKind::Schedule(_)
+        | CommandKind::ScheduleClear(_) => {}
         CommandKind::Say(say) => {
             if let Err(error) = SayMessage::new_for_target(say.message().as_str(), target) {
                 verifier.report(
@@ -344,6 +346,20 @@ fn verify_command_references(
             program,
             symbols,
             "nested return-run command",
+            verifier,
+        ),
+        CommandKind::Schedule(schedule) => verify_internal_callable(
+            InternalCallableRef::Function(schedule.target()),
+            program,
+            location,
+            command.origin(),
+            verifier,
+        ),
+        CommandKind::ScheduleClear(clear) => verify_internal_callable(
+            InternalCallableRef::Function(clear.target()),
+            program,
+            location,
+            command.origin(),
             verifier,
         ),
         CommandKind::Score(_)
@@ -587,7 +603,9 @@ fn verify_command_origins(
         | CommandKind::Raw(_)
         | CommandKind::Macro(_)
         | CommandKind::AdvancementRevoke(_)
-        | CommandKind::ItemReplaceBlock(_) => {}
+        | CommandKind::ItemReplaceBlock(_)
+        | CommandKind::Schedule(_)
+        | CommandKind::ScheduleClear(_) => {}
     }
 }
 

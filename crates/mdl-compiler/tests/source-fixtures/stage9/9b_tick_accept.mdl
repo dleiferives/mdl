@@ -1,0 +1,4 @@
+// MDL: success
+// TARGET: resource=minecraft:tick
+tick fn light_tick() {
+}

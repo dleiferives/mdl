@@ -16,9 +16,9 @@ Dossiers:
 2. [`9-a-one-tick-contract.md`](9-a-one-tick-contract.md) — **designed, not
    implemented.** Promotes the existing bound analysis into an opt-in hard
    one-tick contract (capability 1).
-3. [`9-b-recurring-scheduling.md`](9-b-recurring-scheduling.md) — **designed, not
-   implemented.** Argument-free self-rooting scheduled functions, tick-tag
-   registration, self-reschedule-is-not-recursion, reload dedup (capability 2).
+3. [`9-b-recurring-scheduling.md`](9-b-recurring-scheduling.md) — **implemented.**
+   Argument-free self-rooting scheduled functions, tick-tag registration,
+   self-reschedule-is-not-recursion, reload dedup (capability 2).
 4. `9-c-persistent-continuations.md` — resume discriminant, liveness-lifted live
    state, cut/region graph and budget verification, explicit `yield` plus
    schedulable-loop auto-partition, atomic replayable regions, completion and

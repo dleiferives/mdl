@@ -219,6 +219,12 @@ pub(crate) enum InstructionPlan {
         arguments: Box<[HomeId]>,
         result_destinations: Box<[Option<CallResultDestination>]>,
     },
+    /// One retained `schedule` (arm) statement (Stage 9B) — the target Core
+    /// function, delay, and mode are re-read from `CoreOp::Schedule` at final
+    /// emission, exactly like `Call`'s callee is.
+    Schedule,
+    /// One retained `schedule clear` statement (Stage 9B).
+    ScheduleClear,
 }
 
 /// One indexed physical output of a fixed scalar recipe.

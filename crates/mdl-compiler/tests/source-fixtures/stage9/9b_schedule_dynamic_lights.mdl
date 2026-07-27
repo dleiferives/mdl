@@ -1,0 +1,6 @@
+// MDL: success
+// TARGET: schedule target=
+// TARGET: mode=Replace
+fn light_tick() {
+    schedule light_tick, 5;
+}

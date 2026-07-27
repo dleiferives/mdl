@@ -1,0 +1,8 @@
+// MDL: success
+// TARGET: schedule.clear target=
+export fn helper(x: Int32) {
+}
+
+export fn caller() {
+    schedule clear helper;
+}

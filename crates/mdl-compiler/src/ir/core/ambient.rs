@@ -356,6 +356,11 @@ fn include_operation(
                 }
             }
         }
+        // A schedule statement's target is a compile-time literal resource id,
+        // not a synchronous invocation — its ambient context requirement
+        // (self-rooting) is checked independently on the target's own root,
+        // not inherited into this function's equation (Stage 9B).
+        CoreOp::Schedule(..) | CoreOp::ScheduleClear(_) => {}
         CoreOp::BoolConstant(_)
         | CoreOp::I32Constant(_)
         | CoreOp::I32AddWrapping

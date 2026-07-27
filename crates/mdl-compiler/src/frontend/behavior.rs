@@ -151,6 +151,18 @@ const RECURSIVE_WORK: FunctionBehavior = FunctionBehavior::new(
     false,
 );
 
+/// A `schedule`/`schedule clear` statement: a known, finite, self-rooting
+/// target-visible write effect. Not a call (Stage 9B: self-reschedule is not
+/// recursion), so it joins no `ForkBound`/recursion signal.
+const SCHEDULE_WORK: FunctionBehavior = FunctionBehavior::new(
+    AmbientContextRequirements::NONE,
+    WorldEffect::Write,
+    ObservableEffect::None,
+    ForkBound::None,
+    TransitiveWork::Finite,
+    false,
+);
+
 const UNSAFE_UNKNOWN: FunctionBehavior = FunctionBehavior::new(
     AmbientContextRequirements::UNKNOWN,
     WorldEffect::Unknown,
@@ -258,6 +270,9 @@ fn collect_statement_calls(
             true
         }
         HirStatementKind::Break | HirStatementKind::Continue => false,
+        // A scheduled re-entry is not a synchronous call and must not become a
+        // call-graph edge — see the 9B dossier's load-bearing discovery.
+        HirStatementKind::Schedule(_) | HirStatementKind::ScheduleClear(_) => true,
         HirStatementKind::Destructure { operand, .. } => {
             collect_expression_calls(operand, calls);
             true
@@ -464,6 +479,9 @@ impl BehaviorEvaluator<'_> {
                 (condition.join(body).join(RECURSIVE_WORK), true)
             }
             HirStatementKind::Break | HirStatementKind::Continue => (FunctionBehavior::NONE, false),
+            HirStatementKind::Schedule(_) | HirStatementKind::ScheduleClear(_) => {
+                (SCHEDULE_WORK, true)
+            }
             HirStatementKind::Destructure { operand, .. } => {
                 (self.expression(operand)?.join(FINITE_WORK), true)
             }
@@ -871,6 +889,7 @@ mod tests {
             visibility: FunctionVisibility::Private,
             visibility_origin: None,
             one_tick: false,
+            tick: false,
             name_origin: OriginId::UNKNOWN,
             parameter_count: 0,
             result: FunctionResult::Void,

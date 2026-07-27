@@ -101,17 +101,23 @@ mechanism actually came from instead (redundant straight-line operation folding)
 
 ## 9B — Recurring scheduling without continuation (capability 2)
 
-Status: **designed, not implemented.** Full design in
+Status: **implemented (2026-07-23).** Full design and implementation notes in
 [`stage-9/9-b-recurring-scheduling.md`](stage-9/9-b-recurring-scheduling.md),
-including a load-bearing discovery not anticipated by this checklist's original
-wording: `CoreOp::function_references()` is the single mechanism feeding both
-inter-function reachability and the Stage 8 recursion/call-graph classification,
-undifferentiated by `FunctionReferenceKind`, so `Schedule`/`ScheduleClear` Core
-operations must simply not implement it at all (rather than implementing it and
-then filtering it out downstream) for self-reschedule to correctly get no
-activation frame.
+including the anticipated load-bearing discovery (`CoreOp::function_references()`
+feeds both inter-function reachability and the Stage 8 recursion/call-graph
+classification undifferentiated by `FunctionReferenceKind`, so `Schedule`/
+`ScheduleClear` Core operations simply do not implement it) plus several more
+found during implementation: `TargetExecutionRoot::FunctionTag` resolves to one
+independent `RootExecutionSummary` *per tag entry*, not one pre-aggregated
+summary, so the aggregate tick-tag budget check sums entries itself; any
+`tick`/schedule-target function containing an unsafe minecraft command can
+never be proven self-rooted under the current ambient model (not an edge
+case — the default outcome); and `ItemReplaceBlock`'s conservative `Unknown`
+native-outcome cost (predating Stage 9B) rules out block-entity writes as an
+observable side effect for cost-provable handlers too. See the dossier's
+"Implementation notes" for the full account.
 
-- [ ] Add the `tick` function modifier (tick-tag registration, does **not** require
+- [x] Add the `tick` function modifier (tick-tag registration, does **not** require
       `export` — diverges from 9A's `one_tick` deliberately, see dossier) and the
       `schedule` / `schedule clear` statements (bare function-name target, not a
       call expression — see dossier for why reusing `AstCall` was rejected). Delay
@@ -119,44 +125,55 @@ activation frame.
       proposed; flagged open in the dossier); mode (`append`/`replace`) is a plain
       identifier validated against a closed vocabulary, mirroring
       `EventTrigger::from_source_name`.
-- [ ] Define HIR/Core representation: `HirStatementKind::Schedule`/`ScheduleClear`
+- [x] Define HIR/Core representation: `HirStatementKind::Schedule`/`ScheduleClear`
       siblings of `Call`; `CoreOp::Schedule`/`ScheduleClear` siblings of `Call` that
       deliberately return no `function_references()` reference (the load-bearing
       discovery above — this is what makes self-reschedule allocate no Stage 8
       activation frame, with no change to `audit.rs` needed).
-- [ ] Enforce argument-free `tick`/schedule-target functions (new check, not free
+- [x] Enforce argument-free `tick`/schedule-target functions (new check, not free
       from ordinary call-site arity checking given the bare-name grammar); pass
       required state through external stores the function reads.
-- [ ] Enforce self-rooting via `AmbientContextRequirements`/`generated_entry_requirement()`
+- [x] Enforce self-rooting via `AmbientContextRequirements`/`generated_entry_requirement()`
       (currently read only by one test assertion, never enforced): reject a
       `tick`/schedule-target function whose entry requirement is not `NONE`, with a
       diagnostic naming the non-`None` component. Safe to build now despite 9.0's
       open dimension question (A-028) — this is a static semantic-model check, not
       a runtime-reconstruction claim; see dossier.
-- [ ] Extend `LoweringOutput::analyze_target_execution`'s root list: every
+- [x] Extend `LoweringOutput::analyze_target_execution`'s root list: every
       schedule-target function becomes its own independent `Function` root; the
       `#minecraft:tick` tag (constructed only if non-empty) becomes one aggregate
       `FunctionTag` root covering all handlers together, matching vanilla's actual
       per-tick combined-budget semantics.
-- [ ] Lower to `schedule function`/`schedule clear` (new minimal `CommandKind`
+- [x] Lower to `schedule function`/`schedule clear` (new minimal `CommandKind`
       variants mirroring `AdvancementRevokeCommand` — no crossings.rs involvement,
       no runtime operands to marshal); register tick handlers into `#minecraft:tick`
       in `FunctionId` order (already deterministic) via the `construct.rs` tag
       mechanism, generalized from one entry to N. Schedule-self-first stays a
       documented authoring pattern, not a compiler-inserted reordering.
-- [ ] Apply the resolved reload-dedup lowering: `replace` unconditionally, no
+- [x] Apply the resolved reload-dedup lowering: `replace` unconditionally, no
       explicit `schedule clear` inserted by the compiler (9.0 M13a/M13b already
       showed `replace` alone is sufficient).
-- [ ] Four-policy differential + pinned-server proof: a self-rescheduling job
+- [x] Four-policy differential + pinned-server proof: a self-rescheduling job
       (`dynamic-lights` shape) and a tick-tag job (`spawn-animations` shape, tick tag
       plus a separate self-rescheduling watchdog) observed across multiple ticks,
-      with correct reload behavior and no duplicate chains. Promote 9.0's
+      with correct reload behavior and no duplicate chains. Promoted 9.0's
       `wait_for_gametime_settled`/`step_and_settle` out of the single fixture file
-      into a shared `mdl-test` helper — 9.0 explicitly deferred this to whichever of
-      9B/9C needed it from more than one file first; that's now.
+      into a shared `mdl-test` helper (`crates/mdl-test/src/tick.rs`) — 9.0
+      explicitly deferred this to whichever of 9B/9C needed it from more than one
+      file first; that was 9B.
 - [x] Write `stage-9/9-b-recurring-scheduling.md`.
 - Gate: pinned-server multi-tick observation under all four policies; `dynamic-lights`-
-      shaped and `spawn-animations`-shaped fixtures both expressible.
+      shaped and `spawn-animations`-shaped fixtures both expressible. **Reached.**
+      `cargo test -p mdl-compiler --lib` (789 tests, unaffected),
+      `cargo test -p mdl-compiler --test source_fixtures` (all `9b_*` fixtures:
+      3 accept, 6 reject, 1 regression, 1 schedule-clear-only-target, alongside
+      every pre-existing fixture), `cargo test -p mdl-compiler --test
+      stage9b_recurring_scheduling` (4 dedicated tests: aggregate tick-tag
+      budget, self-reschedule-is-not-recursion, four-policy disagreement,
+      multiple violations), and `cargo test -p mdl-test --test
+      stage9b_recurring_scheduling_server -- --ignored --nocapture` (both
+      keystone shapes, all four policies, reload-no-duplication) are all green
+      against `tmp/minecraft-server-26.2.jar` and OpenJDK 25.0.3.
 
 ## 9C — Persistent continuations (capability 3)
 

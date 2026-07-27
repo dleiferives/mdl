@@ -8,6 +8,7 @@ use std::num::NonZeroU32;
 use super::context::{apply_run_modifiers, function_entry_context};
 use super::input::ModuleKey;
 use crate::ir::command_line::validate_command_line_shape;
+use crate::ir::core::ScheduleMode;
 use crate::ir::semantic::{
     Axes, BlockEntityKind, BlockPosition, DimensionKey, EntityAnchor, EntityCapability, EntityKind,
     EntityTag, ExecutionContext, ExecutorType, FunctionBehavior, MessageLiteral,
@@ -686,6 +687,11 @@ pub(super) struct HirFunction {
     /// FunctionVisibility::DatapackExport`; carried here only to reach Core
     /// generation.
     pub(super) one_tick: bool,
+    /// Whether the source `tick` modifier was present (Stage 9B): registers
+    /// this function into `#minecraft:tick`. Unlike `one_tick`, not checked
+    /// against `export` — a tick handler becomes its own root through the
+    /// aggregate tick tag.
+    pub(super) tick: bool,
     pub(super) name_origin: OriginId,
     pub(super) parameter_count: usize,
     pub(super) result: FunctionResult,
@@ -772,6 +778,25 @@ pub(super) enum HirStatementKind {
         targets: Box<[HirDestructureTarget]>,
     },
     Return(Option<HirExpression>),
+    Schedule(HirSchedule),
+    ScheduleClear(HirScheduleClear),
+}
+
+/// `schedule <callee>, <delay>[, mode];` (Stage 9B). `callee` is a bare
+/// function-name reference, never a call — no arguments are ever passed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirSchedule {
+    pub(super) callee: SourceFunctionId,
+    pub(super) delay_ticks: u32,
+    pub(super) mode: ScheduleMode,
+    pub(super) origin: OriginId,
+}
+
+/// `schedule clear <callee>;` (Stage 9B).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HirScheduleClear {
+    pub(super) callee: SourceFunctionId,
+    pub(super) origin: OriginId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1540,6 +1565,24 @@ impl<'a> Dumper<'a> {
                     &format!("{} {}", value, self.location(statement.origin)),
                 );
             }
+            HirStatementKind::Schedule(schedule) => self.line(
+                indent,
+                &format!(
+                    "schedule @{} delay={} mode={:?} {}",
+                    schedule.callee.index(),
+                    schedule.delay_ticks,
+                    schedule.mode,
+                    self.location(statement.origin)
+                ),
+            ),
+            HirStatementKind::ScheduleClear(clear) => self.line(
+                indent,
+                &format!(
+                    "schedule-clear @{} {}",
+                    clear.callee.index(),
+                    self.location(statement.origin)
+                ),
+            ),
         }
     }
 
@@ -2577,6 +2620,32 @@ impl Verifier<'_> {
                 }
                 Ok(false)
             }
+            HirStatementKind::Schedule(schedule) => {
+                self.origin(schedule.origin, "schedule")?;
+                let callee = self.output.function(schedule.callee).ok_or_else(|| {
+                    HirVerificationError::new(format!(
+                        "invalid schedule target {:?}",
+                        schedule.callee
+                    ))
+                })?;
+                if callee.parameter_count != 0 {
+                    return Err(HirVerificationError::new(format!(
+                        "schedule target {:?} is not argument-free",
+                        schedule.callee
+                    )));
+                }
+                Ok(true)
+            }
+            HirStatementKind::ScheduleClear(clear) => {
+                self.origin(clear.origin, "schedule clear")?;
+                self.output.function(clear.callee).ok_or_else(|| {
+                    HirVerificationError::new(format!(
+                        "invalid schedule clear target {:?}",
+                        clear.callee
+                    ))
+                })?;
+                Ok(true)
+            }
         }
     }
 
@@ -3387,6 +3456,8 @@ fn block_contains_return(block: &HirBlock) -> bool {
             | HirStatementKind::Call(_)
             | HirStatementKind::External(_)
             | HirStatementKind::Destructure { .. }
+            | HirStatementKind::Schedule(_)
+            | HirStatementKind::ScheduleClear(_)
             | HirStatementKind::Break
             | HirStatementKind::Continue => false,
         })
@@ -3453,6 +3524,8 @@ fn verify_run_scope_ids(block: &HirBlock, next: &mut usize) -> Result<(), HirVer
             | HirStatementKind::External(_)
             | HirStatementKind::Return(_)
             | HirStatementKind::Destructure { .. }
+            | HirStatementKind::Schedule(_)
+            | HirStatementKind::ScheduleClear(_)
             | HirStatementKind::Break
             | HirStatementKind::Continue => {}
         }
@@ -3527,6 +3600,7 @@ fn record_external_operation_occurrences(
                     record_expression_externals(value, seen)?;
                 }
             }
+            HirStatementKind::Schedule(_) | HirStatementKind::ScheduleClear(_) => {}
             HirStatementKind::Break | HirStatementKind::Continue => {}
         }
     }

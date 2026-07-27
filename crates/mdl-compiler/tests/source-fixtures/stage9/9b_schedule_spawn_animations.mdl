@@ -1,0 +1,9 @@
+// MDL: success
+// TARGET: resource=minecraft:tick
+// TARGET: schedule target=
+tick fn spawn_watcher() {
+}
+
+fn slow_cleanup() {
+    schedule slow_cleanup, 100;
+}

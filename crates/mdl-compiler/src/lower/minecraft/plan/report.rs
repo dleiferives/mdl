@@ -69,6 +69,8 @@ struct FunctionReport {
     function: FunctionId,
     linkage: CoreFunctionLinkage,
     diagnostic_name_hint: Option<Box<str>>,
+    tick_handler: bool,
+    is_schedule_target: bool,
     generated_entry_requirement: AmbientContextRequirements,
     parameters: Box<[(CoreType, HomeId, FakeScoreHolder)]>,
     results: Box<[(CoreType, HomeId, FakeScoreHolder)]>,
@@ -325,6 +327,8 @@ impl LoweringDecisionReport {
                 LoweredFunction::new(
                     report.linkage,
                     report.entry_resource.clone(),
+                    report.tick_handler,
+                    report.is_schedule_target,
                     report.generated_entry_requirement,
                     slots(&report.parameters),
                     slots(&report.results),
@@ -664,14 +668,18 @@ impl FunctionReport {
             layout.block_functions[usize::try_from(layout.abi.entry_block.index())
                 .expect("Core block identity fits the host index")]
             .expect("verified report input has an entry function");
-        let body = core
+        let declaration = core
             .function(function)
-            .and_then(crate::ir::core::Function::body)
+            .expect("verified report input has every Core function declaration");
+        let body = declaration
+            .body()
             .expect("verified report input has every Core function body");
         Self {
             function,
             linkage: layout.linkage,
             diagnostic_name_hint: layout.diagnostic_name_hint.clone(),
+            tick_handler: declaration.tick_handler(),
+            is_schedule_target: declaration.is_schedule_target(),
             generated_entry_requirement: plan
                 .ambient()
                 .requirement(function)
@@ -927,6 +935,17 @@ fn dump_instruction(output: &mut String, report: &InstructionReport) {
                     writeln!(output, "    result-slot {slot} omitted").unwrap();
                 }
             }
+        }
+        InstructionPlan::Schedule => {
+            writeln!(output, "  instruction {} schedule", instruction.index()).unwrap();
+        }
+        InstructionPlan::ScheduleClear => {
+            writeln!(
+                output,
+                "  instruction {} schedule-clear",
+                instruction.index()
+            )
+            .unwrap();
         }
     }
 }

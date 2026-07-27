@@ -1,10 +1,12 @@
 # Stage 9B — Recurring Scheduling Without Continuation
 
-Status: **designed, not implemented** (2026-07-23). Depends on 9A
+Status: **implemented** (2026-07-23). Depends on 9A
 ([`9-a-one-tick-contract.md`](9-a-one-tick-contract.md), implemented) for the
 `ProvenWithin` check primitive it reuses, and on 9.0
 ([`9-0-contracts-and-evidence.md`](9-0-contracts-and-evidence.md)) for every
-measured `schedule`/`#minecraft:tick` fact it lowers to.
+measured `schedule`/`#minecraft:tick` fact it lowers to. See "Implementation
+notes (2026-07-23)" below for where reality diverged from the plan text below
+— the plan text is left otherwise unchanged as the original design record.
 
 ## Problem and non-goals
 
@@ -637,6 +639,171 @@ proof above, all green; alongside the full pre-existing `mdl-compiler`/
   orthogonal), but whether that combination is a realistic, useful pattern
   worth a dedicated fixture, or an edge case not worth spending gate budget
   on, is left open.
+
+## Implementation notes (2026-07-23)
+
+Every codebase anchor above was re-verified against source before landing this
+tranche, per the project's standing rule; all held except line-number drift
+from unrelated intervening edits. The following are real discoveries or
+deliberate deviations from the plan text above, kept here rather than silently
+edited into the original design prose.
+
+### Resolved unresolved questions
+
+- **Schedule delay stays a bare integer literal**, no `5t` suffix, exactly as
+  recommended. `AstScheduleStatement.delay` is a `Span` over a bare
+  `DecimalInteger`, parsed the same way `AstSignedInteger` parses switch
+  patterns; `HirSchedule.delay_ticks`/`CoreOp::Schedule`'s second field are
+  plain `u32`. No new lexer suffix-scanning machinery was needed.
+- **Keyword spellings landed exactly as proposed**: `tick`, `schedule`,
+  `clear` (`TokenKind::KeywordTick`/`KeywordSchedule`/`KeywordClear`). `clear`
+  is a reserved keyword (not a plain identifier like `append`/`replace`), for
+  the grammar-ambiguity reason the dossier gives.
+- **`check_schedule_contracts` stayed a separate sibling module**
+  (`frontend/schedule_contract.rs`), not merged with
+  `check_one_tick_contracts`. Once both passes' actual shapes existed side by
+  side, the duplication (root lookup, `ProvenWithin` message formatting) was
+  real but small; the aggregate-tag-summation logic 9B needs (see below) has
+  no 9A analogue at all, so a shared helper would have covered only the
+  smaller half of each pass. Left separate, matching the dossier's own
+  conservative recommendation.
+- **`CompilationFailure::TargetContract` carries every 9B post-lowering
+  diagnostic**, reusing 9A's variant exactly as speculated, not a new
+  variant. `compile_package` now runs both `check_one_tick_contracts` and
+  `check_schedule_contracts` unconditionally, merges their diagnostics into
+  one `Vec`, and returns one `TargetContract` failure only if the merged set
+  is non-empty — so a program with both a failing `one_tick` function and a
+  failing `tick` function reports both in a single failure, not just the
+  first check's findings. The semantic-phase diagnostics
+  (`schedule-target-not-argument-free`, `unknown-schedule-mode`,
+  `tick-and-one-tick-conflict`) landed in ordinary semantic checking
+  (`frontend.check.*`), parallel to how `one_tick`-without-`export` already
+  worked, exactly as the dossier's default expectation predicted.
+
+### The `TargetExecutionRoot::FunctionTag` correction — the load-bearing discovery that wasn't in the original design
+
+The dossier's central claim — "`TargetExecutionRoot::FunctionTag` already
+walks all of a tag's entries as one execution graph, ... it is the tag's
+*aggregate* sequence/fork cost that must be `ProvenWithin`" — is **not** how
+`analysis/minecraft/analyze.rs`'s `resolve_roots` actually behaves. A
+function-tag root resolves to **one independent `RootExecutionSummary` per tag
+entry** (`ResolvedTargetExecutionRoot::FunctionTagFunction { tag, entry_index,
+function }`), each already compared against the *per-entry* configured limit
+independently by the existing machinery — there is no pre-aggregated summary
+anywhere in the analysis module to read. `check_schedule_contracts`'s
+`check_tick_tag_aggregate` therefore performs the summation itself: it
+collects every tick handler's own `FunctionTagFunction` summary, sums
+`sequence_operations`/`maximum_chain_expansion` lower bounds and (when every
+handler's upper bound is finite) upper bounds, and classifies the combined
+range against the same configured limits using the same
+`compare_first_rejected`-shaped rule `CommandLimitStatus`'s own (private)
+classifier uses — reimplemented locally since that classifier isn't `pub`.
+This is proven directly by
+`aggregate_tick_tag_budget_rejects_combined_over_limit_handlers` in
+`stage9b_recurring_scheduling.rs`: two individually-`ProvenWithin` handlers
+correctly reject once their *summed* cost exceeds a lowered limit — the
+falsifiable claim the dossier's gate asked for, now known to require this
+extra summation step the original design didn't anticipate.
+
+### Self-rooting is real, strict, and immediately reachable through unsafe commands
+
+Building the pinned-server proof surfaced the practical shape of the
+self-rooting check precisely, beyond what the dossier's prose implied:
+
+- An `unsafe minecraft(...)` command is conservatively modeled as requiring
+  *every* ambient component (`ir::core::ambient::include_operation`'s
+  `UnsafeTargetFragment` arm unconditionally joins
+  `AmbientContextRequirements::UNKNOWN`, regardless of the raw command's
+  actual content).
+- The only way to discharge the executor component at all is
+  `run.as(<fresh entity query>)` — `AtExecutor` needs an already-existing
+  capture, which nothing can establish at the top of a function body without
+  `.as` first. But `transfer_run_scope_requirements`'s `AsEntityQuery` arm
+  *unconditionally* re-joins `Required` for both position and dimension after
+  discharging executor, regardless of what the wrapped body needs or what
+  other modifiers surround it (it is always the outermost/first-in-source
+  modifier, so its contribution is never overwritten by anything later in the
+  same fold).
+- Consequence, confirmed empirically, not just reasoned: **a
+  `tick`/schedule-target function containing any unsafe minecraft command can
+  never be proven self-rooted** under the current ambient model. This is not
+  a rare edge case a careful author avoids; it is the default outcome for the
+  most natural way to write an observable tick handler. `9b_reject_not_self_rooted.mdl`
+  fixes this fact as a fast-suite regression fixture (a bare
+  `unsafe minecraft("say ...")` inside a `tick fn`, no `run.as` at all,
+  already fails `lower.schedule-entry-not-self-rooted` — the wrapped-in-`.as`
+  case fails identically, just after re-adding position/dimension instead of
+  leaving all five Unknown).
+- A second, independent obstacle for *cost*, not self-rooting: block-entity
+  NBT writes (BE-1/BE-2's `mc.block(Chest, x, y, z)` path) need no ambient
+  context at all, so they *are* self-rooting-compatible — but
+  `analysis/minecraft/solve.rs` deliberately leaves `ItemReplaceBlock`'s
+  native outcome at conservative `Unknown` (a PS-16-era choice, predating
+  Stage 9B, because its exact success/fail semantics were never measured
+  against the pinned server for an arbitrary block). `Unknown` cost can never
+  be `ProvenWithin`, independent of self-rooting.
+- What *is* both self-rooted and known-cost: ordinary typed `Int32`
+  arithmetic and `return`, which lower to plain `CommandKind::Score`
+  operations. `crates/mdl-test/tests/stage9b_recurring_scheduling_server.rs`
+  documents all three findings in full and uses the third as its observation
+  mechanism (reading a handler's own `Int32` result register directly,
+  resolved through the public `LoweredFunction::result_homes()` API, rather
+  than writing anything MDL-source-observable from inside the handler).
+- A smaller, related discovery the same file had to work around: an exported
+  function's *callable resource* is never the source name itself (there is no
+  `<namespace>:light_tick`); it is a generated internal path
+  (`LoweredFunction::entry_resource()`, e.g. `<namespace>:__mdl/f0/b0`). This
+  was already true before Stage 9B and unrelated to it, but 9B's dossier
+  examples write `function light_tick` as if it were directly callable by
+  source name — a reader building their own test/tooling against a compiled
+  pack should resolve the resource through `entry_resource()`, not assume the
+  source name.
+
+### Shipped surface not fully anticipated by the plumbing list
+
+- `crates/mdl-compiler/src/ir/minecraft/schedule.rs` — new module,
+  `ScheduleCommand`/`ScheduleClearCommand`, mirroring
+  `AdvancementRevokeCommand`'s shape exactly as planned.
+- `EffectCategories::SCHEDULE_WRITE` — a new bit added to
+  `ir/minecraft/contract.rs`'s existing category set (`CommandKind::Schedule`/
+  `ScheduleClear`'s command contract), distinct from `CONTROL`: a schedule
+  effect is deferred to a later tick, not an immediate branch/return within
+  the current invocation. Not anticipated by the dossier, which didn't
+  discuss `CommandContract`/`EffectCategories` at all.
+- `AssignedInstructionPlan::Schedule`/`ScheduleClear` and
+  `InstructionPlan::Schedule`/`ScheduleClear` — new unit-variant physical
+  plan kinds threaded through `lower/minecraft/assignment.rs` and
+  `lower/minecraft/plan.rs`/`plan/assemble.rs`/`plan/*.rs`'s roughly dozen
+  exhaustive match sites. The dossier's "no crossings.rs involvement" claim
+  held completely, but the physical-planning pipeline (home assignment,
+  symbolic/dense liveness checkers, the plan dump/report, `emit.rs`'s final
+  command construction) is exhaustive-matched far more pervasively than the
+  dossier's prose implied; every one of those sites needed a new arm, mirrored
+  closely on `CoreOp::Call`'s own existing "re-read the op from the body at
+  final emission, carry no payload in the plan" shape (`InstructionPlan::Call`
+  itself carries no callee either — the callee is always re-read from
+  `data.op()` at the point of use).
+- `promote wait_for_gametime_settled`/`step_and_settle`/`query_gametime` into
+  `crates/mdl-test/src/tick.rs`, exported from the crate root. The original
+  `stage9_0_schedule_tick_evidence.rs` implementations became thin
+  `Result<_, String>` wrappers around the promoted `mdl_test::Result<_>`
+  versions so every existing call site in that file needed no other change.
+
+### Test plan realized exactly as scoped, with one addition
+
+All four fast-suite accept shapes, all six reject shapes (five original plus
+the newly-added self-rooting rejection above), the regression fixture, and
+the `schedule clear`-only-target fixture are `.mdl` files under
+`crates/mdl-compiler/tests/source-fixtures/stage9/` (`9b_*`). The four
+dedicated Rust integration tests in `stage9b_recurring_scheduling.rs` match
+the dossier's list exactly (aggregate tick-tag budget, self-reschedule-is-not-
+recursion via `LoweringDecisionStatistics::recursive_call_occurrences()` —
+a public statistic, not direct `ActivationOverlapAnalysis` inspection, since
+that type is `pub(crate)` and unavailable to an external integration-test
+crate — four-policy disagreement analog, multiple violations). The
+pinned-server proof reproduces both keystone shapes under all four policies,
+steps multiple ticks, and confirms `/reload` does not duplicate either chain,
+exactly as gated.
 
 ## References
 

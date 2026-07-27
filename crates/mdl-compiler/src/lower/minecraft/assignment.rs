@@ -107,6 +107,13 @@ pub(crate) enum AssignedInstructionPlan {
     External {
         results: Box<[AssignedScalarResult]>,
     },
+    /// One retained `schedule` (arm) statement (Stage 9B) — zero operands,
+    /// zero results; the target/delay/mode are re-read from `CoreOp::Schedule`
+    /// at final emission, exactly like `Call`'s callee is.
+    Schedule,
+    /// One retained `schedule clear` statement (Stage 9B) — zero operands,
+    /// zero results.
+    ScheduleClear,
 }
 
 /// One result position required by a fixed scalar recipe.
@@ -155,6 +162,8 @@ enum DraftInstructionPlan {
         arguments: Box<[AssignedHomeId]>,
         result_destinations: Box<[Option<AssignedCallResultDestination>]>,
     },
+    Schedule,
+    ScheduleClear,
 }
 
 impl DraftInstructionPlan {
@@ -166,6 +175,8 @@ impl DraftInstructionPlan {
         match self {
             Self::OmittedPure => Ok(AssignedInstructionPlan::OmittedPure),
             Self::External { results } => Ok(AssignedInstructionPlan::External { results }),
+            Self::Schedule => Ok(AssignedInstructionPlan::Schedule),
+            Self::ScheduleClear => Ok(AssignedInstructionPlan::ScheduleClear),
             Self::Call {
                 arguments,
                 result_destinations,
@@ -683,21 +694,33 @@ impl AssignedInstructionPlan {
     pub(crate) fn scalar_operands(&self) -> Option<&[AssignedHomeId]> {
         match self {
             Self::Scalar { operands, .. } => Some(operands),
-            Self::OmittedPure | Self::Call { .. } | Self::External { .. } => None,
+            Self::OmittedPure
+            | Self::Call { .. }
+            | Self::External { .. }
+            | Self::Schedule
+            | Self::ScheduleClear => None,
         }
     }
 
     pub(crate) fn scalar_results(&self) -> Option<&[AssignedScalarResult]> {
         match self {
             Self::Scalar { results, .. } => Some(results),
-            Self::OmittedPure | Self::Call { .. } | Self::External { .. } => None,
+            Self::OmittedPure
+            | Self::Call { .. }
+            | Self::External { .. }
+            | Self::Schedule
+            | Self::ScheduleClear => None,
         }
     }
 
     pub(crate) fn call_arguments(&self) -> Option<&[AssignedHomeId]> {
         match self {
             Self::Call { arguments, .. } => Some(arguments),
-            Self::OmittedPure | Self::Scalar { .. } | Self::External { .. } => None,
+            Self::OmittedPure
+            | Self::Scalar { .. }
+            | Self::External { .. }
+            | Self::Schedule
+            | Self::ScheduleClear => None,
         }
     }
 
@@ -709,7 +732,11 @@ impl AssignedInstructionPlan {
                 result_destinations,
                 ..
             } => Some(result_destinations),
-            Self::OmittedPure | Self::Scalar { .. } | Self::External { .. } => None,
+            Self::OmittedPure
+            | Self::Scalar { .. }
+            | Self::External { .. }
+            | Self::Schedule
+            | Self::ScheduleClear => None,
         }
     }
 }
@@ -896,6 +923,8 @@ fn plan_none_instructions(
                     .collect::<Result<Vec<_>, AssignmentError>>()?
                     .into_boxed_slice(),
             },
+            CoreOp::Schedule(..) => AssignedInstructionPlan::Schedule,
+            CoreOp::ScheduleClear(_) => AssignedInstructionPlan::ScheduleClear,
         };
         set_indexed_slot(&mut plans, instruction, plan, function)?;
     }
@@ -1003,6 +1032,12 @@ fn draft_retained_instruction(
             .collect::<Vec<_>>()
             .into_boxed_slice();
         return Ok(DraftInstructionPlan::External { results });
+    }
+    if matches!(data.op(), CoreOp::Schedule(..)) {
+        return Ok(DraftInstructionPlan::Schedule);
+    }
+    if matches!(data.op(), CoreOp::ScheduleClear(_)) {
+        return Ok(DraftInstructionPlan::ScheduleClear);
     }
     let operands = assigned_operands(function, data, assignments)?;
     if matches!(data.op(), CoreOp::Call(_)) {

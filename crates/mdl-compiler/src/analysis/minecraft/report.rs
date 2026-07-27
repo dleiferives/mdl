@@ -72,6 +72,7 @@ pub struct TargetExecutionCensus {
     item_replace_block_commands: usize,
     return_commands: usize,
     raw_commands: usize,
+    schedule_commands: usize,
 }
 
 macro_rules! census_accessors {
@@ -101,6 +102,7 @@ impl TargetExecutionCensus {
         (item_replace_block_commands, item_replace_block_commands),
         (return_commands, return_commands),
         (raw_commands, raw_commands),
+        (schedule_commands, schedule_commands),
     );
 
     pub(super) fn from_program(program: &MinecraftProgram) -> Option<Self> {
@@ -149,6 +151,9 @@ impl TargetExecutionCensus {
             CommandKind::ItemReplaceBlock(_) => {
                 self.item_replace_block_commands =
                     self.item_replace_block_commands.checked_add(1)?;
+            }
+            CommandKind::Schedule(_) | CommandKind::ScheduleClear(_) => {
+                self.schedule_commands = self.schedule_commands.checked_add(1)?;
             }
             CommandKind::Execute(command) => {
                 self.execute_stages = self.execute_stages.checked_add(command.modifiers().len())?;

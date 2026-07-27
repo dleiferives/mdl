@@ -14,9 +14,9 @@ use super::ast::{
     AstEventHandler, AstEventHandlerArgumentValue, AstExpression, AstExpressionKind, AstFunction,
     AstFunctionVisibility, AstIfStatement, AstInferredStructEntries, AstInferredStructLiteral,
     AstModule, AstName, AstResultTypeKind, AstReturnStatement, AstRunModifier, AstRunStatement,
-    AstStatement, AstStructLiteral, AstSwitchExpression, AstSwitchLabel, AstSwitchPattern,
-    AstSwitchPatternKind, AstSwitchStatement, AstValueTypeKind, AstWhileStatement,
-    AstWrappingArithmeticOp,
+    AstScheduleClearStatement, AstScheduleStatement, AstStatement, AstStructLiteral,
+    AstSwitchExpression, AstSwitchLabel, AstSwitchPattern, AstSwitchPatternKind,
+    AstSwitchStatement, AstValueTypeKind, AstWhileStatement, AstWrappingArithmeticOp,
 };
 use super::context::{apply_run_modifiers, function_entry_context};
 use super::entity_schema::{SchemaNode, block_root_schema, root_schema};
@@ -28,16 +28,17 @@ use super::hir::{
     HirEnumVariant, HirEventHandler, HirExecutionContext, HirExecutorCapture, HirExpression,
     HirExpressionKind, HirExternalOp, HirExternalSemantic, HirFunction, HirIf, HirIfArm,
     HirListI32Op, HirMinecraftOperationAttributes, HirModule, HirModuleInfo, HirRun,
-    HirRunModifier, HirStatement, HirStatementKind, HirStringOp, HirStruct, HirStructField,
-    HirStructFieldValue, HirSwitchExpression, HirSwitchExpressionArm, HirSwitchLabel,
-    HirSwitchPattern, HirSwitchPatternKind, HirSwitchStatement, HirSwitchStatementArm,
-    HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId, SourceAnonymousStructId,
-    SourceEnumId, SourceExternalOpId, SourceFunctionId, SourceModuleId, SourceRunId,
-    SourceStructId, SourceVariantId, ValueType, verify,
+    HirRunModifier, HirSchedule, HirScheduleClear, HirStatement, HirStatementKind, HirStringOp,
+    HirStruct, HirStructField, HirStructFieldValue, HirSwitchExpression, HirSwitchExpressionArm,
+    HirSwitchLabel, HirSwitchPattern, HirSwitchPatternKind, HirSwitchStatement,
+    HirSwitchStatementArm, HirVerificationError, HirWhile, HirWrappingArithmeticOp, LocalId,
+    SourceAnonymousStructId, SourceEnumId, SourceExternalOpId, SourceFunctionId, SourceModuleId,
+    SourceRunId, SourceStructId, SourceVariantId, ValueType, verify,
 };
 use super::input::{ModuleDependency, ModuleKey};
 use crate::diagnostic::{Diagnostic, DiagnosticLabel, Diagnostics};
 use crate::ir::command_line::validate_command_line_shape;
+use crate::ir::core::ScheduleMode;
 use crate::ir::semantic::{
     Axes, BlockEntityKind, BlockPosition, ContextFact, DimensionKey, EntityAnchor,
     EntityCapability, EntityKind, EntityTag, ExecutorType, FiniteDecimal, LocalPosition,
@@ -111,6 +112,10 @@ const PARTIAL_ENTITY_NBT_WRITE: &str = "frontend.check.partial-entity-nbt-write"
 const NOT_AN_ENTITY_NBT_WRITE_TARGET: &str = "frontend.check.not-an-entity-nbt-write-target";
 const ENTITY_NBT_WRITE_VALUE_REQUIRED: &str = "frontend.check.entity-nbt-write-value-required";
 const ONE_TICK_REQUIRES_EXPORT: &str = "frontend.check.one-tick-requires-export";
+const TICK_AND_ONE_TICK_CONFLICT: &str = "frontend.check.tick-and-one-tick-conflict";
+const SCHEDULE_TARGET_NOT_ARGUMENT_FREE: &str = "frontend.check.schedule-target-not-argument-free";
+const UNKNOWN_SCHEDULE_MODE: &str = "frontend.check.unknown-schedule-mode";
+const INVALID_SCHEDULE_DELAY: &str = "frontend.check.invalid-schedule-delay";
 
 /// Closed event-trigger vocabulary (PS-15 Slice 1: one variant). Growing this
 /// to a second trigger is "add a variant", not a redesign of the argument-
@@ -126,6 +131,17 @@ impl EventTrigger {
             "inventory_changed" => Some(Self::InventoryChanged),
             _ => None,
         }
+    }
+}
+
+/// Closed `schedule` mode vocabulary (Stage 9B), validated the same way
+/// [`EventTrigger::from_source_name`] validates trigger names: a plain
+/// identifier checked after parsing, not a reserved keyword.
+fn schedule_mode_from_source_name(name: &str) -> Option<ScheduleMode> {
+    match name {
+        "append" => Some(ScheduleMode::Append),
+        "replace" => Some(ScheduleMode::Replace),
+        _ => None,
     }
 }
 
@@ -179,6 +195,43 @@ fn one_tick_requires_export_diagnostic(name: &str, function: &AstFunction) -> Pe
         function.visibility_span.unwrap_or(function.name.span),
         "function is not declared `export`",
     )
+}
+
+/// `tick` and `one_tick` together (Stage 9B) is rejected: a tick handler's
+/// contract is checked through the tag's aggregate root, not the function's
+/// own independent root, so writing both would assert two different, easily
+/// confused things about the same function.
+fn tick_and_one_tick_conflict_diagnostic(name: &str, function: &AstFunction) -> PendingDiagnostic {
+    PendingDiagnostic::new(
+        TICK_AND_ONE_TICK_CONFLICT,
+        format!("function `{name}` marks both `tick` and `one_tick`"),
+        function.tick_span.unwrap_or(function.span),
+    )
+    .primary("`tick` and `one_tick` are mutually exclusive")
+    .support(
+        function.one_tick_span.unwrap_or(function.name.span),
+        "`one_tick` is declared here",
+    )
+}
+
+/// A `tick`-marked function, or a function named by any `schedule` (arm)
+/// statement, declares a nonzero parameter count (Stage 9B). Scheduled and
+/// tick-tag entries have no per-invocation identity in vanilla `schedule`, so
+/// they can never carry arguments.
+fn schedule_target_not_argument_free_diagnostic(
+    name: &str,
+    span: Span,
+    parameter_count: usize,
+) -> PendingDiagnostic {
+    PendingDiagnostic::new(
+        SCHEDULE_TARGET_NOT_ARGUMENT_FREE,
+        format!(
+            "`{name}` declares {parameter_count} parameter(s) but a tick/schedule target must \
+             be argument-free"
+        ),
+        span,
+    )
+    .primary("scheduled and tick-tag functions take no arguments")
 }
 
 /// Semantic result: checked HIR on success, or diagnostics without partial HIR.
@@ -1246,6 +1299,16 @@ fn collect_module_signatures(
         if function.one_tick && !matches!(function.visibility, AstFunctionVisibility::Export) {
             diagnostics.push(one_tick_requires_export_diagnostic(&name, function));
         }
+        if function.tick && function.one_tick {
+            diagnostics.push(tick_and_one_tick_conflict_diagnostic(&name, function));
+        }
+        if function.tick && !function.parameters.is_empty() {
+            diagnostics.push(schedule_target_not_argument_free_diagnostic(
+                &name,
+                function.tick_span.unwrap_or(function.name.span),
+                function.parameters.len(),
+            ));
+        }
         let mut parameters = Vec::with_capacity(function.parameters.len());
         for parameter in &function.parameters {
             let ty = resolve_value_type(
@@ -1465,6 +1528,7 @@ impl<'a> BodyChecker<'a> {
                 .map(|span| self.origin(span))
                 .transpose()?,
             one_tick: ast.one_tick,
+            tick: ast.tick,
             name_origin,
             parameter_count: ast.parameters.len(),
             result: self.signature.result,
@@ -1531,6 +1595,7 @@ impl<'a> BodyChecker<'a> {
             visibility: FunctionVisibility::Private,
             visibility_origin: None,
             one_tick: false,
+            tick: false,
             name_origin,
             parameter_count: 0,
             result: FunctionResult::Void,
@@ -1695,6 +1760,10 @@ impl<'a> BodyChecker<'a> {
             AstStatement::Return(statement) => self.check_return(statement, assigned),
             AstStatement::Run(statement) => self.check_run(statement, assigned),
             AstStatement::UnsafeMinecraft(statement) => self.check_unsafe_minecraft(statement),
+            AstStatement::Schedule(statement) => self.check_schedule_statement(statement),
+            AstStatement::ScheduleClear(statement) => {
+                self.check_schedule_clear_statement(statement)
+            }
             AstStatement::Destructure(destructure) => {
                 self.check_destructuring(destructure, assigned)
             }
@@ -3361,6 +3430,109 @@ impl<'a> BodyChecker<'a> {
                     kind: HirStatementKind::External(operation),
                     origin,
                 }))
+            }
+            None => self.finish_statement(None, statement.span, true),
+        }
+    }
+
+    /// `schedule <target>, <delay>[, mode];` (Stage 9B). `target` is a bare
+    /// function-name reference resolved the same way an ordinary call's
+    /// callee is (minus the argument list), reusing
+    /// [`Self::resolve_local_function`].
+    fn check_schedule_statement(
+        &mut self,
+        statement: &AstScheduleStatement,
+    ) -> Result<CheckedStatement, CheckError> {
+        let (name, signature_index) = self.resolve_local_function(statement.target.span)?;
+        let mut valid = signature_index.is_some();
+        if let Some(signature) =
+            signature_index.and_then(|index| self.signatures.functions.get(index))
+        {
+            if !signature.parameters.is_empty() {
+                self.diagnostics.push(schedule_target_not_argument_free_diagnostic(
+                    &name,
+                    statement.target.span,
+                    signature.parameters.len(),
+                ));
+                valid = false;
+            }
+        }
+        let delay_spelling = self.spelling(statement.delay)?;
+        let delay_ticks = match delay_spelling.parse::<u32>() {
+            Ok(delay_ticks) => Some(delay_ticks),
+            Err(_) => {
+                self.diagnostics.push(
+                    PendingDiagnostic::new(
+                        INVALID_SCHEDULE_DELAY,
+                        "schedule delay is outside the UInt32 tick-count range",
+                        statement.delay,
+                    )
+                    .primary("expected a tick count from 0 through 4294967295"),
+                );
+                valid = false;
+                None
+            }
+        };
+        let mode = match statement.mode {
+            Some(mode_name) => {
+                let mode_spelling = self.spelling(mode_name.span)?;
+                match schedule_mode_from_source_name(&mode_spelling) {
+                    Some(mode) => Some(mode),
+                    None => {
+                        self.diagnostics.push(
+                            PendingDiagnostic::new(
+                                UNKNOWN_SCHEDULE_MODE,
+                                format!("`{mode_spelling}` is not a recognized schedule mode"),
+                                mode_name.span,
+                            )
+                            .primary("expected `append` or `replace`"),
+                        );
+                        valid = false;
+                        None
+                    }
+                }
+            }
+            None => Some(ScheduleMode::Replace),
+        };
+        if let (true, Some(signature_index), Some(delay_ticks), Some(mode)) =
+            (valid, signature_index, delay_ticks, mode)
+        {
+            let callee = self.signatures.functions[signature_index].id;
+            let origin = self.origin(statement.span)?;
+            self.finish_statement(
+                Some(HirStatementKind::Schedule(HirSchedule {
+                    callee,
+                    delay_ticks,
+                    mode,
+                    origin,
+                })),
+                statement.span,
+                true,
+            )
+        } else {
+            self.finish_statement(None, statement.span, true)
+        }
+    }
+
+    /// `schedule clear <target>;` (Stage 9B). Imposes no argument-free or
+    /// self-rooting contract — only ordinary function-name resolution.
+    fn check_schedule_clear_statement(
+        &mut self,
+        statement: &AstScheduleClearStatement,
+    ) -> Result<CheckedStatement, CheckError> {
+        let (_, signature_index) = self.resolve_local_function(statement.target.span)?;
+        match signature_index {
+            Some(signature_index) => {
+                let callee = self.signatures.functions[signature_index].id;
+                let origin = self.origin(statement.span)?;
+                self.finish_statement(
+                    Some(HirStatementKind::ScheduleClear(HirScheduleClear {
+                        callee,
+                        origin,
+                    })),
+                    statement.span,
+                    true,
+                )
             }
             None => self.finish_statement(None, statement.span, true),
         }

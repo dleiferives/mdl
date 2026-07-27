@@ -16,6 +16,7 @@ use super::input::{
 use super::lexer::{LexerError, lex};
 use super::lower::{CoreGenerationFailure, SourceToCoreMap, lower_hir};
 use super::parser::{ParserError, parse};
+use super::schedule_contract::check_schedule_contracts;
 use super::target_contract::check_one_tick_contracts;
 use crate::analysis::minecraft::{
     TargetExecutionAnalysisFailure, TargetExecutionAnalysisLimits, TargetExecutionCostReport,
@@ -982,11 +983,22 @@ pub fn compile_package(
     };
 
     let target_analysis = lowering.analyze_target_execution(options.target_analysis());
+    let mut contract_findings = Vec::new();
     if let Some(diagnostics) = check_one_tick_contracts(
         core_optimization.program(),
         &lowering,
         target_analysis.as_ref(),
     ) {
+        contract_findings.extend(diagnostics.into_findings());
+    }
+    if let Some(diagnostics) = check_schedule_contracts(
+        core_optimization.program(),
+        &lowering,
+        target_analysis.as_ref(),
+    ) {
+        contract_findings.extend(diagnostics.into_findings());
+    }
+    if let Some(diagnostics) = Diagnostics::from_findings(contract_findings) {
         return Err(CompilationFailure::TargetContract {
             sources: Box::new(sources),
             checked_frontend: Box::new(checked_frontend),

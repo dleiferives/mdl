@@ -6,12 +6,14 @@
 
 mod measurement;
 pub mod scenario;
+mod tick;
 
 pub use measurement::{
     JvmMeasurementMetadata, MEASUREMENT_SCHEMA_VERSION, MeasurementConfigurationSchedule,
     MeasurementMetadata, MeasurementProtocol, MeasurementRecord, MeasurementRecordError,
     MeasurementSample, MeasurementSampleStatus, sha256_file,
 };
+pub use tick::{query_gametime, step_and_settle, wait_for_gametime_settled};
 
 use std::collections::{HashSet, VecDeque};
 use std::env;

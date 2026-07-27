@@ -619,7 +619,10 @@ impl<'a> Solver<'a> {
                     self.join_value(result, LatticeValue::Overdefined)?;
                 }
             }
-            CoreOp::Call(_) | CoreOp::External(_) => {
+            CoreOp::Call(_)
+            | CoreOp::External(_)
+            | CoreOp::Schedule(..)
+            | CoreOp::ScheduleClear(_) => {
                 let result_count = data.results().len();
                 for result_index in 0..result_count {
                     let result = self

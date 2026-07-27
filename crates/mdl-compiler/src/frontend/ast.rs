@@ -126,6 +126,12 @@ pub(super) struct AstFunction {
     /// function completes within one Minecraft tick.
     pub(super) one_tick: bool,
     pub(super) one_tick_span: Option<Span>,
+    /// Whether the source `tick` modifier was present, registering this
+    /// function into `#minecraft:tick`. Unlike `one_tick`, this does not
+    /// require `export` — a `tick`-marked function becomes its own root
+    /// through the tick tag, not through export.
+    pub(super) tick: bool,
+    pub(super) tick_span: Option<Span>,
     pub(super) name: AstName,
     pub(super) parameters: Vec<AstParameter>,
     /// Omission means the same result contract as explicit `Void`.
@@ -347,8 +353,37 @@ pub(super) enum AstStatement {
     Return(AstReturnStatement),
     Run(AstRunStatement),
     UnsafeMinecraft(AstUnsafeMinecraftStatement),
+    Schedule(AstScheduleStatement),
+    ScheduleClear(AstScheduleClearStatement),
     /// A required statement that parser recovery could not construct.
     Error(Span),
+}
+
+/// `schedule <name>, <delay>[, append|replace];` — the target is a bare
+/// function name, never a call expression (see 9B dossier for why reusing
+/// `AstCall` here was rejected: it would let arity-checking silently accept
+/// argument-carrying schedule targets). `mode`, when present, is a plain
+/// identifier validated later against a closed vocabulary (`append`/
+/// `replace`), the same pattern `EventTrigger::from_source_name` already
+/// uses for event-handler trigger names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstScheduleStatement {
+    pub(super) target: AstName,
+    /// The delay literal's digit span (a bare `DecimalInteger`, no sign, no
+    /// literal suffix).
+    pub(super) delay: Span,
+    pub(super) mode: Option<AstName>,
+    pub(super) span: Span,
+}
+
+/// `schedule clear <name>;` — `clear` is a reserved keyword (not a plain
+/// identifier like `append`/`replace`) specifically to avoid the lookahead
+/// ambiguity a function literally named `clear` would otherwise create; see
+/// the 9B dossier's "clear grammar-ambiguity fork" section.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AstScheduleClearStatement {
+    pub(super) target: AstName,
+    pub(super) span: Span,
 }
 
 /// One postfix source call before name or member resolution.
@@ -798,6 +833,26 @@ impl AstPrinter<'_> {
                 format_args!(
                     "unsafe minecraft {} {}",
                     self.spelling(statement.command),
+                    location(statement.span)
+                ),
+            ),
+            AstStatement::Schedule(statement) => self.line(
+                indent,
+                format_args!(
+                    "schedule {} {} mode={} {}",
+                    self.spelling(statement.target.span),
+                    self.spelling(statement.delay),
+                    statement
+                        .mode
+                        .map_or_else(|| "<default>".to_owned(), |mode| self.spelling(mode.span)),
+                    location(statement.span)
+                ),
+            ),
+            AstStatement::ScheduleClear(statement) => self.line(
+                indent,
+                format_args!(
+                    "schedule-clear {} {}",
+                    self.spelling(statement.target.span),
                     location(statement.span)
                 ),
             ),

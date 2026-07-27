@@ -244,6 +244,10 @@ impl RegisterSlot {
 pub struct LoweredFunction {
     linkage: CoreFunctionLinkage,
     entry_resource: FunctionResourceId,
+    /// Source `tick` modifier (Stage 9B): registered into `#minecraft:tick`.
+    tick_handler: bool,
+    /// Whether any `schedule` (arm) statement names this function (Stage 9B).
+    is_schedule_target: bool,
     generated_entry_requirement: AmbientContextRequirements,
     parameter_homes: Box<[(CoreType, RegisterSlot)]>,
     result_homes: Box<[(CoreType, RegisterSlot)]>,
@@ -317,9 +321,15 @@ impl LoweredRunModifier {
 }
 
 impl LoweredFunction {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the growing set of independent source markers threaded through Core's own Function"
+    )]
     pub(crate) fn new(
         linkage: CoreFunctionLinkage,
         entry_resource: FunctionResourceId,
+        tick_handler: bool,
+        is_schedule_target: bool,
         generated_entry_requirement: AmbientContextRequirements,
         parameter_homes: Vec<(CoreType, RegisterSlot)>,
         result_homes: Vec<(CoreType, RegisterSlot)>,
@@ -327,6 +337,8 @@ impl LoweredFunction {
         Self {
             linkage,
             entry_resource,
+            tick_handler,
+            is_schedule_target,
             generated_entry_requirement,
             parameter_homes: parameter_homes.into_boxed_slice(),
             result_homes: result_homes.into_boxed_slice(),
@@ -343,6 +355,20 @@ impl LoweredFunction {
     #[must_use]
     pub const fn entry_resource(&self) -> &FunctionResourceId {
         &self.entry_resource
+    }
+
+    /// Returns whether this function carries the source `tick` modifier
+    /// (Stage 9B).
+    #[must_use]
+    pub const fn tick_handler(&self) -> bool {
+        self.tick_handler
+    }
+
+    /// Returns whether any `schedule` (arm) statement names this function
+    /// (Stage 9B).
+    #[must_use]
+    pub const fn is_schedule_target(&self) -> bool {
+        self.is_schedule_target
     }
 
     /// Returns the optimized Core function's required incoming Minecraft context.
@@ -610,6 +636,28 @@ impl LoweringOutput {
                 })?;
             roots.push(TargetExecutionRoot::Function(function));
         }
+        // Stage 9B: each schedule-target function becomes its own independent
+        // root — when the scheduler fires it, that is a wholly separate
+        // synchronous run from its own entry point, exactly like an export
+        // root's invocation. Independent of `DatapackExport` linkage.
+        for lowered in self
+            .map
+            .functions
+            .iter()
+            .filter(|function| function.is_schedule_target())
+        {
+            let function = function_ids
+                .get(lowered.entry_resource())
+                .copied()
+                .ok_or_else(|| {
+                    TargetExecutionAnalysisFailure::internal(
+                        TargetExecutionAnalysisPhase::Invariant,
+                        "target-cost.lowering-map-root",
+                        "verified lowering map references an absent target function",
+                    )
+                })?;
+            roots.push(TargetExecutionRoot::Function(function));
+        }
         let load_resource = FunctionTagResourceId::parse("minecraft:load").map_err(|_| {
             TargetExecutionAnalysisFailure::internal(
                 TargetExecutionAnalysisPhase::Invariant,
@@ -629,6 +677,36 @@ impl LoweringOutput {
                 )
             })?;
         roots.push(TargetExecutionRoot::FunctionTag(load_tag));
+        // Stage 9B: `#minecraft:tick` becomes one aggregate `FunctionTag` root
+        // covering all handlers together, matching vanilla's real per-tick
+        // combined command budget — constructed only if at least one tick
+        // handler exists, so a program with zero `tick` usage adds no root.
+        if self
+            .map
+            .functions
+            .iter()
+            .any(|function| function.tick_handler())
+        {
+            let tick_resource = FunctionTagResourceId::parse("minecraft:tick").map_err(|_| {
+                TargetExecutionAnalysisFailure::internal(
+                    TargetExecutionAnalysisPhase::Invariant,
+                    "target-cost.static-tick-resource",
+                    "the compiler's static vanilla tick-tag resource is invalid",
+                )
+            })?;
+            let tick_tag = self
+                .program
+                .function_tags()
+                .find_map(|(tag, data)| (data.resource() == &tick_resource).then_some(tag))
+                .ok_or_else(|| {
+                    TargetExecutionAnalysisFailure::internal(
+                        TargetExecutionAnalysisPhase::Invariant,
+                        "target-cost.lowering-tick-root",
+                        "verified lowering output is missing its generated tick tag",
+                    )
+                })?;
+            roots.push(TargetExecutionRoot::FunctionTag(tick_tag));
+        }
         let assumptions = self.map.execution.command_limits().configured_assumptions();
         analyze_verified_target_execution(&self.program, &roots, assumptions, limits)
     }

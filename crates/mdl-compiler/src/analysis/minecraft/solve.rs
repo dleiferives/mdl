@@ -1075,6 +1075,19 @@ fn evaluate_command(command: &CommandKind, context: &SolverContext<'_>) -> Optio
             output.merge(CommandFlow::continuing(CommandResult::Failure, metrics));
             Some(output)
         }
+        // A schedule/schedule-clear command is a single known, non-forking
+        // command whose exact native return classification is not yet
+        // measured (Stage 9B) — conservatively any of Zero/NonZero/Failure,
+        // matching `Teleport`'s own shape, but with a known (not unknown)
+        // sequence-length contribution so a self-rescheduling function can
+        // still be proven within its command-sequence budget.
+        CommandKind::Schedule(_) | CommandKind::ScheduleClear(_) => {
+            let metrics = MetricSet::command(false);
+            let mut output = CommandFlow::continuing(CommandResult::Zero, metrics);
+            output.merge(CommandFlow::continuing(CommandResult::NonZero, metrics));
+            output.merge(CommandFlow::continuing(CommandResult::Failure, metrics));
+            Some(output)
+        }
         // Raw commands and both macro-emission encodings are opaque unknown flow
         // until the PS-11 crossing engine gives macros a structured contract.
         // Advancement-revoke's and item-replace's exact native return counts

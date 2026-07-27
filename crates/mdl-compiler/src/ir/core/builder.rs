@@ -191,7 +191,9 @@ impl<'a> FunctionBuilder<'a> {
     ) -> Result<(InstId, Vec<ValueId>), BuildError> {
         self.validate_origin(origin)?;
         let signature = op.signature(self.program).ok_or(match op {
-            CoreOp::Call(function) => BuildError::InvalidFunction { function },
+            CoreOp::Call(function)
+            | CoreOp::Schedule(function, ..)
+            | CoreOp::ScheduleClear(function) => BuildError::InvalidFunction { function },
             CoreOp::External(operation) => BuildError::InvalidExternalOperation { operation },
             _ => BuildError::InvalidOperationContract,
         })?;
@@ -534,6 +536,40 @@ impl<'a> FunctionBuilder<'a> {
         origin: OriginId,
     ) -> Result<(InstId, Vec<ValueId>), BuildError> {
         self.insert_with_identity(CoreOp::External(operation), operands, origin)
+    }
+
+    /// Arms (or re-arms) a target schedule entry for an argument-free
+    /// internal function (Stage 9B). Deliberately produces no
+    /// [`super::FunctionReference`] — see [`super::CoreOp::Schedule`].
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error or an invalid callee error.
+    pub fn schedule(
+        &mut self,
+        function: FunctionId,
+        delay_ticks: u32,
+        mode: super::ScheduleMode,
+        origin: OriginId,
+    ) -> Result<(), BuildError> {
+        self.insert(CoreOp::Schedule(function, delay_ticks, mode), vec![], origin)?;
+        Ok(())
+    }
+
+    /// Clears a target schedule entry for an argument-free internal function
+    /// (Stage 9B). Deliberately produces no [`super::FunctionReference`] —
+    /// see [`super::CoreOp::ScheduleClear`].
+    ///
+    /// # Errors
+    ///
+    /// Returns any structural insertion error or an invalid callee error.
+    pub fn schedule_clear(
+        &mut self,
+        function: FunctionId,
+        origin: OriginId,
+    ) -> Result<(), BuildError> {
+        self.insert(CoreOp::ScheduleClear(function), vec![], origin)?;
+        Ok(())
     }
 
     /// Sets the current block's terminator exactly once.

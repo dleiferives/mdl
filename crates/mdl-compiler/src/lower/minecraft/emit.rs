@@ -8,8 +8,8 @@ use crate::ir::minecraft::{
     AtMostOneSelector, CommandId, CommandKind, DataCommand, DataModifyMode, DataSource,
     ExecuteCommand, ExecuteModifier, ExecuteModifierKind, ExecuteModifiers, FunctionCall,
     InternalCallableRef, ItemReplaceBlockCommand, McFunctionId, MinecraftProgram,
-    NbtMatchValueKind, NbtPath, NbtPathKey, NbtPathSegment, NbtValue, Selector, StoreChannel,
-    StoreDestination, SyntaxSlot, UnsafeRawCommand,
+    NbtMatchValueKind, NbtPath, NbtPathKey, NbtPathSegment, NbtValue, ScheduleClearCommand,
+    ScheduleCommand, Selector, StoreChannel, StoreDestination, SyntaxSlot, UnsafeRawCommand,
 };
 use crate::source::OriginId;
 
@@ -508,6 +508,46 @@ fn lower_instruction(
                 result_destinations,
                 data.origin(),
             )?;
+            Ok(None)
+        }
+        InstructionPlan::Schedule => {
+            let CoreOp::Schedule(callee, delay_ticks, mode) = data.op() else {
+                return Err(invariant_diagnostics(
+                    "non-schedule instruction has a schedule physical plan",
+                    data.origin(),
+                ));
+            };
+            let entry = context.plan().function_entry(*callee).ok_or_else(|| {
+                invariant_diagnostics(
+                    "schedule target has no planned entry function",
+                    data.origin(),
+                )
+            })?;
+            let target = context.function(entry)?;
+            context.push(command(
+                CommandKind::Schedule(ScheduleCommand::new(target, *delay_ticks, *mode)),
+                data.origin(),
+            )?)?;
+            Ok(None)
+        }
+        InstructionPlan::ScheduleClear => {
+            let CoreOp::ScheduleClear(callee) = data.op() else {
+                return Err(invariant_diagnostics(
+                    "non-schedule-clear instruction has a schedule-clear physical plan",
+                    data.origin(),
+                ));
+            };
+            let entry = context.plan().function_entry(*callee).ok_or_else(|| {
+                invariant_diagnostics(
+                    "schedule-clear target has no planned entry function",
+                    data.origin(),
+                )
+            })?;
+            let target = context.function(entry)?;
+            context.push(command(
+                CommandKind::ScheduleClear(ScheduleClearCommand::new(target)),
+                data.origin(),
+            )?)?;
             Ok(None)
         }
     }
@@ -3358,7 +3398,9 @@ mod tests {
                 | CommandKind::Macro(_)
                 | CommandKind::FunctionWithStorage(_)
                 | CommandKind::AdvancementRevoke(_)
-                | CommandKind::ItemReplaceBlock(_) => {
+                | CommandKind::ItemReplaceBlock(_)
+                | CommandKind::Schedule(_)
+                | CommandKind::ScheduleClear(_) => {
                     panic!("loop lowering emitted a non-score primitive")
                 }
             }

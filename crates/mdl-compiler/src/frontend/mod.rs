@@ -14,6 +14,7 @@ mod input;
 mod lexer;
 mod lower;
 mod parser;
+mod schedule_contract;
 mod target_contract;
 mod token;
 

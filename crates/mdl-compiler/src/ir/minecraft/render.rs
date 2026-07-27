@@ -181,6 +181,28 @@ fn render_command(
             sink.push_checked("advancement revoke @s only ")?;
             sink.write_arguments(format_args!("{}", command.resource()))
         }
+        CommandKind::Schedule(command) => {
+            sink.push_checked("schedule function ")?;
+            render_internal_callable(
+                program,
+                InternalCallableRef::Function(command.target()),
+                sink,
+            )?;
+            sink.push_checked(" ")?;
+            sink.write_arguments(format_args!("{}t", command.delay_ticks()))?;
+            match command.mode() {
+                crate::ir::core::ScheduleMode::Append => sink.push_checked(" append"),
+                crate::ir::core::ScheduleMode::Replace => sink.push_checked(" replace"),
+            }
+        }
+        CommandKind::ScheduleClear(command) => {
+            sink.push_checked("schedule clear ")?;
+            render_internal_callable(
+                program,
+                InternalCallableRef::Function(command.target()),
+                sink,
+            )
+        }
         CommandKind::ItemReplaceBlock(command) => {
             let position = command.position();
             let Operand::Const(slot) = command.slot() else {

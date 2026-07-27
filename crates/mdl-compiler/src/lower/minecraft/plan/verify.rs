@@ -965,6 +965,24 @@ impl<'a> PlanVerifier<'a> {
                 self.verify_operands(function, data, layout, arguments);
                 self.verify_call_results(function, instruction, data, layout, result_destinations);
             }
+            InstructionPlan::Schedule => {
+                if !matches!(data.op(), CoreOp::Schedule(..)) {
+                    self.report(
+                        "lower.plan.instruction-kind",
+                        format!("{function:?} {instruction:?} has a schedule plan"),
+                        data.origin(),
+                    );
+                }
+            }
+            InstructionPlan::ScheduleClear => {
+                if !matches!(data.op(), CoreOp::ScheduleClear(_)) {
+                    self.report(
+                        "lower.plan.instruction-kind",
+                        format!("{function:?} {instruction:?} has a schedule-clear plan"),
+                        data.origin(),
+                    );
+                }
+            }
         }
     }
 
@@ -2380,7 +2398,10 @@ fn verifier_scalar_result_types(operation: &CoreOp) -> Option<&'static [CoreType
         CoreOp::I32AddOverflowing => Some(OVERFLOW),
         CoreOp::ListI32Empty | CoreOp::ListI32Push | CoreOp::ListI32WithoutLast => Some(LIST),
         CoreOp::StringConstant(_) | CoreOp::StringWithoutLastUnit => Some(STRING),
-        CoreOp::Call(_) | CoreOp::External(_) => None,
+        CoreOp::Call(_)
+        | CoreOp::External(_)
+        | CoreOp::Schedule(..)
+        | CoreOp::ScheduleClear(_) => None,
     }
 }
 

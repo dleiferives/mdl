@@ -1287,6 +1287,8 @@ fn declare_export(
         Some(name),
         CoreFunctionLinkage::DatapackExport,
         false,
+        false,
+        false,
         parameters,
         results,
         OriginId::UNKNOWN,

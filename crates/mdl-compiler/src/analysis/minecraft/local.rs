@@ -31,7 +31,9 @@ fn classify_step(command: &CommandKind) -> Option<CommandStepCost> {
         )),
         CommandKind::Say(_)
         | CommandKind::AdvancementRevoke(_)
-        | CommandKind::ItemReplaceBlock(_) => Some(simple_step(
+        | CommandKind::ItemReplaceBlock(_)
+        | CommandKind::Schedule(_)
+        | CommandKind::ScheduleClear(_) => Some(simple_step(
             CommandStepCounts::new(1, 0, 0, 0),
             vec![CommandOutcome::Continue],
         )),

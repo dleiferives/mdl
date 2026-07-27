@@ -145,6 +145,18 @@ fn write_command(
                 command.count()
             )?;
         }
+        CommandKind::Schedule(command) => {
+            write!(
+                output,
+                "schedule target={:?} delay_ticks={} mode={:?}",
+                command.target(),
+                command.delay_ticks(),
+                command.mode()
+            )?;
+        }
+        CommandKind::ScheduleClear(command) => {
+            write!(output, "schedule.clear target={:?}", command.target())?;
+        }
     }
     output.write_char('\n')
 }

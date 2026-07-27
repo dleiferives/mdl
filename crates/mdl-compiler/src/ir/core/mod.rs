@@ -274,6 +274,17 @@ pub enum OperandSymmetry {
     CommutativePair,
 }
 
+/// Closed vocabulary for the target `schedule` statement's pending-slot mode
+/// (Stage 9B). Mirrors vanilla's own `append`/`replace` schedule modifier.
+/// `Replace` is the frozen default (9.0 M5/M6/M12: `replace` collapses to a
+/// single pending entry and survives `/reload` mid-chain with no
+/// duplication).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ScheduleMode {
+    Append,
+    Replace,
+}
+
 /// Semantic role of one non-SSA function-reference occurrence.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FunctionReferenceKind {
@@ -369,6 +380,16 @@ pub enum CoreOp {
     Call(FunctionId),
     /// Invokes one closed program-owned external declaration.
     External(ExternalOpId),
+    /// Arms (or re-arms) a target `schedule function <id> <time> [mode]`
+    /// pending entry for an argument-free function (Stage 9B). Deliberately
+    /// does **not** implement [`CoreOp::function_references`] — a scheduled
+    /// re-entry is not a synchronous call and must not become a call-graph
+    /// edge (see the 9B dossier's load-bearing discovery).
+    Schedule(FunctionId, u32, ScheduleMode),
+    /// Emits a target `schedule clear <id>` for an argument-free function
+    /// (Stage 9B). Also returns no [`FunctionReference`] — a function named
+    /// only by `schedule clear` needs no root/contract enforcement.
+    ScheduleClear(FunctionId),
 }
 
 impl CoreOp {
@@ -395,6 +416,8 @@ impl CoreOp {
             Self::StringWithoutLastUnit => "core.string.without_last_unit",
             Self::Call(_) => "core.call",
             Self::External(_) => "core.external",
+            Self::Schedule(..) => "core.schedule",
+            Self::ScheduleClear(_) => "core.schedule.clear",
         }
     }
 
@@ -402,7 +425,9 @@ impl CoreOp {
     #[must_use]
     pub const fn effects(&self) -> EffectClass {
         match self {
-            Self::Call(_) | Self::External(_) => EffectClass::Unknown,
+            Self::Call(_) | Self::External(_) | Self::Schedule(..) | Self::ScheduleClear(_) => {
+                EffectClass::Unknown
+            }
             Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
@@ -427,7 +452,9 @@ impl CoreOp {
     #[must_use]
     pub const fn speculation(&self) -> Speculation {
         match self {
-            Self::Call(_) | Self::External(_) => Speculation::Never,
+            Self::Call(_) | Self::External(_) | Self::Schedule(..) | Self::ScheduleClear(_) => {
+                Speculation::Never
+            }
             Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
@@ -452,7 +479,9 @@ impl CoreOp {
     #[must_use]
     pub const fn result_equivalence(&self) -> ResultEquivalence {
         match self {
-            Self::Call(_) | Self::External(_) => ResultEquivalence::Opaque,
+            Self::Call(_) | Self::External(_) | Self::Schedule(..) | Self::ScheduleClear(_) => {
+                ResultEquivalence::Opaque
+            }
             Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
@@ -510,7 +539,9 @@ impl CoreOp {
             | Self::StringEndsWithAscii(_)
             | Self::StringWithoutLastUnit
             | Self::Call(_)
-            | Self::External(_) => OperandSymmetry::Ordered,
+            | Self::External(_)
+            | Self::Schedule(..)
+            | Self::ScheduleClear(_) => OperandSymmetry::Ordered,
         }
     }
 
@@ -543,6 +574,10 @@ impl CoreOp {
             Self::StringWithoutLastUnit => "the string without its final UTF-16 code unit",
             Self::Call(_) => "ordered invocation of the declared internal function",
             Self::External(_) => "ordered invocation of a closed external declaration",
+            Self::Schedule(..) => "arms a target schedule entry for the declared internal function",
+            Self::ScheduleClear(_) => {
+                "clears a target schedule entry for the declared internal function"
+            }
         }
     }
 
@@ -613,6 +648,10 @@ impl CoreOp {
                     results: &declaration.results,
                 })
             }
+            Self::Schedule(function, ..) | Self::ScheduleClear(function) => {
+                program.function(*function)?;
+                Some(OperationSignature::fixed(&[], &[]))
+            }
         }
     }
 
@@ -632,6 +671,8 @@ impl CoreOp {
                 FunctionReferenceKind::DirectCall,
             )),
             Self::External(_)
+            | Self::Schedule(..)
+            | Self::ScheduleClear(_)
             | Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
@@ -653,6 +694,8 @@ impl CoreOp {
         let external = match self {
             Self::External(operation) => program.external_op(*operation),
             Self::Call(_)
+            | Self::Schedule(..)
+            | Self::ScheduleClear(_)
             | Self::BoolConstant(_)
             | Self::I32Constant(_)
             | Self::I32AddWrapping
@@ -702,6 +745,17 @@ pub struct Function {
     /// `CoreFunctionLinkage::DatapackExport` function, enforced during semantic
     /// checking, well before this field is set.
     pub(crate) one_tick_contract: bool,
+    /// Source `tick` modifier (Stage 9B): registers this function into
+    /// `#minecraft:tick`. Unlike `one_tick_contract`, not restricted to
+    /// `DatapackExport` linkage — a tick handler becomes its own root
+    /// through the aggregate tick tag, not through export.
+    pub(crate) tick_handler: bool,
+    /// Whether any `schedule` (arm) statement anywhere in the whole package
+    /// names this function (Stage 9B). Set only by `schedule` arm
+    /// statements, never by `schedule clear` — a function referenced only
+    /// by `schedule clear` needs no root registration or contract
+    /// enforcement (see the 9B dossier).
+    pub(crate) is_schedule_target: bool,
     pub(crate) parameters: Vec<CoreType>,
     pub(crate) results: Vec<CoreType>,
     pub(crate) origin: OriginId,
@@ -726,6 +780,20 @@ impl Function {
     #[must_use]
     pub const fn one_tick_contract(&self) -> bool {
         self.one_tick_contract
+    }
+
+    /// Returns whether this function carries the source `tick` modifier
+    /// (Stage 9B): registered into `#minecraft:tick`.
+    #[must_use]
+    pub const fn tick_handler(&self) -> bool {
+        self.tick_handler
+    }
+
+    /// Returns whether any `schedule` (arm) statement in the whole package
+    /// names this function (Stage 9B).
+    #[must_use]
+    pub const fn is_schedule_target(&self) -> bool {
+        self.is_schedule_target
     }
 
     /// Returns the declared parameter types.
@@ -814,30 +882,41 @@ impl CoreProgram {
             name_hint,
             CoreFunctionLinkage::Internal,
             false,
+            false,
+            false,
             parameters,
             results,
             origin,
         )
     }
 
-    /// Declares a function with explicit target-entry linkage and one-tick
-    /// contract marker (Stage 9A).
+    /// Declares a function with explicit target-entry linkage, one-tick
+    /// contract marker (Stage 9A), and tick-handler/schedule-target markers
+    /// (Stage 9B).
     ///
     /// Linkage does not affect whether another Core function may reference the
     /// declaration. Name hints need not be present or unique. `one_tick_contract`
     /// asserts (checked later, against the target-execution cost report) that
     /// this function's command sequence and fork expansion fit one Minecraft
     /// tick; only a `CoreFunctionLinkage::DatapackExport` function may set it,
-    /// enforced earlier during semantic checking.
+    /// enforced earlier during semantic checking. `tick_handler` and
+    /// `is_schedule_target` are Stage 9B's own root-registration and
+    /// argument-free/self-rooting contract markers.
     ///
     /// # Errors
     ///
     /// Returns an error if the function ID space is exhausted.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the function declaration's own growing set of independent source markers"
+    )]
     pub fn declare_function_with_linkage(
         &mut self,
         name_hint: Option<impl Into<Box<str>>>,
         linkage: CoreFunctionLinkage,
         one_tick_contract: bool,
+        tick_handler: bool,
+        is_schedule_target: bool,
         parameters: Vec<CoreType>,
         results: Vec<CoreType>,
         origin: OriginId,
@@ -847,6 +926,8 @@ impl CoreProgram {
                 name_hint: name_hint.map(Into::into),
                 linkage,
                 one_tick_contract,
+                tick_handler,
+                is_schedule_target,
                 parameters,
                 results,
                 origin,
@@ -1412,6 +1493,8 @@ mod tests {
             .declare_function_with_linkage(
                 Some("entry"),
                 CoreFunctionLinkage::DatapackExport,
+                false,
+                false,
                 false,
                 vec![],
                 vec![],

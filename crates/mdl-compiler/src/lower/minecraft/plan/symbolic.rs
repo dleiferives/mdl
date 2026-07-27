@@ -290,7 +290,9 @@ impl<'a> SymbolicChecker<'a> {
             return Ok(());
         };
         match plan {
-            InstructionPlan::OmittedPure => Ok(()),
+            InstructionPlan::OmittedPure
+            | InstructionPlan::Schedule
+            | InstructionPlan::ScheduleClear => Ok(()),
             InstructionPlan::External { .. } => {
                 let mut definitions =
                     fallible_vec(function, SymbolicTable::Definitions, data.results().len())?;
@@ -675,6 +677,28 @@ impl<'a> SymbolicChecker<'a> {
                 result_destinations,
                 state,
             ),
+            InstructionPlan::Schedule => {
+                if !matches!(data.op(), CoreOp::Schedule(..)) {
+                    self.record(SymbolicIssue::shape(
+                        Some(function),
+                        None,
+                        format!("{instruction:?} has an invalid schedule plan shape"),
+                        data.origin(),
+                    ));
+                }
+                Ok(())
+            }
+            InstructionPlan::ScheduleClear => {
+                if !matches!(data.op(), CoreOp::ScheduleClear(_)) {
+                    self.record(SymbolicIssue::shape(
+                        Some(function),
+                        None,
+                        format!("{instruction:?} has an invalid schedule-clear plan shape"),
+                        data.origin(),
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -691,7 +715,10 @@ impl<'a> SymbolicChecker<'a> {
         results: &[ScalarResultPlacement],
         state: &mut SparseState,
     ) -> CheckResult<()> {
-        if matches!(data.op(), CoreOp::Call(_) | CoreOp::External(_)) {
+        if matches!(
+            data.op(),
+            CoreOp::Call(_) | CoreOp::External(_) | CoreOp::Schedule(..) | CoreOp::ScheduleClear(_)
+        ) {
             self.record(SymbolicIssue::shape(
                 Some(function),
                 None,
@@ -954,7 +981,10 @@ impl<'a> SymbolicChecker<'a> {
                     );
                 }
             }
-            CoreOp::Call(_) | CoreOp::External(_) => {
+            CoreOp::Call(_)
+            | CoreOp::External(_)
+            | CoreOp::Schedule(..)
+            | CoreOp::ScheduleClear(_) => {
                 unreachable!("non-scalar operation rejected before exhaustive scalar match")
             }
         }
@@ -3606,7 +3636,9 @@ mod tests {
             | InstructionPlan::External { .. }
             | InstructionPlan::Minecraft { .. }
             | InstructionPlan::EntityNbtRead { .. }
-            | InstructionPlan::EntityNbtWrite { .. } => true,
+            | InstructionPlan::EntityNbtWrite { .. }
+            | InstructionPlan::Schedule
+            | InstructionPlan::ScheduleClear => true,
             InstructionPlan::Scalar { results, .. } => {
                 let mut valid = true;
                 for result in results.iter().copied() {
@@ -3722,7 +3754,9 @@ mod tests {
                 | InstructionPlan::External { .. }
                 | InstructionPlan::Minecraft { .. }
                 | InstructionPlan::EntityNbtRead { .. }
-                | InstructionPlan::EntityNbtWrite { .. } => &[],
+                | InstructionPlan::EntityNbtWrite { .. }
+                | InstructionPlan::Schedule
+                | InstructionPlan::ScheduleClear => &[],
                 InstructionPlan::Scalar { operands, .. } => operands,
                 InstructionPlan::Call { arguments, .. } => arguments,
             };

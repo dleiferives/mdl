@@ -8,7 +8,7 @@ use crate::target::JavaEditionTarget;
 use super::macro_command::MacroCommand;
 use super::{
     AdvancementRevokeCommand, CallableRef, DataCommand, ExecuteCommand, ItemReplaceBlockCommand,
-    SayCommand, ScoreCommand, StoragePath, TeleportCommand,
+    SayCommand, ScheduleClearCommand, ScheduleCommand, ScoreCommand, StoragePath, TeleportCommand,
 };
 
 /// Initial maximum nesting depth for recursive commands.
@@ -67,7 +67,9 @@ impl CommandNode {
             | CommandKind::Macro(_)
             | CommandKind::FunctionWithStorage(_)
             | CommandKind::AdvancementRevoke(_)
-            | CommandKind::ItemReplaceBlock(_) => 0,
+            | CommandKind::ItemReplaceBlock(_)
+            | CommandKind::Schedule(_)
+            | CommandKind::ScheduleClear(_) => 0,
         }
     }
 
@@ -111,6 +113,10 @@ pub enum CommandKind {
     AdvancementRevoke(AdvancementRevokeCommand),
     /// A whole-slot container item replace (PS-16, BE-2).
     ItemReplaceBlock(ItemReplaceBlockCommand),
+    /// Arm (or re-arm) a target `schedule function` pending entry (Stage 9B).
+    Schedule(ScheduleCommand),
+    /// Clear a target `schedule` pending entry (Stage 9B).
+    ScheduleClear(ScheduleClearCommand),
 }
 
 /// One typed function or function-tag invocation.

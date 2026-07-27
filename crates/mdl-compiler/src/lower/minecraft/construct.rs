@@ -25,6 +25,14 @@ pub(crate) struct DeclarationMap {
         reason = "the frozen Stage 3 declaration map records the load-tag identity by contract"
     )]
     load_tag: FunctionTagId,
+    /// The generated `#minecraft:tick` tag (Stage 9B), present only when at
+    /// least one `tick`-marked function exists — a program with zero 9B
+    /// usage declares no tick tag at all, preserving byte-identical emission.
+    #[allow(
+        dead_code,
+        reason = "the frozen Stage 3 declaration map records the tick-tag identity by contract"
+    )]
+    tick_tag: Option<FunctionTagId>,
     /// Reward planned functions needing the PS-15 auto-revoke command
     /// prepended as their first physical command, keyed by the same
     /// resource `TargetConstruction::declare` already declared for them.
@@ -46,6 +54,11 @@ impl DeclarationMap {
     #[cfg(test)]
     pub(crate) const fn load_tag(&self) -> FunctionTagId {
         self.load_tag
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn tick_tag(&self) -> Option<FunctionTagId> {
+        self.tick_tag
     }
 }
 
@@ -97,6 +110,51 @@ impl TargetConstruction {
         ));
         tag.finish();
 
+        // Stage 9B: `#minecraft:tick`, generalizing the load-tag pattern from
+        // exactly one entry to N, in `FunctionId` order (already the
+        // deterministic whole-package declaration order). Constructed only
+        // if at least one `tick_handler` function exists, so a program with
+        // zero 9B usage emits byte-identically to today.
+        let tick_handlers = core
+            .functions()
+            .filter(|(_, declaration)| declaration.tick_handler())
+            .collect::<Vec<_>>();
+        let tick_tag = if tick_handlers.is_empty() {
+            None
+        } else {
+            let tick_tag = builder
+                .declare_function_tag(
+                    FunctionTagResourceId::parse("minecraft:tick")
+                        .expect("the vanilla tick-tag resource is valid"),
+                    OriginId::UNKNOWN,
+                    FunctionTagMerge::Append,
+                )
+                .map_err(|error| construction_diagnostics(&error, OriginId::UNKNOWN))?;
+            let mut tag = builder
+                .begin_function_tag(tick_tag)
+                .map_err(|error| construction_diagnostics(&error, OriginId::UNKNOWN))?;
+            for (handler, declaration) in tick_handlers {
+                let planned = plan.function_entry(handler).ok_or_else(|| {
+                    invariant_diagnostics(
+                        "tick handler has no planned entry block",
+                        declaration.origin(),
+                    )
+                })?;
+                let target = functions.get(planned).copied().ok_or_else(|| {
+                    invariant_diagnostics(
+                        "tick handler's planned entry has no Stage 3 declaration",
+                        declaration.origin(),
+                    )
+                })?;
+                tag.push(FunctionTagEntry::internal(
+                    InternalCallableRef::Function(target),
+                    declaration.origin(),
+                ));
+            }
+            tag.finish();
+            Some(tick_tag)
+        };
+
         let mut revoke_before = HashMap::new();
         for (advancement, declaration) in core.advancements() {
             let resource = GeneratedNames::advancement_resource(plan.namespace(), advancement);
@@ -128,6 +186,7 @@ impl TargetConstruction {
             declarations: DeclarationMap {
                 functions,
                 load_tag,
+                tick_tag,
                 revoke_before,
             },
         })

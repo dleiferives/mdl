@@ -218,7 +218,9 @@ fn reconcile_semantic_commands(
                     InstructionPlan::OmittedPure
                     | InstructionPlan::Scalar { .. }
                     | InstructionPlan::Call { .. }
-                    | InstructionPlan::External { .. } => {}
+                    | InstructionPlan::External { .. }
+                    | InstructionPlan::Schedule
+                    | InstructionPlan::ScheduleClear => {}
                 }
             }
         }
@@ -820,7 +822,9 @@ fn command_node_count(command: &crate::ir::minecraft::CommandNode) -> u64 {
         | CommandKind::Macro(_)
         | CommandKind::FunctionWithStorage(_)
         | CommandKind::AdvancementRevoke(_)
-        | CommandKind::ItemReplaceBlock(_) => 0,
+        | CommandKind::ItemReplaceBlock(_)
+        | CommandKind::Schedule(_)
+        | CommandKind::ScheduleClear(_) => 0,
     }
 }
 

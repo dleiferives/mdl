@@ -784,7 +784,10 @@ fn build_expression_key(
         CoreOp::StringLength => CseOpKey::StringLength,
         CoreOp::StringEndsWithAscii(value) => CseOpKey::StringEndsWithAscii(*value),
         CoreOp::StringWithoutLastUnit => CseOpKey::StringWithoutLastUnit,
-        CoreOp::Call(_) | CoreOp::External(_) => {
+        CoreOp::Call(_)
+        | CoreOp::External(_)
+        | CoreOp::Schedule(..)
+        | CoreOp::ScheduleClear(_) => {
             return Err(CseError::InconsistentVerifiedBody(
                 "structurally opaque operation passed the CSE eligibility gate",
             ));

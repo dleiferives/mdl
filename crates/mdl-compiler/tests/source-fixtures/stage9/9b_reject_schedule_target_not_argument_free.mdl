@@ -1,0 +1,7 @@
+// MDL: failure semantic frontend.check.schedule-target-not-argument-free
+fn helper(x: Int32) {
+}
+
+fn caller() {
+    schedule helper, 5;
+}

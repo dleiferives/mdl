@@ -207,35 +207,16 @@ fn run_group1() -> Result<(), String> {
 /// acknowledgment for N=5 observed only +1, i.e. the read raced the step).
 /// Polls the native gametime clock until two consecutive reads agree, which is
 /// a completion signal that does not assume any particular step duration.
+///
+/// Promoted into `mdl_test::wait_for_gametime_settled` (Stage 9B); this is a
+/// thin `Result<_, String>` wrapper so every existing call site in this file
+/// is unchanged.
 fn wait_for_gametime_settled(server: &mut TestServer) -> Result<i64, String> {
-    let mut previous = query_gametime(server)?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        std::thread::sleep(Duration::from_millis(50));
-        let current = query_gametime(server)?;
-        if current == previous {
-            return Ok(current);
-        }
-        previous = current;
-        if std::time::Instant::now() >= deadline {
-            return Err(format!(
-                "gametime never settled within 5s (last observed {current})"
-            ));
-        }
-    }
+    mdl_test::wait_for_gametime_settled(server).map_err(|error| error.to_string())
 }
 
 fn query_gametime(server: &mut TestServer) -> Result<i64, String> {
-    command(server, "time query gametime")?;
-    let line = server
-        .wait_for_command_log("The game time is")
-        .map_err(|error| error.to_string())?;
-    line.split("is ")
-        .nth(1)
-        .and_then(|rest| rest.split_whitespace().next())
-        .ok_or_else(|| format!("could not parse gametime line: {line:?}"))?
-        .parse::<i64>()
-        .map_err(|error| format!("could not parse gametime line {line:?}: {error}"))
+    mdl_test::query_gametime(server).map_err(|error| error.to_string())
 }
 
 fn exercise_group1(server: &mut TestServer) -> Result<(), String> {
@@ -333,12 +314,7 @@ fn run_group2() -> Result<(), String> {
 /// finish (see `wait_for_gametime_settled` -- the acknowledgment log line is
 /// not a completion signal).
 fn step_and_settle(server: &mut TestServer, n: u32) -> Result<(), String> {
-    command(server, &format!("tick step {n}"))?;
-    server
-        .wait_for_command_log(&format!("Stepping {n} tick"))
-        .map_err(|error| error.to_string())?;
-    wait_for_gametime_settled(server)?;
-    Ok(())
+    mdl_test::step_and_settle(server, n).map_err(|error| error.to_string())
 }
 
 fn exercise_group2(server: &mut TestServer) -> Result<(), String> {

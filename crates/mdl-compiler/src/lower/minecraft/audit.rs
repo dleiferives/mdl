@@ -265,7 +265,9 @@ fn audit_reachable_vocabulary(
                 | CoreOp::StringLength
                 | CoreOp::StringEndsWithAscii(_)
                 | CoreOp::StringWithoutLastUnit
-                | CoreOp::Call(_) => {}
+                | CoreOp::Call(_)
+                | CoreOp::Schedule(..)
+                | CoreOp::ScheduleClear(_) => {}
                 CoreOp::External(operation) => {
                     if audited_external_ops.insert(*operation) {
                         let mut output = ReachableVocabularyAuditOutput {

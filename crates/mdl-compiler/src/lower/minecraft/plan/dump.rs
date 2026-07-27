@@ -282,6 +282,12 @@ fn dump_instruction(output: &mut String, instruction: usize, plan: &InstructionP
                 }
             }
         }
+        InstructionPlan::Schedule => {
+            writeln!(output, "  instruction {instruction} schedule").unwrap();
+        }
+        InstructionPlan::ScheduleClear => {
+            writeln!(output, "  instruction {instruction} schedule-clear").unwrap();
+        }
     }
 }
 

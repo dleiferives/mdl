@@ -914,6 +914,8 @@ fn flatten_instruction_plan(
                 result_destinations,
             })
         }
+        AssignedInstructionPlan::Schedule => Ok(InstructionPlan::Schedule),
+        AssignedInstructionPlan::ScheduleClear => Ok(InstructionPlan::ScheduleClear),
     }
 }
 

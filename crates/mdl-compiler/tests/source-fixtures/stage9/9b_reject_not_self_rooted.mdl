@@ -1,0 +1,11 @@
+// MDL: failure target-contract lower.schedule-entry-not-self-rooted
+// An `unsafe minecraft` command is conservatively modeled as requiring every
+// ambient component (executor/position/rotation/dimension/anchor), and there
+// is no source-level way to discharge the executor component without a fresh
+// `run.as(...)` query, which itself unconditionally re-requires position and
+// dimension -- so a tick handler containing any unsafe command can never be
+// proven self-rooted. See stage-9/9-b-recurring-scheduling.md's
+// Implementation notes for the full discovery.
+tick fn unrooted_handler() {
+    unsafe minecraft("say unrooted");
+}

@@ -84,6 +84,10 @@ impl EffectCategories {
     /// read is, and optimizer passes must not assume a read and a write
     /// commute.
     pub const BLOCK_WRITE: Self = Self(1 << 10);
+    /// Arms or clears a target `schedule` pending entry (Stage 9B). Distinct
+    /// from `CONTROL`: a schedule effect is deferred to a later tick, not an
+    /// immediate branch/return within this invocation.
+    pub const SCHEDULE_WRITE: Self = Self(1 << 11);
 
     /// Returns the union of two category sets.
     #[must_use]
@@ -400,6 +404,16 @@ fn contract_for_kind(kind: &CommandKind) -> CommandContract {
                 reads: ContextMask::NONE,
                 changes: ContextMask::NONE,
             },
+            ForkClass::NEVER,
+        ),
+        // Native outcome is deliberately left at the `new` default of
+        // `Unknown`, mirroring `AdvancementRevoke`/`ItemReplaceBlock` above:
+        // not yet measured against the pinned server. A schedule command
+        // reads no context (target/delay/mode are compile-time literals)
+        // and never forks.
+        CommandKind::Schedule(_) | CommandKind::ScheduleClear(_) => CommandContract::new(
+            EffectSummary::Known(EffectCategories::SCHEDULE_WRITE),
+            ContextSummary::NONE,
             ForkClass::NEVER,
         ),
         CommandKind::Return(ReturnCommand::Value(_) | ReturnCommand::Fail) => CommandContract::new(

@@ -526,7 +526,9 @@ fn analyze_instruction(
         | CoreOp::StringEndsWithAscii(_)
         | CoreOp::StringWithoutLastUnit
         | CoreOp::Call(_)
-        | CoreOp::External(_) => None,
+        | CoreOp::External(_)
+        | CoreOp::Schedule(..)
+        | CoreOp::ScheduleClear(_) => None,
     };
     if let Some(replacement) = replacement {
         return Ok(InstructionPlan::Replace(replacement));
@@ -659,7 +661,9 @@ fn constant_definition(body: &FunctionBody, value: ValueId) -> Option<TypedCoreC
         | CoreOp::StringEndsWithAscii(_)
         | CoreOp::StringWithoutLastUnit
         | CoreOp::Call(_)
-        | CoreOp::External(_) => None,
+        | CoreOp::External(_)
+        | CoreOp::Schedule(..)
+        | CoreOp::ScheduleClear(_) => None,
     }
 }
 

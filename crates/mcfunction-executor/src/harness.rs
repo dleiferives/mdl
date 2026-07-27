@@ -79,11 +79,7 @@ impl McExecutor {
     /// # Errors
     ///
     /// Returns an error if the expected text is never found.
-    pub fn wait_for_log(
-        &mut self,
-        expected: &str,
-        _timeout: Duration,
-    ) -> Result<String, String> {
+    pub fn wait_for_log(&mut self, expected: &str, _timeout: Duration) -> Result<String, String> {
         for i in 0..self.log_queue.len() {
             if self.log_queue[i].contains(expected) {
                 let line = self.log_queue[i].clone();
@@ -116,6 +112,7 @@ impl McExecutor {
     pub fn log_checkpoint(&self) -> LogCheckpoint {
         LogCheckpoint {
             line_index: self.log_start_index + self.log_queue.len(),
+            unsupported_index: self.inner.unsupported_commands().len(),
         }
     }
 
@@ -151,12 +148,20 @@ impl McExecutor {
     /// # Errors
     ///
     /// Returns an error if any attributable datapack problems are found.
-    pub fn check_datapack_logs_since(
-        &self,
-        _checkpoint: LogCheckpoint,
-    ) -> Result<(), String> {
-        // For the initial implementation, this is a no-op.
-        Ok(())
+    pub fn check_datapack_logs_since(&self, checkpoint: LogCheckpoint) -> Result<(), String> {
+        let unsupported = self.inner.unsupported_commands();
+        if checkpoint.unsupported_index > unsupported.len() {
+            return Err("unsupported-command checkpoint out of range".to_owned());
+        }
+        let unsupported = &unsupported[checkpoint.unsupported_index..];
+        if unsupported.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "mcfunction executor encountered unsupported commands: {}",
+                unsupported.join(", ")
+            ))
+        }
     }
 
     /// Shuts down the executor gracefully.
@@ -184,4 +189,5 @@ impl McExecutor {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LogCheckpoint {
     line_index: usize,
+    unsupported_index: usize,
 }

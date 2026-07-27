@@ -31,20 +31,12 @@ fn load_dynamic_crafting_datapack() {
 
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     let result = exec.load_datapacks();
-    if let Err(ref e) = result {
-        eprintln!("Load errors: {e}");
-        // Check if the errors are expected (unimplemented features)
-        // vs data corruption
-    }
-    // Loading should at least succeed even if some commands aren't supported
-    assert!(result.is_ok() || result.as_ref().unwrap_err().contains("unimplemented"),
-        "Expected load to succeed or fail with unimplemented, got: {result:?}");
+    assert!(result.is_ok(), "loading the datapack failed: {result:?}");
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 /// Verifies each mcfunction file parses without panic.
-/// Errors from unimplemented!() are expected — we just want no crashes.
 #[test]
 fn parse_all_dynamic_crafting_functions() {
     let dc_path = PathBuf::from("/tmp/dynamic-crafting");
@@ -88,7 +80,8 @@ fn dynamic_crafting_load_function_executes() {
     fs::write(
         dp.join("pack.mcmeta"),
         r#"{"pack":{"description":"minimal","min_format":[107,1],"max_format":[107,1]}}"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let func_dir = dp.join("data/dynamic_crafting/function");
     fs::create_dir_all(&func_dir).unwrap();
@@ -121,20 +114,13 @@ fn dynamic_crafting_load_function_executes() {
     fs::write(
         tag_dir.join("load.json"),
         r#"{"values":["dynamic_crafting:load"]}"#,
-    ).unwrap();
+    )
+    .unwrap();
 
-    // This will fail on first unimplemented!() but that's fine —
-    // we just want to verify the basic structure loads
-    let result = exec.load_datapacks();
-    if let Err(ref e) = result {
-        // Expected: config/reset or load.mcfunction hits unimplemented!() commands
-        assert!(e.contains("unimplemented") || e.contains("not yet"),
-            "Expected load error to be from unimplemented, got: {e}");
-    }
-    // If load succeeded, verify scoreboards were created
-    if result.is_ok() {
-        exec.command("scoreboard players set #v dynamic_crafting.values 0").unwrap_or_default();
-    }
+    exec.load_datapacks()
+        .expect("load dynamic-crafting datapack");
+    exec.command("scoreboard players set #v dynamic_crafting.values 0")
+        .unwrap();
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -147,22 +133,29 @@ fn simulate_crafting_table_setup() {
 
     // Create objectives before anything else
     exec.command("scoreboard objectives add v dummy").unwrap();
-    exec.command("scoreboard objectives add dynamic_crafting.values dummy").unwrap();
+    exec.command("scoreboard objectives add dynamic_crafting.values dummy")
+        .unwrap();
 
     // Spawn a crafting table marker
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"dynamic_crafting.block.crafting_table.tick\"]}").unwrap();
+    exec.command(
+        "summon minecraft:marker 0 0 0 {Tags:[\"dynamic_crafting.block.crafting_table.tick\"]}",
+    )
+    .unwrap();
 
     // Spawn slot display entities
     for slot in 0..9u32 {
         exec.command(&format!(
             "summon minecraft:item_display 0 0 0 {{Tags:[\"slot_vis\",\"dc_slot_{slot}\"]}}"
-        )).unwrap();
+        ))
+        .unwrap();
         exec.command(&format!(
             "summon minecraft:interaction 0 0 0 {{Tags:[\"slot_hitbox\",\"dc_slot_{slot}\"]}}"
-        )).unwrap();
+        ))
+        .unwrap();
     }
 
-    exec.command("summon minecraft:interaction 0 0 0 {Tags:[\"result_hitbox\"]}").unwrap();
+    exec.command("summon minecraft:interaction 0 0 0 {Tags:[\"result_hitbox\"]}")
+        .unwrap();
 
     // Place an item into slot 0
     exec.command("data modify entity @e[tag=dc_slot_0,limit=1] item set value {id:\"minecraft:oak_planks\",Count:1b}").unwrap();
@@ -173,33 +166,42 @@ fn simulate_crafting_table_setup() {
     exec.wait_for_command_log("#has_item has 1").unwrap();
 
     // Collect slot items into storage (append from entity pattern)
-    exec.command("data merge storage dynamic_crafting:temp {Items:[]}").unwrap();
+    exec.command("data merge storage dynamic_crafting:temp {Items:[]}")
+        .unwrap();
     exec.command("data modify storage dynamic_crafting:temp Items append from entity @e[tag=dc_slot_0,limit=1] item").unwrap();
 
     // Verify storage has the item
-    exec.command("data get storage dynamic_crafting:temp Items[0].id").unwrap();
+    exec.command("data get storage dynamic_crafting:temp Items[0].id")
+        .unwrap();
     exec.wait_for_command_log("oak_planks").unwrap();
 
     // Write Items to a block
     exec.command("setblock 0 0 0 minecraft:crafter").unwrap();
-    exec.command("data modify block 0 0 0 Items set from storage dynamic_crafting:temp Items").unwrap();
+    exec.command("data modify block 0 0 0 Items set from storage dynamic_crafting:temp Items")
+        .unwrap();
     exec.command("data get block 0 0 0 Items[0].id").unwrap();
     exec.wait_for_command_log("oak_planks").unwrap();
 
     // Simulate crafting result: spawn loot item, tag it, copy slot item to result Item
-    exec.command("loot spawn 0 65 0 loot dynamic_crafting:drop").unwrap();
-    exec.command("tag @e[type=item,limit=1] add dc_result").unwrap();
+    exec.command("loot spawn 0 65 0 loot dynamic_crafting:drop")
+        .unwrap();
+    exec.command("tag @e[type=item,limit=1] add dc_result")
+        .unwrap();
     exec.command("data modify entity @e[tag=dc_result,limit=1] Item set from entity @e[tag=dc_slot_0,limit=1] item").unwrap();
-    exec.command("data modify entity @e[tag=dc_result,limit=1] PickupDelay set value 4").unwrap();
+    exec.command("data modify entity @e[tag=dc_result,limit=1] PickupDelay set value 4")
+        .unwrap();
 
     // Result item should match slot item
-    exec.command("data get entity @e[tag=dc_result,limit=1] Item.id").unwrap();
+    exec.command("data get entity @e[tag=dc_result,limit=1] Item.id")
+        .unwrap();
     exec.wait_for_command_log("oak_planks").unwrap();
-    exec.command("data get entity @e[tag=dc_result,limit=1] PickupDelay").unwrap();
+    exec.command("data get entity @e[tag=dc_result,limit=1] PickupDelay")
+        .unwrap();
     exec.wait_for_command_log("4").unwrap();
 
     // Clear slot
-    exec.command("data remove entity @e[tag=dc_slot_0,limit=1] item").unwrap();
+    exec.command("data remove entity @e[tag=dc_slot_0,limit=1] item")
+        .unwrap();
     exec.command("execute unless data entity @e[tag=dc_slot_0,limit=1] item run scoreboard players set #cleared v 1").unwrap();
     exec.command("scoreboard players get #cleared v").unwrap();
     exec.wait_for_command_log("#cleared has 1").unwrap();
@@ -209,7 +211,8 @@ fn simulate_crafting_table_setup() {
     exec.command("kill @e[tag=slot_vis]").unwrap();
     exec.command("kill @e[tag=result_hitbox]").unwrap();
 
-    exec.command("execute unless entity @e[tag=slot_vis] run scoreboard players set #clean v 1").unwrap();
+    exec.command("execute unless entity @e[tag=slot_vis] run scoreboard players set #clean v 1")
+        .unwrap();
     exec.command("scoreboard players get #clean v").unwrap();
     exec.wait_for_command_log("#clean has 1").unwrap();
 

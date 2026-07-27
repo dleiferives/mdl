@@ -13,7 +13,4 @@ name = "mcfunction_executor"
 workspace = true
 
 [dependencies]
-mdl-compiler = { path = "../mdl-compiler" }
-quartz_nbt = "0.2.9"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"

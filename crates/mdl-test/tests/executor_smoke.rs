@@ -12,18 +12,27 @@ fn executor_smoke_matches_real_server() {
 
     // Run on executor
     let mut exec = McExecutor::create(sandbox.root().to_path_buf(), V26_2);
+    let checkpoint = exec.log_checkpoint();
     exec.load_datapacks().expect("load datapacks");
 
-    exec.command("function mdl_test:smoke").expect("invoke smoke");
-    exec.wait_for_command_log("MDL_SMOKE_RESULT_42").expect("smoke marker");
+    exec.command("function mdl_test:smoke")
+        .expect("invoke smoke");
+    exec.wait_for_command_log("MDL_SMOKE_RESULT_42")
+        .expect("smoke marker");
 
-    exec.command("scoreboard players get #result mdl_test").expect("get result");
-    let line = exec.wait_for_command_log("#result has").expect("result feedback");
+    exec.command("scoreboard players get #result mdl_test")
+        .expect("get result");
+    let line = exec
+        .wait_for_command_log("#result has")
+        .expect("result feedback");
     assert!(line.contains("#result has 42"), "wrong result: {line}");
 
     exec.command("execute if score #result mdl_test matches 42 run say MDL_EXEC_OK")
         .expect("if score");
-    exec.wait_for_command_log("MDL_EXEC_OK").expect("exec OK marker");
+    exec.wait_for_command_log("MDL_EXEC_OK")
+        .expect("exec OK marker");
+    exec.check_datapack_logs_since(checkpoint)
+        .expect("executor must support every smoke-pack command");
 }
 
 /// Same test, but also runs against the real server when MDL_SERVER_JAR is set.
@@ -41,10 +50,18 @@ fn dual_backend_smoke() {
     let sandbox = mdl_test::ServerSandbox::create(false).expect("create sandbox");
     mdl_test::install_smoke_pack(&sandbox).expect("install smoke pack");
     let mut real_server = sandbox.start(&config).expect("start server");
-    real_server.command("function mdl_test:smoke").expect("real smoke invoke");
-    real_server.wait_for_command_log("MDL_SMOKE_RESULT_42").expect("real smoke marker");
-    real_server.command("scoreboard players get #result mdl_test").expect("real get result");
-    let _real_line = real_server.wait_for_command_log("#result has").expect("real result");
+    real_server
+        .command("function mdl_test:smoke")
+        .expect("real smoke invoke");
+    real_server
+        .wait_for_command_log("MDL_SMOKE_RESULT_42")
+        .expect("real smoke marker");
+    real_server
+        .command("scoreboard players get #result mdl_test")
+        .expect("real get result");
+    let _real_line = real_server
+        .wait_for_command_log("#result has")
+        .expect("real result");
     real_server.shutdown().expect("shutdown");
 }
 
@@ -56,7 +73,9 @@ fn executor_can_execute_tagged_function() {
     mdl_test::install_smoke_pack(&sandbox).expect("install smoke pack");
 
     // Write a tag referencing the smoke function
-    let tag_dir = sandbox.root().join("world/datapacks/mdl_smoke/data/mdl_test/tags/function");
+    let tag_dir = sandbox
+        .root()
+        .join("world/datapacks/mdl_smoke/data/mdl_test/tags/function");
     std::fs::create_dir_all(&tag_dir).unwrap();
     std::fs::write(
         tag_dir.join("smoke_tag.json"),
@@ -65,13 +84,20 @@ fn executor_can_execute_tagged_function() {
     .unwrap();
 
     let mut exec = McExecutor::create(sandbox.root().to_path_buf(), V26_2);
+    let checkpoint = exec.log_checkpoint();
     exec.load_datapacks().expect("load datapacks");
 
     // Verify the tag was loaded by executing the function directly first
-    exec.command("function mdl_test:smoke").expect("direct smoke");
-    exec.wait_for_command_log("MDL_SMOKE_RESULT_42").expect("direct smoke marker");
+    exec.command("function mdl_test:smoke")
+        .expect("direct smoke");
+    exec.wait_for_command_log("MDL_SMOKE_RESULT_42")
+        .expect("direct smoke marker");
 
     // Now try via tag — note: tag name is "#namespace:name"
-    exec.command("function #mdl_test:smoke_tag").expect("tag smoke");
-    exec.wait_for_command_log("MDL_SMOKE_RESULT_42").expect("smoke marker via tag");
+    exec.command("function #mdl_test:smoke_tag")
+        .expect("tag smoke");
+    exec.wait_for_command_log("MDL_SMOKE_RESULT_42")
+        .expect("smoke marker via tag");
+    exec.check_datapack_logs_since(checkpoint)
+        .expect("executor must support every tagged smoke-pack command");
 }

@@ -2,9 +2,9 @@
 //! filter, execute modifier, and scoreboard operation against expected
 //! vanilla Minecraft 1.21 behavior.
 
+use mcfunction_executor::{McExecutor, V26_2};
 use std::fs;
 use std::path::PathBuf;
-use mcfunction_executor::{McExecutor, V26_2};
 
 // ═════════════════════════════════════════════════════════════════
 fn sandbox(name: &str) -> PathBuf {
@@ -13,9 +13,11 @@ fn sandbox(name: &str) -> PathBuf {
     fs::create_dir_all(&dir).unwrap();
     let dp = dir.join("world").join("datapacks").join("test");
     fs::create_dir_all(&dp).unwrap();
-    fs::write(dp.join("pack.mcmeta"),
-        r#"{"pack":{"description":"full","min_format":[107,1],"max_format":[107,1]}}"#
-    ).unwrap();
+    fs::write(
+        dp.join("pack.mcmeta"),
+        r#"{"pack":{"description":"full","min_format":[107,1],"max_format":[107,1]}}"#,
+    )
+    .unwrap();
     fs::create_dir_all(dp.join("data/test/function")).unwrap();
     dir
 }
@@ -47,7 +49,8 @@ fn score_op_modulo() {
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #v x 10").unwrap();
     exec.command("scoreboard players set #m x 3").unwrap();
-    exec.command("scoreboard players operation #v x %= #m x").unwrap();
+    exec.command("scoreboard players operation #v x %= #m x")
+        .unwrap();
     exec.command("scoreboard players get #v x").unwrap();
     exec.wait_for_command_log("#v has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -61,18 +64,21 @@ fn score_op_min_max_swap() {
     exec.command("scoreboard players set #b x 10").unwrap();
 
     // < picks min
-    exec.command("scoreboard players operation #a x < #b x").unwrap();
+    exec.command("scoreboard players operation #a x < #b x")
+        .unwrap();
     exec.command("scoreboard players get #a x").unwrap();
     exec.wait_for_command_log("#a has 5").unwrap();
 
     // > picks max
-    exec.command("scoreboard players operation #a x > #b x").unwrap();
+    exec.command("scoreboard players operation #a x > #b x")
+        .unwrap();
     exec.command("scoreboard players get #a x").unwrap();
     exec.wait_for_command_log("#a has 10").unwrap();
 
     // >< swaps
     exec.command("scoreboard players set #c x 7").unwrap();
-    exec.command("scoreboard players operation #c x >< #b x").unwrap();
+    exec.command("scoreboard players operation #c x >< #b x")
+        .unwrap();
     exec.command("scoreboard players get #c x").unwrap();
     exec.wait_for_command_log("#c has 10").unwrap();
 
@@ -85,7 +91,8 @@ fn score_op_assign() {
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #a x 42").unwrap();
     exec.command("scoreboard players set #b x 0").unwrap();
-    exec.command("scoreboard players operation #b x = #a x").unwrap();
+    exec.command("scoreboard players operation #b x = #a x")
+        .unwrap();
     exec.command("scoreboard players get #b x").unwrap();
     exec.wait_for_command_log("#b has 42").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -114,19 +121,23 @@ fn execute_if_score_matches_range() {
     exec.command("scoreboard players set #v x 50").unwrap();
     exec.command("scoreboard players set #t x 0").unwrap();
 
-    exec.command("execute if score #v x matches 50 run scoreboard players set #t x 1").unwrap();
+    exec.command("execute if score #v x matches 50 run scoreboard players set #t x 1")
+        .unwrap();
     exec.command("scoreboard players get #t x").unwrap();
     exec.wait_for_command_log("#t has 1").unwrap();
 
-    exec.command("execute if score #v x matches ..49 run scoreboard players set #t x 2").unwrap();
+    exec.command("execute if score #v x matches ..49 run scoreboard players set #t x 2")
+        .unwrap();
     exec.command("scoreboard players get #t x").unwrap();
     exec.wait_for_command_log("#t has 1").unwrap(); // should not change
 
-    exec.command("execute if score #v x matches 50.. run scoreboard players set #t x 3").unwrap();
+    exec.command("execute if score #v x matches 50.. run scoreboard players set #t x 3")
+        .unwrap();
     exec.command("scoreboard players get #t x").unwrap();
     exec.wait_for_command_log("#t has 3").unwrap();
 
-    exec.command("execute if score #v x matches 1..100 run scoreboard players set #t x 4").unwrap();
+    exec.command("execute if score #v x matches 1..100 run scoreboard players set #t x 4")
+        .unwrap();
     exec.command("scoreboard players get #t x").unwrap();
     exec.wait_for_command_log("#t has 4").unwrap();
 
@@ -142,29 +153,34 @@ fn execute_if_score_compare_operators() {
     exec.command("scoreboard players set #r x 0").unwrap();
 
     // =
-    exec.command("execute if score #a x = #b x run scoreboard players set #r x 1").unwrap();
+    exec.command("execute if score #a x = #b x run scoreboard players set #r x 1")
+        .unwrap();
     exec.command("scoreboard players get #r x").unwrap();
     exec.wait_for_command_log("#r has 1").unwrap();
 
     // <=
-    exec.command("execute if score #a x <= #b x run scoreboard players set #r x 2").unwrap();
+    exec.command("execute if score #a x <= #b x run scoreboard players set #r x 2")
+        .unwrap();
     exec.command("scoreboard players get #r x").unwrap();
     exec.wait_for_command_log("#r has 2").unwrap();
 
     // >=
-    exec.command("execute if score #a x >= #b x run scoreboard players set #r x 3").unwrap();
+    exec.command("execute if score #a x >= #b x run scoreboard players set #r x 3")
+        .unwrap();
     exec.command("scoreboard players get #r x").unwrap();
     exec.wait_for_command_log("#r has 3").unwrap();
 
     // < (with different values)
     exec.command("scoreboard players set #a x 5").unwrap();
-    exec.command("execute if score #a x < #b x run scoreboard players set #r x 4").unwrap();
+    exec.command("execute if score #a x < #b x run scoreboard players set #r x 4")
+        .unwrap();
     exec.command("scoreboard players get #r x").unwrap();
     exec.wait_for_command_log("#r has 4").unwrap();
 
     // > (with different values)
     exec.command("scoreboard players set #a x 15").unwrap();
-    exec.command("execute if score #a x > #b x run scoreboard players set #r x 5").unwrap();
+    exec.command("execute if score #a x > #b x run scoreboard players set #r x 5")
+        .unwrap();
     exec.command("scoreboard players get #r x").unwrap();
     exec.wait_for_command_log("#r has 5").unwrap();
 
@@ -179,12 +195,15 @@ fn execute_if_score_compare_operators() {
 fn execute_if_entity_exists() {
     let dir = sandbox("if-ent");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"t\"]}").unwrap();
-    exec.command("execute if entity @e[tag=t] run scoreboard players set #f x 1").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"t\"]}")
+        .unwrap();
+    exec.command("execute if entity @e[tag=t] run scoreboard players set #f x 1")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
 
-    exec.command("execute unless entity @e[tag=nonexistent] run scoreboard players set #f x 2").unwrap();
+    exec.command("execute unless entity @e[tag=nonexistent] run scoreboard players set #f x 2")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 2").unwrap();
 
@@ -200,7 +219,8 @@ fn execute_store_result_score() {
     let dir = sandbox("store-sc");
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #v x 77").unwrap();
-    exec.command("execute store result score #s x run scoreboard players get #v x").unwrap();
+    exec.command("execute store result score #s x run scoreboard players get #v x")
+        .unwrap();
     exec.command("scoreboard players get #s x").unwrap();
     exec.wait_for_command_log("#s has 77").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -212,7 +232,8 @@ fn execute_store_success_score() {
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #v x 1").unwrap();
     // Success = 1 when command succeeds (get returns value)
-    exec.command("execute store success score #s x run scoreboard players get #v x").unwrap();
+    exec.command("execute store success score #s x run scoreboard players get #v x")
+        .unwrap();
     exec.command("scoreboard players get #s x").unwrap();
     exec.wait_for_command_log("#s has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -223,7 +244,10 @@ fn execute_store_result_storage() {
     let dir = sandbox("store-sto");
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #v x 99").unwrap();
-    exec.command("execute store result storage test:x result int 1 run scoreboard players get #v x").unwrap();
+    exec.command(
+        "execute store result storage test:x result int 1 run scoreboard players get #v x",
+    )
+    .unwrap();
     exec.command("data get storage test:x result").unwrap();
     exec.wait_for_command_log("99").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -237,9 +261,12 @@ fn execute_store_result_storage() {
 fn data_modify_storage_append_prepend() {
     let dir = sandbox("dm-append");
     let mut exec = executor(&dir);
-    exec.command("data modify storage test:x arr set value [1,2]").unwrap();
-    exec.command("data modify storage test:x arr append value 3").unwrap();
-    exec.command("data modify storage test:x arr prepend value 0").unwrap();
+    exec.command("data modify storage test:x arr set value [1,2]")
+        .unwrap();
+    exec.command("data modify storage test:x arr append value 3")
+        .unwrap();
+    exec.command("data modify storage test:x arr prepend value 0")
+        .unwrap();
     exec.command("data get storage test:x arr").unwrap();
     exec.wait_for_command_log("0,1,2,3").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -249,8 +276,10 @@ fn data_modify_storage_append_prepend() {
 fn data_modify_storage_copy_from() {
     let dir = sandbox("dm-copy");
     let mut exec = executor(&dir);
-    exec.command("data modify storage test:x src set value {k:99}").unwrap();
-    exec.command("data modify storage test:x dst set from storage test:x src").unwrap();
+    exec.command("data modify storage test:x src set value {k:99}")
+        .unwrap();
+    exec.command("data modify storage test:x dst set from storage test:x src")
+        .unwrap();
     exec.command("data get storage test:x dst k").unwrap();
     exec.wait_for_command_log("99").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -260,8 +289,10 @@ fn data_modify_storage_copy_from() {
 fn data_modify_storage_merge() {
     let dir = sandbox("dm-merge");
     let mut exec = executor(&dir);
-    exec.command("data modify storage test:x base set value {a:1,b:2}").unwrap();
-    exec.command("data modify storage test:x base merge value {c:3}").unwrap();
+    exec.command("data modify storage test:x base set value {a:1,b:2}")
+        .unwrap();
+    exec.command("data modify storage test:x base merge value {c:3}")
+        .unwrap();
     exec.command("data get storage test:x base a").unwrap();
     exec.wait_for_command_log("1").unwrap();
     exec.command("data get storage test:x base c").unwrap();
@@ -273,9 +304,11 @@ fn data_modify_storage_merge() {
 fn data_remove_storage_key() {
     let dir = sandbox("dm-remove");
     let mut exec = executor(&dir);
-    exec.command("data modify storage test:x base set value {a:1,b:2}").unwrap();
+    exec.command("data modify storage test:x base set value {a:1,b:2}")
+        .unwrap();
     exec.command("data remove storage test:x base.a").unwrap();
-    exec.command("execute unless data storage test:x base.a run scoreboard players set #g x 1").unwrap();
+    exec.command("execute unless data storage test:x base.a run scoreboard players set #g x 1")
+        .unwrap();
     exec.command("scoreboard players get #g x").unwrap();
     exec.wait_for_command_log("#g has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -289,10 +322,14 @@ fn data_remove_storage_key() {
 fn entity_data_append_to_list() {
     let dir = sandbox("e-append");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"l\"]}").unwrap();
-    exec.command("data modify entity @e[tag=l,limit=1] data.list set value [1,2]").unwrap();
-    exec.command("data modify entity @e[tag=l,limit=1] data.list append value 3").unwrap();
-    exec.command("data get entity @e[tag=l,limit=1] data.list").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"l\"]}")
+        .unwrap();
+    exec.command("data modify entity @e[tag=l,limit=1] data.list set value [1,2]")
+        .unwrap();
+    exec.command("data modify entity @e[tag=l,limit=1] data.list append value 3")
+        .unwrap();
+    exec.command("data get entity @e[tag=l,limit=1] data.list")
+        .unwrap();
     let line = exec.wait_for_command_log("has the following").unwrap();
     assert!(line.contains("1,2,3"), "got: {line}");
     let _ = fs::remove_dir_all(&dir);
@@ -302,10 +339,14 @@ fn entity_data_append_to_list() {
 fn entity_data_prepend_to_list() {
     let dir = sandbox("e-prepend");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"p\"]}").unwrap();
-    exec.command("data modify entity @e[tag=p,limit=1] data.list set value [2,3]").unwrap();
-    exec.command("data modify entity @e[tag=p,limit=1] data.list prepend value 1").unwrap();
-    exec.command("data get entity @e[tag=p,limit=1] data.list").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"p\"]}")
+        .unwrap();
+    exec.command("data modify entity @e[tag=p,limit=1] data.list set value [2,3]")
+        .unwrap();
+    exec.command("data modify entity @e[tag=p,limit=1] data.list prepend value 1")
+        .unwrap();
+    exec.command("data get entity @e[tag=p,limit=1] data.list")
+        .unwrap();
     let line = exec.wait_for_command_log("has the following").unwrap();
     assert!(line.contains("1,2,3"), "got: {line}");
     let _ = fs::remove_dir_all(&dir);
@@ -319,9 +360,11 @@ fn entity_data_prepend_to_list() {
 fn data_get_storage_with_scale() {
     let dir = sandbox("dg-scale");
     let mut exec = executor(&dir);
-    exec.command("data modify storage test:x val set value 5").unwrap();
+    exec.command("data modify storage test:x val set value 5")
+        .unwrap();
     // scale doubles the result for storage (as_i32)
-    exec.command("execute store result score #s x run data get storage test:x val 2.0").unwrap();
+    exec.command("execute store result score #s x run data get storage test:x val 2.0")
+        .unwrap();
     exec.command("scoreboard players get #s x").unwrap();
     exec.wait_for_command_log("#s has 10").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -335,11 +378,14 @@ fn data_get_storage_with_scale() {
 fn summon_with_multiple_tags() {
     let dir = sandbox("sum-tags");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"a\",\"b\",\"c\"]}").unwrap();
-    exec.command("execute if entity @e[tag=a] run scoreboard players set #ta x 1").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"a\",\"b\",\"c\"]}")
+        .unwrap();
+    exec.command("execute if entity @e[tag=a] run scoreboard players set #ta x 1")
+        .unwrap();
     exec.command("scoreboard players get #ta x").unwrap();
     exec.wait_for_command_log("#ta has 1").unwrap();
-    exec.command("execute if entity @e[tag=c] run scoreboard players set #tc x 1").unwrap();
+    exec.command("execute if entity @e[tag=c] run scoreboard players set #tc x 1")
+        .unwrap();
     exec.command("scoreboard players get #tc x").unwrap();
     exec.wait_for_command_log("#tc has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -353,14 +399,20 @@ fn summon_with_multiple_tags() {
 fn selector_bounding_box_inclusive() {
     let dir = sandbox("sel-box");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 5 0 0 {Tags:[\"in\"]}").unwrap();
-    exec.command("summon minecraft:marker 50 0 0 {Tags:[\"out\"]}").unwrap();
+    exec.command("summon minecraft:marker 5 0 0 {Tags:[\"in\"]}")
+        .unwrap();
+    exec.command("summon minecraft:marker 50 0 0 {Tags:[\"out\"]}")
+        .unwrap();
 
-    exec.command("execute if entity @e[tag=in,dx=10,dy=0,dz=0] run scoreboard players set #f x 1").unwrap();
+    exec.command("execute if entity @e[tag=in,dx=10,dy=0,dz=0] run scoreboard players set #f x 1")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
 
-    exec.command("execute unless entity @e[tag=out,dx=10,dy=0,dz=0] run scoreboard players set #f x 2").unwrap();
+    exec.command(
+        "execute unless entity @e[tag=out,dx=10,dy=0,dz=0] run scoreboard players set #f x 2",
+    )
+    .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 2").unwrap();
 
@@ -375,16 +427,22 @@ fn selector_bounding_box_inclusive() {
 fn selector_y_rotation_range_matching() {
     let dir = sandbox("sel-yrot");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"r\"]}").unwrap();
-    exec.command("data modify entity @e[tag=r,limit=1] Rotation[0] set value 45f").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"r\"]}")
+        .unwrap();
+    exec.command("data modify entity @e[tag=r,limit=1] Rotation[0] set value 45f")
+        .unwrap();
 
     // In range 0..90
-    exec.command("execute if entity @e[tag=r,y_rotation=0..90] run scoreboard players set #f x 1").unwrap();
+    exec.command("execute if entity @e[tag=r,y_rotation=0..90] run scoreboard players set #f x 1")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
 
     // Not in range -90..0
-    exec.command("execute unless entity @e[tag=r,y_rotation=-90..0] run scoreboard players set #f x 2").unwrap();
+    exec.command(
+        "execute unless entity @e[tag=r,y_rotation=-90..0] run scoreboard players set #f x 2",
+    )
+    .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 2").unwrap();
 
@@ -399,18 +457,21 @@ fn selector_y_rotation_range_matching() {
 fn selector_scores_multi_objective() {
     let dir = sandbox("sel-scores");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"scored\"]}").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"scored\"]}")
+        .unwrap();
 
     // Score keys: in our executor, entity IDs are integers and scores can be keyed
     // by string representation. Test with a named holder instead.
     exec.command("scoreboard players set #scored x 10").unwrap();
 
     // Use a conditional test with scores on a named holder
-    exec.command("execute if score #scored x matches 10 run scoreboard players set #m x 1").unwrap();
+    exec.command("execute if score #scored x matches 10 run scoreboard players set #m x 1")
+        .unwrap();
     exec.command("scoreboard players get #m x").unwrap();
     exec.wait_for_command_log("#m has 1").unwrap();
 
-    exec.command("execute if score #scored x matches 5..15 run scoreboard players set #m x 2").unwrap();
+    exec.command("execute if score #scored x matches 5..15 run scoreboard players set #m x 2")
+        .unwrap();
     exec.command("scoreboard players get #m x").unwrap();
     exec.wait_for_command_log("#m has 2").unwrap();
 
@@ -425,17 +486,26 @@ fn selector_scores_multi_objective() {
 fn selector_sort_nearest_take_limit() {
     let dir = sandbox("sel-sort");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 100 0 0 {Tags:[\"s\"]}").unwrap();
-    exec.command("summon minecraft:marker 1 0 0 {Tags:[\"s\"]}").unwrap();
-    exec.command("summon minecraft:marker 50 0 0 {Tags:[\"s\"]}").unwrap();
+    exec.command("summon minecraft:marker 100 0 0 {Tags:[\"s\"]}")
+        .unwrap();
+    exec.command("summon minecraft:marker 1 0 0 {Tags:[\"s\"]}")
+        .unwrap();
+    exec.command("summon minecraft:marker 50 0 0 {Tags:[\"s\"]}")
+        .unwrap();
 
     // sort=nearest,limit=2 should pick the two closest
-    exec.command("execute if entity @e[tag=s,sort=nearest,limit=2] run scoreboard players set #f x 1").unwrap();
+    exec.command(
+        "execute if entity @e[tag=s,sort=nearest,limit=2] run scoreboard players set #f x 1",
+    )
+    .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
 
     // sort=furthest,limit=1 should pick the one at x=100
-    exec.command("execute if entity @e[tag=s,sort=furthest,limit=1] run scoreboard players set #f x 2").unwrap();
+    exec.command(
+        "execute if entity @e[tag=s,sort=furthest,limit=1] run scoreboard players set #f x 2",
+    )
+    .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 2").unwrap();
 
@@ -453,7 +523,8 @@ fn return_fail_stops_execution() {
     fs::write(
         dp.join("data/test/function/failfn.mcfunction"),
         "scoreboard players set #before x 1\nreturn fail\nscoreboard players set #after x 999\n",
-    ).unwrap();
+    )
+    .unwrap();
     let mut exec = executor(&dir);
     exec.command("function test:failfn").unwrap();
     exec.command("scoreboard players get #before x").unwrap();
@@ -472,10 +543,12 @@ fn return_run_computed_value() {
     fs::write(
         dp.join("data/test/function/compute.mcfunction"),
         "scoreboard players get #v x\n",
-    ).unwrap();
+    )
+    .unwrap();
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #v x 42").unwrap();
-    exec.command("execute store result score #r x run return run function test:compute").unwrap();
+    exec.command("execute store result score #r x run return run function test:compute")
+        .unwrap();
     exec.command("scoreboard players get #r x").unwrap();
     exec.wait_for_command_log("#r has 42").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -492,17 +565,25 @@ fn schedule_function_runs_after_delay() {
     fs::write(
         dp.join("data/test/function/delayed.mcfunction"),
         "scoreboard players set #ran x 1\n",
-    ).unwrap();
+    )
+    .unwrap();
     let mut exec = executor(&dir);
+    exec.command("scoreboard players set #ran x 0").unwrap();
     exec.command("schedule function test:delayed 2t").unwrap();
+    assert_eq!(exec.executor().world.tick, 0);
 
-    // The schedule command fires after the ticks elapse
     exec.command("scoreboard players get #ran x").unwrap();
-    let line = exec.wait_for_command_log("#ran has").unwrap();
-    if line.contains("has 0") || line.contains("not set") {
-        exec.executor_mut().advance_ticks(1).unwrap();
-        exec.command("scoreboard players get #ran x").unwrap();
-    }
+    exec.wait_for_command_log("#ran has 0").unwrap();
+
+    exec.executor_mut().advance_ticks(1).unwrap();
+    assert_eq!(exec.executor().world.tick, 1);
+    exec.command("scoreboard players get #ran x").unwrap();
+    exec.wait_for_command_log("#ran has 0").unwrap();
+
+    exec.executor_mut().advance_ticks(1).unwrap();
+    assert_eq!(exec.executor().world.tick, 2);
+    exec.command("scoreboard players get #ran x").unwrap();
+    exec.wait_for_command_log("#ran has 1").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -515,9 +596,14 @@ fn schedule_function_runs_after_delay() {
 fn execute_at_marker_align_xyz() {
     let dir = sandbox("e-align");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:armor_stand 10.7 64.3 -5.2").unwrap();
-    exec.command("execute as @e[type=armor_stand] at @s align xyz run teleport @s ~ ~ ~").unwrap();
-    exec.command("execute as @e[type=armor_stand] store result score #y x run data get entity @s Pos[1]").unwrap();
+    exec.command("summon minecraft:armor_stand 10.7 64.3 -5.2")
+        .unwrap();
+    exec.command("execute as @e[type=armor_stand] at @s align xyz run teleport @s ~ ~ ~")
+        .unwrap();
+    exec.command(
+        "execute as @e[type=armor_stand] store result score #y x run data get entity @s Pos[1]",
+    )
+    .unwrap();
     exec.command("scoreboard players get #y x").unwrap();
     exec.wait_for_command_log("#y has 64").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -528,8 +614,12 @@ fn execute_positioned_then_teleport() {
     let dir = sandbox("e-pos");
     let mut exec = executor(&dir);
     exec.command("summon minecraft:armor_stand 0 0 0").unwrap();
-    exec.command("execute positioned 100 64 100 run teleport @e[type=armor_stand] ~ ~5 ~").unwrap();
-    exec.command("execute as @e[type=armor_stand] store result score #y x run data get entity @s Pos[1]").unwrap();
+    exec.command("execute positioned 100 64 100 run teleport @e[type=armor_stand] ~ ~5 ~")
+        .unwrap();
+    exec.command(
+        "execute as @e[type=armor_stand] store result score #y x run data get entity @s Pos[1]",
+    )
+    .unwrap();
     exec.command("scoreboard players get #y x").unwrap();
     exec.wait_for_command_log("#y has 69").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -558,13 +648,17 @@ fn gamerule_set_and_get() {
 fn entity_nbt_get_rotation() {
     let dir = sandbox("e-rot");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"r\"]}").unwrap();
-    exec.command("data modify entity @e[tag=r,limit=1] Rotation[0] set value 90f").unwrap();
-    exec.command("data get entity @e[tag=r,limit=1] Rotation[0]").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"r\"]}")
+        .unwrap();
+    exec.command("data modify entity @e[tag=r,limit=1] Rotation[0] set value 90f")
+        .unwrap();
+    exec.command("data get entity @e[tag=r,limit=1] Rotation[0]")
+        .unwrap();
     // Float values are displayed with f suffix
     exec.wait_for_command_log("90f").unwrap();
 
-    exec.command("data get entity @e[tag=r,limit=1] Rotation[1]").unwrap();
+    exec.command("data get entity @e[tag=r,limit=1] Rotation[1]")
+        .unwrap();
     exec.wait_for_command_log("0f").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -574,8 +668,10 @@ fn entity_nbt_get_rotation() {
 fn entity_nbt_get_tags() {
     let dir = sandbox("e-tags");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"t1\",\"t2\"]}").unwrap();
-    exec.command("data get entity @e[tag=t1,limit=1] Tags").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"t1\",\"t2\"]}")
+        .unwrap();
+    exec.command("data get entity @e[tag=t1,limit=1] Tags")
+        .unwrap();
     let line = exec.wait_for_command_log("has the following").unwrap();
     assert!(line.contains("t1") && line.contains("t2"), "got: {line}");
     let _ = fs::remove_dir_all(&dir);
@@ -586,7 +682,8 @@ fn entity_nbt_get_id() {
     let dir = sandbox("e-id");
     let mut exec = executor(&dir);
     exec.command("summon minecraft:marker 0 0 0").unwrap();
-    exec.command("data get entity @e[type=marker,limit=1] id").unwrap();
+    exec.command("data get entity @e[type=marker,limit=1] id")
+        .unwrap();
     exec.wait_for_command_log("marker").unwrap();
     let _ = fs::remove_dir_all(&dir);
 }
@@ -596,7 +693,8 @@ fn entity_nbt_get_dimension() {
     let dir = sandbox("e-dim");
     let mut exec = executor(&dir);
     exec.command("summon minecraft:marker 0 0 0").unwrap();
-    exec.command("data get entity @e[type=marker,limit=1] Dimension").unwrap();
+    exec.command("data get entity @e[type=marker,limit=1] Dimension")
+        .unwrap();
     exec.wait_for_command_log("overworld").unwrap();
     let _ = fs::remove_dir_all(&dir);
 }
@@ -609,9 +707,12 @@ fn entity_nbt_get_dimension() {
 fn execute_in_nether_affects_block_check() {
     let dir = sandbox("dim-det");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:armor_stand 0 0 0 {Tags:[\"dim\"]}").unwrap();
-    exec.command("execute in minecraft:overworld run teleport @e[tag=dim] 3 5 3").unwrap();
-    exec.command("execute as @e[tag=dim] store result score #x x run data get entity @s Pos[0]").unwrap();
+    exec.command("summon minecraft:armor_stand 0 0 0 {Tags:[\"dim\"]}")
+        .unwrap();
+    exec.command("execute in minecraft:overworld run teleport @e[tag=dim] 3 5 3")
+        .unwrap();
+    exec.command("execute as @e[tag=dim] store result score #x x run data get entity @s Pos[0]")
+        .unwrap();
     exec.command("scoreboard players get #x x").unwrap();
     exec.wait_for_command_log("#x has 3").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -628,10 +729,13 @@ fn macro_with_storage_nested_path() {
     fs::write(
         dp.join("data/test/function/nest.mcfunction"),
         "$scoreboard players set #v x $(val)\n",
-    ).unwrap();
+    )
+    .unwrap();
     let mut exec = executor(&dir);
-    exec.command("data modify storage test:x nested set value {val:88}").unwrap();
-    exec.command("function test:nest with storage test:x nested").unwrap();
+    exec.command("data modify storage test:x nested set value {val:88}")
+        .unwrap();
+    exec.command("function test:nest with storage test:x nested")
+        .unwrap();
     exec.command("scoreboard players get #v x").unwrap();
     exec.wait_for_command_log("#v has 88").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -650,7 +754,8 @@ fn selector_a_matches_all_players() {
         .world
         .entities
         .spawn_player(10.0, 0.0, 0.0, "survival", &[]);
-    exec.command("execute if entity @a run scoreboard players set #f x 1").unwrap();
+    exec.command("execute if entity @a run scoreboard players set #f x 1")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -665,7 +770,8 @@ fn selector_p_matches_nearest_player() {
         .world
         .entities
         .spawn_player(10.0, 0.0, 0.0, "survival", &[]);
-    exec.command("execute if entity @p run scoreboard players set #f x 1").unwrap();
+    exec.command("execute if entity @p run scoreboard players set #f x 1")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -680,8 +786,12 @@ fn tp_relative_with_rotation() {
     let dir = sandbox("tp-rel-rot");
     let mut exec = executor(&dir);
     exec.command("summon minecraft:armor_stand 0 0 0").unwrap();
-    exec.command("execute as @e[type=armor_stand] at @s run teleport @s ~10 ~5 ~-2 ~90 ~45").unwrap();
-    exec.command("execute as @e[type=armor_stand] store result score #x x run data get entity @s Pos[0]").unwrap();
+    exec.command("execute as @e[type=armor_stand] at @s run teleport @s ~10 ~5 ~-2 ~90 ~45")
+        .unwrap();
+    exec.command(
+        "execute as @e[type=armor_stand] store result score #x x run data get entity @s Pos[0]",
+    )
+    .unwrap();
     exec.command("scoreboard players get #x x").unwrap();
     exec.wait_for_command_log("#x has 10").unwrap();
     exec.command("execute as @e[type=armor_stand] store result score #yaw x run data get entity @s Rotation[0]").unwrap();
@@ -697,15 +807,18 @@ fn execute_unless_function_condition() {
     fs::write(
         dp.join("data/test/function/okfn.mcfunction"),
         "scoreboard players set #marker x 1\n",
-    ).unwrap();
+    )
+    .unwrap();
     let mut exec = executor(&dir);
     // okfn exists and succeeds, so unless should NOT run
-    exec.command("execute unless function test:okfn run scoreboard players set #no x 999").unwrap();
+    exec.command("execute unless function test:okfn run scoreboard players set #no x 999")
+        .unwrap();
     exec.command("scoreboard players set #no x 0").unwrap();
     exec.command("scoreboard players get #no x").unwrap();
     exec.wait_for_command_log("#no has 0").unwrap();
     // missing function should cause unless to run
-    exec.command("execute unless function test:missing run scoreboard players set #yes x 1").unwrap();
+    exec.command("execute unless function test:missing run scoreboard players set #yes x 1")
+        .unwrap();
     exec.command("scoreboard players get #yes x").unwrap();
     exec.wait_for_command_log("#yes has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -716,7 +829,8 @@ fn execute_store_success_storage() {
     let dir = sandbox("store-suc-sto");
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #v x 1").unwrap();
-    exec.command("execute store success storage test:x flag int 1 run scoreboard players get #v x").unwrap();
+    exec.command("execute store success storage test:x flag int 1 run scoreboard players get #v x")
+        .unwrap();
     exec.command("data get storage test:x flag").unwrap();
     exec.wait_for_command_log("1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -726,10 +840,12 @@ fn execute_store_success_storage() {
 fn execute_store_success_entity() {
     let dir = sandbox("store-suc-ent");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"store\"]}").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"store\"]}")
+        .unwrap();
     exec.command("execute store success entity @e[tag=store,limit=1] Pos[0] double 1 run scoreboard players set #v x 5").unwrap();
     // Setting a score succeeds, so Pos[0] should be 1.0
-    exec.command("execute as @e[tag=store] store result score #x x run data get entity @s Pos[0]").unwrap();
+    exec.command("execute as @e[tag=store] store result score #x x run data get entity @s Pos[0]")
+        .unwrap();
     exec.command("scoreboard players get #x x").unwrap();
     exec.wait_for_command_log("#x has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -744,15 +860,20 @@ fn selector_scores_multi_objective_direct() {
 fn nbt_value_byte_and_short_parse() {
     let dir = sandbox("nbt-parse");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"nbt\"]}").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"nbt\"]}")
+        .unwrap();
 
     // Set byte (-1b) and short (100s) values
-    exec.command("data modify entity @e[tag=nbt,limit=1] data.b set value -1b").unwrap();
-    exec.command("data modify entity @e[tag=nbt,limit=1] data.s set value 100s").unwrap();
+    exec.command("data modify entity @e[tag=nbt,limit=1] data.b set value -1b")
+        .unwrap();
+    exec.command("data modify entity @e[tag=nbt,limit=1] data.s set value 100s")
+        .unwrap();
 
-    exec.command("data get entity @e[tag=nbt,limit=1] data.b").unwrap();
+    exec.command("data get entity @e[tag=nbt,limit=1] data.b")
+        .unwrap();
     exec.wait_for_command_log("-1b").unwrap();
-    exec.command("data get entity @e[tag=nbt,limit=1] data.s").unwrap();
+    exec.command("data get entity @e[tag=nbt,limit=1] data.s")
+        .unwrap();
     exec.wait_for_command_log("100s").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -762,9 +883,12 @@ fn nbt_value_byte_and_short_parse() {
 fn nbt_value_long_parse() {
     let dir = sandbox("nbt-long");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"l\"]}").unwrap();
-    exec.command("data modify entity @e[tag=l,limit=1] data.val set value 999999L").unwrap();
-    exec.command("data get entity @e[tag=l,limit=1] data.val").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"l\"]}")
+        .unwrap();
+    exec.command("data modify entity @e[tag=l,limit=1] data.val set value 999999L")
+        .unwrap();
+    exec.command("data get entity @e[tag=l,limit=1] data.val")
+        .unwrap();
     exec.wait_for_command_log("999999L").unwrap();
     let _ = fs::remove_dir_all(&dir);
 }
@@ -773,7 +897,8 @@ fn nbt_value_long_parse() {
 fn nbt_compound_nested_in_list() {
     let dir = sandbox("nbt-nested");
     let mut exec = executor(&dir);
-    exec.command("data modify storage test:x list set value [{a:1},{a:2}]").unwrap();
+    exec.command("data modify storage test:x list set value [{a:1},{a:2}]")
+        .unwrap();
     exec.command("data get storage test:x list[0].a").unwrap();
     exec.wait_for_command_log("1").unwrap();
     exec.command("data get storage test:x list[1].a").unwrap();
@@ -787,7 +912,10 @@ fn execute_store_result_storage_with_float_type() {
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #v x 42").unwrap();
     // Store with float type and scale 0.5 → 21.0f
-    exec.command("execute store result storage test:x val float 0.5 run scoreboard players get #v x").unwrap();
+    exec.command(
+        "execute store result storage test:x val float 0.5 run scoreboard players get #v x",
+    )
+    .unwrap();
     exec.command("data get storage test:x val").unwrap();
     exec.wait_for_command_log("21f").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -799,7 +927,8 @@ fn score_operation_add_assign() {
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #a x 10").unwrap();
     exec.command("scoreboard players set #b x 5").unwrap();
-    exec.command("scoreboard players operation #a x += #b x").unwrap();
+    exec.command("scoreboard players operation #a x += #b x")
+        .unwrap();
     exec.command("scoreboard players get #a x").unwrap();
     exec.wait_for_command_log("#a has 15").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -811,7 +940,8 @@ fn score_operation_sub_assign() {
     let mut exec = executor(&dir);
     exec.command("scoreboard players set #a x 10").unwrap();
     exec.command("scoreboard players set #b x 3").unwrap();
-    exec.command("scoreboard players operation #a x -= #b x").unwrap();
+    exec.command("scoreboard players operation #a x -= #b x")
+        .unwrap();
     exec.command("scoreboard players get #a x").unwrap();
     exec.wait_for_command_log("#a has 7").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -827,10 +957,12 @@ fn kill_without_limit_removes_all_matching() {
     let dir = sandbox("kill-all2");
     let mut exec = executor(&dir);
     for _ in 0..5 {
-        exec.command("summon minecraft:marker 0 0 0 {Tags:[\"rm\"]}").unwrap();
+        exec.command("summon minecraft:marker 0 0 0 {Tags:[\"rm\"]}")
+            .unwrap();
     }
     exec.command("kill @e[tag=rm]").unwrap();
-    exec.command("execute unless entity @e[tag=rm] run scoreboard players set #gone x 1").unwrap();
+    exec.command("execute unless entity @e[tag=rm] run scoreboard players set #gone x 1")
+        .unwrap();
     exec.command("scoreboard players get #gone x").unwrap();
     exec.wait_for_command_log("#gone has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -840,11 +972,14 @@ fn kill_without_limit_removes_all_matching() {
 fn selector_n_with_sort_override() {
     let dir = sandbox("sel-n-sort");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 1 0 0 {Tags:[\"s\"]}").unwrap();
-    exec.command("summon minecraft:marker 100 0 0 {Tags:[\"s\"]}").unwrap();
+    exec.command("summon minecraft:marker 1 0 0 {Tags:[\"s\"]}")
+        .unwrap();
+    exec.command("summon minecraft:marker 100 0 0 {Tags:[\"s\"]}")
+        .unwrap();
 
     // @n[sort=furthest] should pick the furthest one
-    exec.command("execute if entity @n[tag=s,sort=furthest] run scoreboard players set #f x 1").unwrap();
+    exec.command("execute if entity @n[tag=s,sort=furthest] run scoreboard players set #f x 1")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
 
@@ -855,11 +990,14 @@ fn selector_n_with_sort_override() {
 fn selector_x_rotation_filter() {
     let dir = sandbox("sel-xrot");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"r\"]}").unwrap();
-    exec.command("data modify entity @e[tag=r,limit=1] Rotation[1] set value 30f").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"r\"]}")
+        .unwrap();
+    exec.command("data modify entity @e[tag=r,limit=1] Rotation[1] set value 30f")
+        .unwrap();
 
     // Pitch at 30 should be in range 0..45
-    exec.command("execute if entity @e[tag=r,x_rotation=0..45] run scoreboard players set #f x 1").unwrap();
+    exec.command("execute if entity @e[tag=r,x_rotation=0..45] run scoreboard players set #f x 1")
+        .unwrap();
     exec.command("scoreboard players get #f x").unwrap();
     exec.wait_for_command_log("#f has 1").unwrap();
 
@@ -870,10 +1008,13 @@ fn selector_x_rotation_filter() {
 fn entity_nbt_write_builtin_pos_individual() {
     let dir = sandbox("ent-write");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"w\"]}").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"w\"]}")
+        .unwrap();
     // Write to Pos[0] directly
-    exec.command("data modify entity @e[tag=w,limit=1] Pos[0] set value 50d").unwrap();
-    exec.command("data get entity @e[tag=w,limit=1] Pos").unwrap();
+    exec.command("data modify entity @e[tag=w,limit=1] Pos[0] set value 50d")
+        .unwrap();
+    exec.command("data get entity @e[tag=w,limit=1] Pos")
+        .unwrap();
     let line = exec.wait_for_command_log("has the following").unwrap();
     assert!(line.contains("50d"), "Pos[0] should be 50d: {line}");
     assert!(line.contains("0d"), "Pos[1] should still be 0d: {line}");
@@ -884,12 +1025,18 @@ fn entity_nbt_write_builtin_pos_individual() {
 fn entity_nbt_write_builtin_rotation_individual() {
     let dir = sandbox("ent-rot-write");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"w\"]}").unwrap();
-    exec.command("data modify entity @e[tag=w,limit=1] Rotation[1] set value 45f").unwrap();
-    exec.command("data get entity @e[tag=w,limit=1] Rotation").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"w\"]}")
+        .unwrap();
+    exec.command("data modify entity @e[tag=w,limit=1] Rotation[1] set value 45f")
+        .unwrap();
+    exec.command("data get entity @e[tag=w,limit=1] Rotation")
+        .unwrap();
     let line = exec.wait_for_command_log("has the following").unwrap();
     assert!(line.contains("45f"), "Rotation[1] should be 45f: {line}");
-    assert!(line.contains("0f"), "Rotation[0] should still be 0f: {line}");
+    assert!(
+        line.contains("0f"),
+        "Rotation[0] should still be 0f: {line}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -902,14 +1049,17 @@ fn entity_nbt_write_builtin_rotation_individual() {
 fn summon_stores_full_nbt_as_entity_root() {
     let dir = sandbox("disp-nbt");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\",Count:1b}}").unwrap();
+    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\",Count:1b}}")
+        .unwrap();
 
     // Read item.id from the stored NBT
-    exec.command("data get entity @e[type=item_display,limit=1] item.id").unwrap();
+    exec.command("data get entity @e[type=item_display,limit=1] item.id")
+        .unwrap();
     exec.wait_for_command_log("stone").unwrap();
 
     // Read item.Count
-    exec.command("data get entity @e[type=item_display,limit=1] item.Count").unwrap();
+    exec.command("data get entity @e[type=item_display,limit=1] item.Count")
+        .unwrap();
     exec.wait_for_command_log("1b").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -924,7 +1074,8 @@ fn entity_nbt_set_item_compound() {
     exec.command("summon minecraft:item_display 0 0 0").unwrap();
     exec.command("data modify entity @e[type=item_display,limit=1] item set value {id:\"minecraft:dirt\",Count:64b}").unwrap();
 
-    exec.command("data get entity @e[type=item_display,limit=1] item").unwrap();
+    exec.command("data get entity @e[type=item_display,limit=1] item")
+        .unwrap();
     let line = exec.wait_for_command_log("has the following").unwrap();
     assert!(line.contains("dirt"), "item compound: {line}");
     assert!(line.contains("64b"), "count: {line}");
@@ -938,10 +1089,13 @@ fn entity_nbt_set_item_compound() {
 fn entity_nbt_modify_item_count() {
     let dir = sandbox("disp-count");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\",Count:64b}}").unwrap();
-    exec.command("data modify entity @e[type=item_display,limit=1] item.Count set value 1b").unwrap();
+    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\",Count:64b}}")
+        .unwrap();
+    exec.command("data modify entity @e[type=item_display,limit=1] item.Count set value 1b")
+        .unwrap();
 
-    exec.command("data get entity @e[type=item_display,limit=1] item.Count").unwrap();
+    exec.command("data get entity @e[type=item_display,limit=1] item.Count")
+        .unwrap();
     exec.wait_for_command_log("1b").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -952,7 +1106,8 @@ fn entity_nbt_modify_item_count() {
 fn if_data_entity_item_exists() {
     let dir = sandbox("disp-has-item");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\"}}").unwrap();
+    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\"}}")
+        .unwrap();
 
     exec.command("execute if data entity @e[type=item_display,limit=1] item run scoreboard players set #has x 1").unwrap();
     exec.command("scoreboard players get #has x").unwrap();
@@ -966,9 +1121,11 @@ fn if_data_entity_item_exists() {
 fn entity_nbt_remove_item() {
     let dir = sandbox("disp-remove");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\"}}").unwrap();
+    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\"}}")
+        .unwrap();
 
-    exec.command("data remove entity @e[type=item_display,limit=1] item").unwrap();
+    exec.command("data remove entity @e[type=item_display,limit=1] item")
+        .unwrap();
     exec.command("execute unless data entity @e[type=item_display,limit=1] item run scoreboard players set #gone x 1").unwrap();
     exec.command("scoreboard players get #gone x").unwrap();
     exec.wait_for_command_log("#gone has 1").unwrap();
@@ -983,10 +1140,15 @@ fn entity_nbt_set_text_display() {
     let dir = sandbox("disp-text");
     let mut exec = executor(&dir);
     exec.command("summon minecraft:text_display 0 0 0").unwrap();
-    exec.command("data modify entity @e[type=text_display,limit=1] text set value {\"text\":\"hello\"}").unwrap();
-    exec.command("data modify entity @e[type=text_display,limit=1] text.text set value \"world\"").unwrap();
+    exec.command(
+        "data modify entity @e[type=text_display,limit=1] text set value {\"text\":\"hello\"}",
+    )
+    .unwrap();
+    exec.command("data modify entity @e[type=text_display,limit=1] text.text set value \"world\"")
+        .unwrap();
 
-    exec.command("data get entity @e[type=text_display,limit=1] text.text").unwrap();
+    exec.command("data get entity @e[type=text_display,limit=1] text.text")
+        .unwrap();
     exec.wait_for_command_log("world").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -998,13 +1160,16 @@ fn entity_nbt_set_text_display() {
 fn entity_nbt_copy_item_between_entities() {
     let dir = sandbox("disp-copy");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:diamond\",Count:1b}}").unwrap();
-    exec.command("summon minecraft:item 0 0 0 {Item:{id:\"minecraft:stone\",Count:64b}}").unwrap();
+    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:diamond\",Count:1b}}")
+        .unwrap();
+    exec.command("summon minecraft:item 0 0 0 {Item:{id:\"minecraft:stone\",Count:64b}}")
+        .unwrap();
 
     // Copy from item entity's Item to item_display's item
     exec.command("data modify entity @e[type=item_display,limit=1] item set from entity @e[type=item,limit=1] Item").unwrap();
 
-    exec.command("data get entity @e[type=item_display,limit=1] item").unwrap();
+    exec.command("data get entity @e[type=item_display,limit=1] item")
+        .unwrap();
     let line = exec.wait_for_command_log("has the following").unwrap();
     assert!(line.contains("stone"), "copied item: {line}");
 
@@ -1017,10 +1182,13 @@ fn entity_nbt_copy_item_between_entities() {
 fn entity_nbt_set_pickup_delay() {
     let dir = sandbox("disp-pickup");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:item 0 0 0 {Item:{id:\"minecraft:stone\",Count:1b}}").unwrap();
-    exec.command("data modify entity @e[type=item,limit=1] PickupDelay set value 4").unwrap();
+    exec.command("summon minecraft:item 0 0 0 {Item:{id:\"minecraft:stone\",Count:1b}}")
+        .unwrap();
+    exec.command("data modify entity @e[type=item,limit=1] PickupDelay set value 4")
+        .unwrap();
 
-    exec.command("data get entity @e[type=item,limit=1] PickupDelay").unwrap();
+    exec.command("data get entity @e[type=item,limit=1] PickupDelay")
+        .unwrap();
     exec.wait_for_command_log("4").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -1035,7 +1203,8 @@ fn entity_nbt_equipment_mainhand() {
     exec.command("summon minecraft:armor_stand 0 0 0").unwrap();
     exec.command("data modify entity @e[type=armor_stand,limit=1] equipment set value {mainhand:{id:\"minecraft:stick\",Count:1b}}").unwrap();
 
-    exec.command("data get entity @e[type=armor_stand,limit=1] equipment.mainhand.id").unwrap();
+    exec.command("data get entity @e[type=armor_stand,limit=1] equipment.mainhand.id")
+        .unwrap();
     exec.wait_for_command_log("stick").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -1047,9 +1216,13 @@ fn entity_nbt_equipment_count_modify() {
     let dir = sandbox("disp-eq-cnt");
     let mut exec = executor(&dir);
     exec.command("summon minecraft:armor_stand 0 0 0 {equipment:{mainhand:{id:\"minecraft:stone\",Count:64b}}}").unwrap();
-    exec.command("data modify entity @e[type=armor_stand,limit=1] equipment.mainhand.Count set value 1b").unwrap();
+    exec.command(
+        "data modify entity @e[type=armor_stand,limit=1] equipment.mainhand.Count set value 1b",
+    )
+    .unwrap();
 
-    exec.command("data get entity @e[type=armor_stand,limit=1] equipment.mainhand.Count").unwrap();
+    exec.command("data get entity @e[type=armor_stand,limit=1] equipment.mainhand.Count")
+        .unwrap();
     exec.wait_for_command_log("1b").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -1061,9 +1234,11 @@ fn entity_nbt_equipment_count_modify() {
 fn entity_nbt_rotation_via_summon_nbt() {
     let dir = sandbox("disp-rot-sum");
     let mut exec = executor(&dir);
-    exec.command("summon minecraft:item_display 0 0 0 {Rotation:[90F,0F]}").unwrap();
+    exec.command("summon minecraft:item_display 0 0 0 {Rotation:[90F,0F]}")
+        .unwrap();
 
-    exec.command("data get entity @e[type=item_display,limit=1] Rotation[0]").unwrap();
+    exec.command("data get entity @e[type=item_display,limit=1] Rotation[0]")
+        .unwrap();
     exec.wait_for_command_log("90f").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -1078,7 +1253,10 @@ fn block_data_set_and_get() {
     let dir = sandbox("block-nbt");
     let mut exec = executor(&dir);
     exec.command("setblock 0 0 0 minecraft:stone").unwrap();
-    exec.command("data modify block 0 0 0 Items set value [{Slot:0b,id:\"minecraft:stick\",Count:1b}]").unwrap();
+    exec.command(
+        "data modify block 0 0 0 Items set value [{Slot:0b,id:\"minecraft:stick\",Count:1b}]",
+    )
+    .unwrap();
     exec.command("data get block 0 0 0 Items[0].id").unwrap();
     exec.wait_for_command_log("stick").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -1089,12 +1267,44 @@ fn block_data_remove() {
     let dir = sandbox("block-remove");
     let mut exec = executor(&dir);
     exec.command("setblock 0 0 0 minecraft:stone").unwrap();
-    exec.command("data modify block 0 0 0 test.val set value 42").unwrap();
+    exec.command("data modify block 0 0 0 test.val set value 42")
+        .unwrap();
     exec.command("data remove block 0 0 0 test.val").unwrap();
     // Should be gone
-    exec.command("execute unless data block 0 0 0 test.val run scoreboard players set #gone x 1").unwrap();
+    exec.command("execute unless data block 0 0 0 test.val run scoreboard players set #gone x 1")
+        .unwrap();
     exec.command("scoreboard players get #gone x").unwrap();
     exec.wait_for_command_log("#gone has 1").unwrap();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn block_data_requires_a_block_and_resets_on_replacement() {
+    let dir = sandbox("block-reset");
+    let mut exec = executor(&dir);
+
+    exec.command("data modify block 4 5 6 test.value set value 1")
+        .unwrap();
+    assert_eq!(
+        exec.executor()
+            .world
+            .blocks
+            .get(4, 5, 6, "minecraft:overworld"),
+        None,
+        "data modification must not create a block"
+    );
+
+    exec.command("setblock 4 5 6 minecraft:chest").unwrap();
+    exec.command("data modify block 4 5 6 test.value set value 1")
+        .unwrap();
+    exec.command("setblock 4 5 6 minecraft:stone").unwrap();
+    exec.command(
+        "execute unless data block 4 5 6 test.value run scoreboard players set #reset x 1",
+    )
+    .unwrap();
+    exec.command("scoreboard players get #reset x").unwrap();
+    exec.wait_for_command_log("#reset has 1").unwrap();
+
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1103,8 +1313,12 @@ fn block_data_set_from_storage() {
     let dir = sandbox("block-from-sto");
     let mut exec = executor(&dir);
     exec.command("setblock 0 0 0 minecraft:crafter").unwrap();
-    exec.command("data modify storage test:x items set value [{Slot:0b,id:\"minecraft:dirt\",Count:64b}]").unwrap();
-    exec.command("data modify block 0 0 0 Items set from storage test:x items").unwrap();
+    exec.command(
+        "data modify storage test:x items set value [{Slot:0b,id:\"minecraft:dirt\",Count:64b}]",
+    )
+    .unwrap();
+    exec.command("data modify block 0 0 0 Items set from storage test:x items")
+        .unwrap();
     exec.command("data get block 0 0 0 Items[0].id").unwrap();
     exec.wait_for_command_log("dirt").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -1115,8 +1329,12 @@ fn block_data_set_from_entity() {
     let dir = sandbox("block-from-ent");
     let mut exec = executor(&dir);
     exec.command("setblock 0 0 0 minecraft:crafter").unwrap();
-    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\",Count:1b}}").unwrap();
-    exec.command("data modify block 0 0 0 Items set from entity @e[type=item_display,limit=1] item").unwrap();
+    exec.command("summon minecraft:item_display 0 0 0 {item:{id:\"minecraft:stone\",Count:1b}}")
+        .unwrap();
+    exec.command(
+        "data modify block 0 0 0 Items set from entity @e[type=item_display,limit=1] item",
+    )
+    .unwrap();
     exec.command("data get block 0 0 0 Items.id").unwrap();
     exec.wait_for_command_log("stone").unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -1126,12 +1344,28 @@ fn block_data_set_from_entity() {
 fn execute_in_custom_dimension_tracks_block_ops() {
     let dir = sandbox("custom-dim");
     let mut exec = executor(&dir);
+    exec.command("setblock 0 0 0 minecraft:stone").unwrap();
     // setblock in a custom dimension
-    exec.command("execute in dynamic_crafting:crafters run setblock 0 0 0 minecraft:crafter").unwrap();
+    exec.command("execute in dynamic_crafting:crafters run setblock 0 0 0 minecraft:crafter")
+        .unwrap();
     // block exists in that dimension
     exec.command("execute in dynamic_crafting:crafters run data modify block 0 0 0 Items set value [{Slot:0b,id:\"minecraft:oak_planks\"}]").unwrap();
-    exec.command("execute in dynamic_crafting:crafters run data get block 0 0 0 Items[0].id").unwrap();
+    exec.command("execute in dynamic_crafting:crafters run data get block 0 0 0 Items[0].id")
+        .unwrap();
     exec.wait_for_command_log("oak_planks").unwrap();
+
+    exec.command(
+        "execute if block 0 0 0 minecraft:stone run scoreboard players set #overworld x 1",
+    )
+    .unwrap();
+    exec.command(
+        "execute in dynamic_crafting:crafters if block 0 0 0 minecraft:crafter run scoreboard players set #custom x 1",
+    )
+    .unwrap();
+    exec.command("scoreboard players get #overworld x").unwrap();
+    exec.wait_for_command_log("#overworld has 1").unwrap();
+    exec.command("scoreboard players get #custom x").unwrap();
+    exec.wait_for_command_log("#custom has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1139,9 +1373,11 @@ fn execute_in_custom_dimension_tracks_block_ops() {
 fn loot_spawn_creates_item_entity() {
     let dir = sandbox("loot-spawn");
     let mut exec = executor(&dir);
-    exec.command("loot spawn 0 65 0 loot dynamic_crafting:drop").unwrap();
+    exec.command("loot spawn 0 65 0 loot dynamic_crafting:drop")
+        .unwrap();
     // Should have spawned an item entity
-    exec.command("execute if entity @e[type=item] run scoreboard players set #found x 1").unwrap();
+    exec.command("execute if entity @e[type=item] run scoreboard players set #found x 1")
+        .unwrap();
     exec.command("scoreboard players get #found x").unwrap();
     exec.wait_for_command_log("#found has 1").unwrap();
     let _ = fs::remove_dir_all(&dir);

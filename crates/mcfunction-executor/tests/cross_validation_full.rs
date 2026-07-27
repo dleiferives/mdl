@@ -1,10 +1,11 @@
-//! Reference tests: executor assertions that serve as the golden standard.
-//! Configured for server comparison when MDL_SERVER_JAR is set.
-//! Each test runs a small datapack and verifies the executor produces correct output.
+//! Executor reference tests for small, focused datapacks.
+//!
+//! Real-server differential tests belong in `mdl-test`, where the official
+//! server harness is available.
 
+use mcfunction_executor::{McExecutor, V26_2};
 use std::fs;
 use std::path::PathBuf;
-use mcfunction_executor::{McExecutor, V26_2};
 
 fn sandbox(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("mdl-xv-{name}"));
@@ -24,18 +25,30 @@ fn func_dir(sandbox: &PathBuf) -> PathBuf {
 }
 
 fn copy_fn(sandbox: &PathBuf, name: &str, content: &str) {
-    fs::write(func_dir(sandbox).join(format!("{name}.mcfunction")), content).unwrap();
+    fs::write(
+        func_dir(sandbox).join(format!("{name}.mcfunction")),
+        content,
+    )
+    .unwrap();
 }
 
 fn setup_pack(sandbox: &PathBuf) {
     let dp = dp_dir(sandbox);
     fs::create_dir_all(&dp).unwrap();
-    fs::write(dp.join("pack.mcmeta"), r#"{"pack":{"description":"xv","min_format":[107,1],"max_format":[107,1]}}"#).unwrap();
+    fs::write(
+        dp.join("pack.mcmeta"),
+        r#"{"pack":{"description":"xv","min_format":[107,1],"max_format":[107,1]}}"#,
+    )
+    .unwrap();
     fs::create_dir_all(dp.join("data/mdl/function")).unwrap();
 }
 
 fn setup_init(sandbox: &PathBuf) {
-    copy_fn(sandbox, "init", "scoreboard objectives add xv dummy\nscoreboard objectives add xv2 dummy\n");
+    copy_fn(
+        sandbox,
+        "init",
+        "scoreboard objectives add xv dummy\nscoreboard objectives add xv2 dummy\n",
+    );
     let tag_dir = dp_dir(sandbox).join("data/minecraft/tags/function");
     fs::create_dir_all(&tag_dir).unwrap();
     fs::write(tag_dir.join("load.json"), r#"{"values":["mdl:init"]}"#).unwrap();
@@ -62,13 +75,17 @@ fn scoreboard_arithmetic() {
     let dir = sandbox("arith");
     setup_pack(&dir);
     setup_init(&dir);
-    copy_fn(&dir, "arith", concat!(
-        "scoreboard players set #a xv 10\n",
-        "scoreboard players add #a xv 5\n",
-        "scoreboard players remove #a xv 3\n",
-        "scoreboard players set #b xv 2\n",
-        "scoreboard players operation #a xv *= #b xv\n",
-    ));
+    copy_fn(
+        &dir,
+        "arith",
+        concat!(
+            "scoreboard players set #a xv 10\n",
+            "scoreboard players add #a xv 5\n",
+            "scoreboard players remove #a xv 3\n",
+            "scoreboard players set #b xv 2\n",
+            "scoreboard players operation #a xv *= #b xv\n",
+        ),
+    );
 
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
@@ -87,11 +104,14 @@ fn storage_set_get_nested() {
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
 
-    exec.command("data modify storage test:x val set value {a:{b:42}}").unwrap();
+    exec.command("data modify storage test:x val set value {a:{b:42}}")
+        .unwrap();
     exec.command("data get storage test:x val.a.b").unwrap();
-    exec.wait_for_command_log("has the following contents").unwrap();
+    exec.wait_for_command_log("has the following contents")
+        .unwrap();
 
-    exec.command("data modify storage test:x val.a.b set value 99").unwrap();
+    exec.command("data modify storage test:x val.a.b set value 99")
+        .unwrap();
     exec.command("data get storage test:x val.a.b").unwrap();
     exec.wait_for_command_log("99").unwrap();
 
@@ -107,10 +127,12 @@ fn execute_store_result_and_success() {
     exec.load_datapacks().unwrap();
 
     exec.command("scoreboard players set #src xv 7").unwrap();
-    exec.command("execute store result score #dst xv run scoreboard players get #src xv").unwrap();
+    exec.command("execute store result score #dst xv run scoreboard players get #src xv")
+        .unwrap();
     assert_eq!(expect_score(&mut exec, "#dst", "xv"), 7);
 
-    exec.command("execute store success score #succ xv run scoreboard players get #src xv").unwrap();
+    exec.command("execute store success score #succ xv run scoreboard players get #src xv")
+        .unwrap();
     assert_eq!(expect_score(&mut exec, "#succ", "xv"), 1);
 
     let _ = fs::remove_dir_all(&dir);
@@ -125,13 +147,19 @@ fn execute_if_unless_conditions() {
     exec.load_datapacks().unwrap();
 
     exec.command("scoreboard players set #flag xv2 1").unwrap();
-    exec.command("scoreboard players set #target xv2 0").unwrap();
+    exec.command("scoreboard players set #target xv2 0")
+        .unwrap();
 
-    exec.command("execute if score #flag xv2 matches 1 run scoreboard players set #target xv2 99").unwrap();
+    exec.command("execute if score #flag xv2 matches 1 run scoreboard players set #target xv2 99")
+        .unwrap();
     assert_eq!(expect_score(&mut exec, "#target", "xv2"), 99);
 
-    exec.command("scoreboard players set #target xv2 1").unwrap();
-    exec.command("execute unless score #flag xv2 matches 0 run scoreboard players set #target xv2 50").unwrap();
+    exec.command("scoreboard players set #target xv2 1")
+        .unwrap();
+    exec.command(
+        "execute unless score #flag xv2 matches 0 run scoreboard players set #target xv2 50",
+    )
+    .unwrap();
     assert_eq!(expect_score(&mut exec, "#target", "xv2"), 50);
 
     let _ = fs::remove_dir_all(&dir);
@@ -145,16 +173,27 @@ fn entity_data_pos_builtin_and_custom() {
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
 
-    exec.command("summon minecraft:marker 10 20 30 {Tags:[\"pos\"]}").unwrap();
-    exec.command("data get entity @e[tag=pos,limit=1] Pos[0]").unwrap();
-    exec.wait_for_command_log("has the following entity data").unwrap();
+    exec.command("summon minecraft:marker 10 20 30 {Tags:[\"pos\"]}")
+        .unwrap();
+    exec.command("data get entity @e[tag=pos,limit=1] Pos[0]")
+        .unwrap();
+    exec.wait_for_command_log("has the following entity data")
+        .unwrap();
 
-    exec.command("data get entity @e[tag=pos,limit=1] Pos").unwrap();
-    let line = exec.wait_for_command_log("has the following entity data").unwrap();
-    assert!(line.contains("10d") && line.contains("20d") && line.contains("30d"), "Pos list: {line}");
+    exec.command("data get entity @e[tag=pos,limit=1] Pos")
+        .unwrap();
+    let line = exec
+        .wait_for_command_log("has the following entity data")
+        .unwrap();
+    assert!(
+        line.contains("10d") && line.contains("20d") && line.contains("30d"),
+        "Pos list: {line}"
+    );
 
-    exec.command("data modify entity @e[tag=pos,limit=1] data.custom set value 42").unwrap();
-    exec.command("data get entity @e[tag=pos,limit=1] data.custom").unwrap();
+    exec.command("data modify entity @e[tag=pos,limit=1] data.custom set value 42")
+        .unwrap();
+    exec.command("data get entity @e[tag=pos,limit=1] data.custom")
+        .unwrap();
     exec.wait_for_command_log("42").unwrap();
 
     let _ = fs::remove_dir_all(&dir);
@@ -168,9 +207,12 @@ fn storage_list_append_prepend() {
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
 
-    exec.command("data modify storage test:x list set value [2,3]").unwrap();
-    exec.command("data modify storage test:x list append value 4").unwrap();
-    exec.command("data modify storage test:x list prepend value 1").unwrap();
+    exec.command("data modify storage test:x list set value [2,3]")
+        .unwrap();
+    exec.command("data modify storage test:x list append value 4")
+        .unwrap();
+    exec.command("data modify storage test:x list prepend value 1")
+        .unwrap();
     exec.command("data get storage test:x list").unwrap();
     exec.wait_for_command_log("1,2,3,4").unwrap();
 
@@ -181,7 +223,11 @@ fn storage_list_append_prepend() {
 fn return_value_stops_execution() {
     let dir = sandbox("ret");
     setup_pack(&dir);
-    copy_fn(&dir, "early", "scoreboard players set #first xv 1\nreturn 7\nscoreboard players set #second xv 999\n");
+    copy_fn(
+        &dir,
+        "early",
+        "scoreboard players set #first xv 1\nreturn 7\nscoreboard players set #second xv 999\n",
+    );
 
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
@@ -202,15 +248,20 @@ fn kill_and_entity_counting() {
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
 
-    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"rm\"]}").unwrap();
-    exec.command("summon minecraft:marker 10 0 0 {Tags:[\"rm\"]}").unwrap();
-    exec.command("summon minecraft:marker 100 0 0 {Tags:[\"keep\"]}").unwrap();
+    exec.command("summon minecraft:marker 0 0 0 {Tags:[\"rm\"]}")
+        .unwrap();
+    exec.command("summon minecraft:marker 10 0 0 {Tags:[\"rm\"]}")
+        .unwrap();
+    exec.command("summon minecraft:marker 100 0 0 {Tags:[\"keep\"]}")
+        .unwrap();
 
     exec.command("kill @e[tag=rm]").unwrap();
-    exec.command("execute unless entity @e[tag=rm] run scoreboard players set #gone xv 1").unwrap();
+    exec.command("execute unless entity @e[tag=rm] run scoreboard players set #gone xv 1")
+        .unwrap();
     assert_eq!(expect_score(&mut exec, "#gone", "xv"), 1);
 
-    exec.command("execute if entity @e[tag=keep] run scoreboard players set #alive xv 1").unwrap();
+    exec.command("execute if entity @e[tag=keep] run scoreboard players set #alive xv 1")
+        .unwrap();
     assert_eq!(expect_score(&mut exec, "#alive", "xv"), 1);
 
     let _ = fs::remove_dir_all(&dir);
@@ -224,7 +275,8 @@ fn custom_dimension_block_ops() {
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
 
-    exec.command("execute in dynamic_crafting:crafters run setblock 0 0 0 minecraft:stone").unwrap();
+    exec.command("execute in dynamic_crafting:crafters run setblock 0 0 0 minecraft:stone")
+        .unwrap();
     // Explicitly check the block exists in that dimension using the block engine
     exec.command("execute in dynamic_crafting:crafters if block 0 0 0 minecraft:stone run scoreboard players set #found xv 1").unwrap();
     // This works because `if block` uses the condition evaluator which uses execute-in context
@@ -249,15 +301,21 @@ fn selector_at_n_with_filters() {
     let mut exec = McExecutor::create(dir.clone(), V26_2);
     exec.load_datapacks().unwrap();
 
-    exec.command("summon minecraft:marker 1 0 0 {Tags:[\"near\"]}").unwrap();
-    exec.command("summon minecraft:marker 50 0 0 {Tags:[\"far\"]}").unwrap();
+    exec.command("summon minecraft:marker 1 0 0 {Tags:[\"near\"]}")
+        .unwrap();
+    exec.command("summon minecraft:marker 50 0 0 {Tags:[\"far\"]}")
+        .unwrap();
 
     // @n resolves to nearest
-    exec.command("execute if entity @n[type=marker] run scoreboard players set #sel xv 1").unwrap();
+    exec.command("execute if entity @n[type=marker] run scoreboard players set #sel xv 1")
+        .unwrap();
     assert_eq!(expect_score(&mut exec, "#sel", "xv"), 1);
 
     // @n with distance filter excludes the far one
-    exec.command("execute if entity @n[type=marker,distance=..5] run scoreboard players set #near xv 1").unwrap();
+    exec.command(
+        "execute if entity @n[type=marker,distance=..5] run scoreboard players set #near xv 1",
+    )
+    .unwrap();
     assert_eq!(expect_score(&mut exec, "#near", "xv"), 1);
 
     let _ = fs::remove_dir_all(&dir);

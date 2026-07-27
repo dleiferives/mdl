@@ -1,6 +1,5 @@
 mod parser;
 
-
 pub use parser::parse_command;
 
 /// Outcome of executing a single command.
@@ -15,22 +14,42 @@ pub struct CommandOutcome {
 impl CommandOutcome {
     #[must_use]
     pub fn success(result: i32, log: Vec<String>) -> Self {
-        Self { success: 1, result, continued: true, log }
+        Self {
+            success: 1,
+            result,
+            continued: true,
+            log,
+        }
     }
 
     #[must_use]
     pub fn failure(log: Vec<String>) -> Self {
-        Self { success: 0, result: 0, continued: true, log }
+        Self {
+            success: 0,
+            result: 0,
+            continued: true,
+            log,
+        }
     }
 
     #[must_use]
     pub fn returned(value: i32, log: Vec<String>) -> Self {
-        Self { success: 1, result: value, continued: false, log }
+        Self {
+            success: 1,
+            result: value,
+            continued: false,
+            log,
+        }
     }
 
     #[must_use]
     pub fn returned_fail(log: Vec<String>) -> Self {
-        Self { success: 0, result: 0, continued: false, log }
+        Self {
+            success: 0,
+            result: 0,
+            continued: false,
+            log,
+        }
     }
 }
 
@@ -69,12 +88,33 @@ pub struct ScoreboardCmd {
 
 #[derive(Clone, Debug)]
 pub enum ScoreboardSub {
-    ObjectivesAdd { objective: String, criterion: String },
-    PlayersSet { holder: String, objective: String, value: i32 },
-    PlayersAdd { holder: String, objective: String, amount: i32 },
-    PlayersRemove { holder: String, objective: String, amount: i32 },
-    PlayersGet { holder: String, objective: String },
-    PlayersReset { holder: String, objective: String },
+    ObjectivesAdd {
+        objective: String,
+        criterion: String,
+    },
+    PlayersSet {
+        holder: String,
+        objective: String,
+        value: i32,
+    },
+    PlayersAdd {
+        holder: String,
+        objective: String,
+        amount: i32,
+    },
+    PlayersRemove {
+        holder: String,
+        objective: String,
+        amount: i32,
+    },
+    PlayersGet {
+        holder: String,
+        objective: String,
+    },
+    PlayersReset {
+        holder: String,
+        objective: String,
+    },
     PlayersOperation {
         target_holder: String,
         target_objective: String,
@@ -91,9 +131,21 @@ pub struct DataCmd {
 
 #[derive(Clone, Debug)]
 pub enum DataSub {
-    Get { storage: String, path: String, scale: Option<f64> },
-    Remove { storage: String, path: String },
-    Modify { storage: String, path: String, mode: String, source: String },
+    Get {
+        storage: String,
+        path: String,
+        scale: Option<f64>,
+    },
+    Remove {
+        storage: String,
+        path: String,
+    },
+    Modify {
+        storage: String,
+        path: String,
+        mode: String,
+        source: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -119,12 +171,27 @@ pub enum ExecuteModifier {
 
 #[derive(Clone, Debug)]
 pub enum ExecuteCondition {
-    Score { holder: String, objective: String, range: String },
-    ScoreCompare { left_holder: String, left_objective: String, op: String, right_holder: String, right_objective: String },
+    Score {
+        holder: String,
+        objective: String,
+        range: String,
+    },
+    ScoreCompare {
+        left_holder: String,
+        left_objective: String,
+        op: String,
+        right_holder: String,
+        right_objective: String,
+    },
     Data(String, String),
     Entity(String),
     Function(String),
-    Block { x: i32, y: i32, z: i32, block: String },
+    Block {
+        x: i32,
+        y: i32,
+        z: i32,
+        block: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -136,31 +203,65 @@ pub struct FunctionCmd {
 }
 
 #[derive(Clone, Debug)]
-pub struct KillCmd { pub selector: String }
+pub struct KillCmd {
+    pub selector: String,
+}
 
 #[derive(Clone, Debug)]
-pub struct TagCmd { pub selector: String, pub action: TagAction, pub tag: String }
+pub struct TagCmd {
+    pub selector: String,
+    pub action: TagAction,
+    pub tag: String,
+}
 
 #[derive(Clone, Debug)]
-pub enum TagAction { Add, Remove, List }
+pub enum TagAction {
+    Add,
+    Remove,
+    List,
+}
 
 #[derive(Clone, Debug)]
-pub struct TellrawCmd { pub selector: String, pub message: String }
+pub struct TellrawCmd {
+    pub selector: String,
+    pub message: String,
+}
 
 #[derive(Clone, Debug)]
-pub struct TitleCmd { pub selector: String, pub action: String, pub text: String }
+pub struct TitleCmd {
+    pub selector: String,
+    pub action: String,
+    pub text: String,
+}
 
 #[derive(Clone, Debug)]
-pub struct LootCmd { pub action: String, pub pos: Option<(f64, f64, f64)>, pub source: String }
+pub struct LootCmd {
+    pub action: String,
+    pub pos: Option<(f64, f64, f64)>,
+    pub source: String,
+}
 
 #[derive(Clone, Debug)]
-pub struct RotateCmd { pub selector: String, pub yaw: f32, pub pitch: f32 }
+pub struct RotateCmd {
+    pub selector: String,
+    pub yaw: f32,
+    pub pitch: f32,
+}
 
 #[derive(Clone, Debug)]
-pub struct ItemCmd { pub action: String, pub selector: String, pub slot: String, pub rest: String }
+pub struct ItemCmd {
+    pub action: String,
+    pub selector: String,
+    pub slot: String,
+    pub rest: String,
+}
 
 #[derive(Clone, Debug)]
-pub struct AdvancementCmd { pub action: String, pub selector: String, pub advancement: String }
+pub struct AdvancementCmd {
+    pub action: String,
+    pub selector: String,
+    pub advancement: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct TeleportCmd {

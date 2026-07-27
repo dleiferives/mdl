@@ -14,8 +14,10 @@ impl ScoreboardEngine {
     }
 
     pub fn set(&mut self, holder: &str, objective: &str, value: i32) {
-        self.scores
-            .insert((ScoreHolderKey::from_str(holder), objective.to_owned()), value);
+        self.scores.insert(
+            (ScoreHolderKey::from_str(holder), objective.to_owned()),
+            value,
+        );
     }
 
     pub fn get(&self, holder: &str, objective: &str) -> Option<i32> {
@@ -67,12 +69,18 @@ impl ScoreboardEngine {
     ) {
         let source = self
             .scores
-            .get(&(ScoreHolderKey::from_str(source_holder), source_obj.to_owned()))
+            .get(&(
+                ScoreHolderKey::from_str(source_holder),
+                source_obj.to_owned(),
+            ))
             .copied()
             .unwrap_or(0);
         let target = self
             .scores
-            .get(&(ScoreHolderKey::from_str(target_holder), target_obj.to_owned()))
+            .get(&(
+                ScoreHolderKey::from_str(target_holder),
+                target_obj.to_owned(),
+            ))
             .copied()
             .unwrap_or(0);
         let result = match op {
@@ -114,7 +122,10 @@ impl ScoreboardEngine {
             }
         };
         self.scores.insert(
-            (ScoreHolderKey::from_str(target_holder), target_obj.to_owned()),
+            (
+                ScoreHolderKey::from_str(target_holder),
+                target_obj.to_owned(),
+            ),
             result,
         );
     }
@@ -136,11 +147,7 @@ impl ScoreboardEngine {
 fn floor_div(a: i32, b: i32) -> i32 {
     let q = a / b;
     let r = a % b;
-    if (r != 0) && ((a ^ b) < 0) {
-        q - 1
-    } else {
-        q
-    }
+    if (r != 0) && ((a ^ b) < 0) { q - 1 } else { q }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

@@ -3,8 +3,9 @@
   =================================
 
   Authority: syntax accepted by crates/mdl-compiler on trunk.
-  Updated: 2026-07-19, with PS-4 enums, switch, and range patterns, and
-           PS-5 anonymous structs, destructuring, and inferred declarations.
+  Updated: 2026-07-27, through Stage 9B recurring scheduling. This includes
+           event handlers, entity-NBT postfix paths, widened assignment targets,
+           one-tick/tick function modifiers, and schedule statements.
 
   This grammar describes successful parses, not recovery productions or semantic
   restrictions. The lexer/parser tests remain executable conformance evidence.
@@ -28,29 +29,40 @@ ModuleItem = ImportDeclaration
            | StructDeclaration
            | EnumDeclaration
            | FunctionDeclaration
+           | EventHandlerDeclaration
            ;
 
-ImportDeclaration = "const", Name, "=", "import", "(", StringLiteral, ")", ";" ;
+ImportDeclaration = "const", Identifier, "=", "import", "(", StringLiteral, ")", ";" ;
 
-StructDeclaration = "const", Name, "=", "struct", "{",
+StructDeclaration = "const", Identifier, "=", "struct", "{",
                     [ StructField, { ",", StructField }, [ "," ] ],
                     "}", ";" ;
 
-StructField = Name, ":", ValueType ;
+StructField = Identifier, ":", ValueType ;
 
-EnumDeclaration = "const", Name, "=", "enum", "{",
+EnumDeclaration = "const", Identifier, "=", "enum", "{",
                   [ EnumVariant, { ",", EnumVariant }, [ "," ] ],
                   "}", ";" ;
 
-EnumVariant = Name ;
+EnumVariant = Identifier ;
 
-FunctionDeclaration = [ Visibility ], "fn", Name, "(",
+FunctionDeclaration = [ Visibility ], [ "one_tick" ], [ "tick" ], "fn", Identifier, "(",
                       [ Parameter, { ",", Parameter }, [ "," ] ],
                       ")", [ "->", ResultType ], Block ;
 
 Visibility = "pub" | "export" ;
-Parameter  = Name, ":", ValueType ;
+Parameter  = Identifier, ":", ValueType ;
 ResultType = ValueType | "Void" ;
+
+EventHandlerDeclaration = "on", Identifier, "(",
+                          [ EventHandlerArgument,
+                            { ",", EventHandlerArgument }, [ "," ] ],
+                          ")", "|", Identifier, "|", Block ;
+
+EventHandlerArgument = ".", Identifier, "=", StringList ;
+StringList = "[",
+             [ StringLiteral, { ",", StringLiteral }, [ "," ] ],
+             "]" ;
 
 ValueType = "Bool"
           | "Int32"
@@ -78,18 +90,19 @@ Statement = DeclarationStatement
           | ReturnStatement
           | RunStatement
           | UnsafeMinecraftStatement
+          | ScheduleStatement
           ;
 
 DeclarationStatement = ConstDeclarationStatement
                      | VarDeclarationStatement
                      ;
 
-ConstDeclarationStatement = "const", Name, ":", ValueType,
+ConstDeclarationStatement = "const", Identifier, ":", ValueType,
                             "=", Expression, ";"
-                          | "const", Name, ":=", Expression, ";" ;
-VarDeclarationStatement = "var", Name, ":", ValueType,
+                          | "const", Identifier, ":=", Expression, ";" ;
+VarDeclarationStatement = "var", Identifier, ":", ValueType,
                           [ "=", Expression ], ";"
-                        | "var", Name, ":=", Expression, ";" ;
+                        | "var", Identifier, ":=", Expression, ";" ;
 
 (* PS-16: the target widened from a bare Name to a general postfix chain so a
    whole-slot entity-NBT write (`mc.block(Chest, x, y, z).Items[slot] = .{...}`)
@@ -124,17 +137,22 @@ ContinueStatement = "continue", ";" ;
 DestructuringStatement = "|", DestructureTarget, { ",", DestructureTarget },
                          [ "," ], "|", "<=", Expression, ";" ;
 
-DestructureTarget = "const", Name
-                  | "var", Name
-                  | Name
+DestructureTarget = "const", Identifier
+                  | "var", Identifier
+                  | Identifier
                   ;
 ReturnStatement   = "return", [ Expression ], ";" ;
 
 RunStatement = "run", { RunModifier }, [ ExecutorCapture ], Block ;
-RunModifier = ".", Name, Arguments ;
-ExecutorCapture = "|", Name, "|" ;
+RunModifier = ".", Identifier, Arguments ;
+ExecutorCapture = "|", Identifier, "|" ;
 
 UnsafeMinecraftStatement = "unsafe", "minecraft", "(", StringLiteral, ")", ";" ;
+
+ScheduleStatement = "schedule", "clear", Identifier, ";"
+                  | "schedule", Identifier, ",", IntegerLiteral,
+                    [ ",", Identifier ], ";"
+                  ;
 
 Expression = WrappingExpression,
              [ ComparisonOperator, WrappingExpression ] ;
@@ -150,7 +168,7 @@ PrefixExpression = "!", PrefixExpression
 
 PostfixExpression = PrimaryExpression, { PostfixSuffix } ;
 
-PostfixSuffix = ".", Name
+PostfixSuffix = ".", Identifier
               | ".", StringLiteral
               | Arguments
               | "[", Expression, "]"
@@ -179,9 +197,9 @@ StructLiteralBody = "{",
                     [ StructFieldValue, { ",", StructFieldValue }, [ "," ] ],
                     "}" ;
 
-StructFieldValue = ".", Name, "=", Expression ;
+StructFieldValue = ".", Identifier, "=", Expression ;
 
-InferredEnumLiteral = ".", Name ;
+InferredEnumLiteral = ".", Identifier ;
 
 SwitchExpression = "switch", "(", Expression, ")", "{",
                    [ SwitchExpressionArm, { ",", SwitchExpressionArm }, [ "," ] ],
@@ -197,7 +215,7 @@ Pattern = SignedInteger
         ;
 ClosedIntegerRange = SignedInteger, "...", SignedInteger ;
 SignedInteger = [ "-" ], IntegerLiteral ;
-QualifiedEnumVariant = Name, ".", Name ;
+QualifiedEnumVariant = Identifier, ".", Identifier ;
 
 BooleanLiteral = "true" | "false" ;
 IntegerLiteral = Digit, { Digit } ;
@@ -237,7 +255,8 @@ Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 
 (* Tokens with identifier spellings that are not Identifier tokens. *)
 Keyword = "fn" | "pub" | "export" | "import" | "struct" | "enum"
-        | "unsafe" | "minecraft" | "run" | "const" | "var"
+        | "one_tick" | "tick" | "schedule" | "clear"
+        | "unsafe" | "minecraft" | "run" | "on" | "const" | "var"
         | "if" | "else" | "while" | "switch" | "break" | "continue" | "return"
         | "true" | "false" | "Bool" | "Int32" | "Void"
         ;

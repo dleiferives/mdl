@@ -1,6 +1,6 @@
 # PS-3 to Stage 9 Handoff
 
-Status: **PS-3 and Stage 8.5 complete on 2026-07-19**
+Status: **PS-3 and Stage 8.5 complete on 2026-07-19; refreshed through Stage 9B on 2026-07-27**
 
 PS-3 is a complete ordinary MDL Brainfuck application. It uses the accepted PS-2
 surface without a Brainfuck intrinsic, raw command, forged platform operation,
@@ -37,20 +37,21 @@ directly.
 
 ## Book and vanilla result
 
-The typed adapter selects exactly one tagged armor stand, reads all static supported
-page indices from 99 down to 0, accumulates the UTF-16 unit count, normalizes into one
-opcode list, validates once, and runs the same interpreter. Reverse page order plus
-tail traversal preserves semantic page order; omitting the specified newline is
-normalization-equivalent because newline is ignored.
+The typed adapter selects exactly one tagged armor stand and walks the supported
+page indices from 99 down to 0 through one runtime-indexed entity-NBT path. It
+accumulates the UTF-16 unit count, normalizes into one opcode list, validates once,
+and runs the same interpreter. Reverse page order plus tail traversal preserves
+semantic page order; omitting the specified newline is normalization-equivalent
+because newline is ignored.
 
 One pinned Java 26.2 lifecycle installs all four policy packs. A controlled literal
 book split over two pages produces byte `65` and the reader-attributed marker
 `MDL_PS3_BRAINFUCK_A` under every policy. The same fixture separately proves the
 wrong-item/no-program marker and malformed-bracket marker. Missing, wrong,
 absent-page, and unsupported raw component shapes intentionally collapse to the
-public intrinsic's `""` fallback; PS-3 does not pretend to distinguish information
-PS-2 does not expose. Connected-player automation remains the explicit nonblocking
-PS-2.0 deferral.
+typed read's `""` fallback; PS-3 does not pretend to distinguish information the
+source surface does not expose. Connected-player automation remains the explicit
+nonblocking PS-2.0 deferral.
 
 ## Exact emitted evidence
 
@@ -58,23 +59,27 @@ These values are asserted by `capstone_footprint_recipe_and_cost_evidence_is_pin
 
 | Core | Minecraft | files | functions | lines/trace | UTF-8 bytes | max line UTF-16 | command nodes | score | data |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| None | None | 228 | 226 | 2,610 | 211,996 | 163 | 3,158 | 1,025 | 1,144 |
-| None | Baseline | 221 | 219 | 1,961 | 156,837 | 161 | 2,502 | 653 | 874 |
-| Baseline | None | 208 | 206 | 2,528 | 208,168 | 163 | 3,056 | 966 | 1,141 |
-| Baseline | Baseline | 202 | 200 | 1,888 | 153,716 | 161 | 2,410 | 599 | 874 |
+| None | None | 228 | 226 | 1,385 / 1,384 | 101,867 | 160 | 1,824 | 612 | 430 |
+| None | Baseline | 220 | 218 | 1,054 / 1,053 | 72,990 | 160 | 1,485 | 455 | 264 |
+| Baseline | None | 207 | 205 | 1,312 / 1,311 | 98,615 | 160 | 1,730 | 562 | 428 |
+| Baseline | Baseline | 200 | 198 | 991 / 990 | 70,408 | 160 | 1,402 | 412 | 264 |
 
 The same audit pins physical homes/storages, realizations, materializations, and
-physical-recipe sequence work. Every product contains zero raw commands and zero
-function-macro lines. Target census reports seven typed `say` commands. No recursive
-call occurs, so this application emits no recursive activation edge or spill bridge.
+physical-recipe sequence work. Every product contains exactly one compiler-owned
+function-macro line for the runtime page index and no source `unsafe minecraft`
+escape. Target census reports zero raw commands and seven typed `say` commands. No
+recursive call occurs, so this application emits no recursive activation edge or
+spill bridge.
 
-Target analysis completes for every product. The three public program roots retain
-`NoFiniteBoundProven(PositiveCycle)` for command-sequence work because runtime fuel
-is not currently converted into a static CFG bound. Every root is `ProvenWithin` for
-forks. The load root is finite. The vanilla run establishes the selected concrete
-workload, not a universal synchronous guarantee. Strict deployment rejection and a
-static fuel-to-command proof remain the already-recorded deferred breadth; PS-3 did
-not invent a strict mode to satisfy a checklist sentence.
+Two public program roots retain `NoFiniteBoundProven(PositiveCycle)` for
+command-sequence work because runtime fuel is not currently converted into a static
+CFG bound. The book root is conservatively `Unknown(RawCommand)` for sequence and
+fork analysis because the runtime entity-NBT index lowers through that compiler-owned
+macro line. The other three roots remain `ProvenWithin` for forks, and the load root
+is finite. The vanilla run establishes the selected concrete workload, not a
+universal synchronous guarantee. Strict deployment rejection and a static
+fuel-to-command proof remain the already-recorded deferred breadth; PS-3 did not
+invent a strict mode to satisfy a checklist sentence.
 
 ## Stage 9 inputs
 

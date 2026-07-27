@@ -1,11 +1,3 @@
-pub fn read_or_zero(input: List<Int32>) -> Int32 {
-    return input.last_or_zero();
-}
-
-pub fn after_read(input: List<Int32>) -> List<Int32> {
-    return input.without_last();
-}
-
-pub fn emit(output: List<Int32>, value: Int32) -> List<Int32> {
-    return output.push(value);
+pub fn read(input: List<Int32>) -> { Int32, List<Int32> } {
+    return .{ input.last_or_zero(), input.without_last() };
 }

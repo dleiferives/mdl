@@ -13,9 +13,15 @@ Brainfuck instruction.
 `cases.json` is the target-independent corpus. Its input arrays use the public MDL
 list representation, where the list tail is the next byte; output arrays are in
 emission order. `book-cases.json` records the separate pinned-vanilla adapter cases.
-The adapter reads every statically supported Java page index from 99 down to 0, so
-tail parsing preserves page order without needing string concatenation. The omitted
-newline delimiter is normalization-equivalent because newline is not an opcode.
+The adapter walks the supported Java page indices from 99 down to 0 through one
+runtime-indexed entity-NBT path, so tail parsing preserves page order without
+unrolling 100 reads or needing string concatenation. The omitted newline delimiter
+is normalization-equivalent because newline is not an opcode.
+
+The implementation deliberately exercises the current language surface: inferred
+declarations, switch statements and expressions, anonymous tuple returns,
+destructuring assignment, string-literal NBT path segments, and runtime list-path
+indexing.
 
 Status codes are:
 

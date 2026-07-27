@@ -14,22 +14,20 @@ pub fn set_current(right: List<Int32>, value: Int32) -> List<Int32> {
     return right.without_last().push(value);
 }
 
-pub fn right_left(left: List<Int32>, right: List<Int32>) -> List<Int32> {
-    return left.push(current(right));
-}
-
-pub fn right_right(right: List<Int32>) -> List<Int32> {
-    var remaining: List<Int32> = right.without_last();
-    if (remaining.length() == 0) {
-        remaining = remaining.push(0);
+pub fn move_right(
+    left: List<Int32>,
+    right: List<Int32>,
+) -> { List<Int32>, List<Int32> } {
+    var next_right := right.without_last();
+    if (next_right.length() == 0) {
+        next_right = next_right.push(0);
     }
-    return remaining;
+    return .{ left.push(current(right)), next_right };
 }
 
-pub fn left_left(left: List<Int32>) -> List<Int32> {
-    return left.without_last();
-}
-
-pub fn left_right(left: List<Int32>, right: List<Int32>) -> List<Int32> {
-    return right.push(left.last_or_zero());
+pub fn move_left(
+    left: List<Int32>,
+    right: List<Int32>,
+) -> { List<Int32>, List<Int32> } {
+    return .{ left.without_last(), right.push(left.last_or_zero()) };
 }

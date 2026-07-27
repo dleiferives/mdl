@@ -47,7 +47,7 @@ Gate: passed without a book or Brainfuck intrinsic.
 ## PS-3D — Book and Minecraft adapters
 
 - [x] Read an exact-one typed holder/main-hand written book.
-- [x] Inspect all static page indices 0..99 and preserve page order through reverse normalization.
+- [x] Walk page indices 99..0 through one runtime-indexed entity-NBT path and preserve page order through reverse normalization.
 - [x] Keep empty/wrong/unsupported conversion as `NO_PROGRAM`, distinct from parse and fuel errors.
 - [x] Retain semantic byte output and add a typed reader-attributed `say` marker.
 - [x] Run split-page, wrong-item, and malformed-book cases on pinned Java 26.2.

@@ -1,12 +1,11 @@
 // MDL: success
 // PS-12E: a genuinely loop-carried runtime index -- the entity-NBT read
 // instruction executes once per loop iteration with a different runtime
-// value each time, distinct from ps12_entity_nbt_path.mdl's single
-// occurrence (one instruction, one constant-folded-to-zero value) and from
-// the brainfuck capstone's 100 unrolled *literal* occurrences (100 separate
-// inline instructions, never a runtime index at all). This is the strongest
-// available proof the macro/crossings runtime route is correct under real
-// per-iteration dynamism, not just a single call site.
+// value each time, distinct from ps12_entity_nbt_path.mdl's single occurrence
+// (one instruction, one constant-folded-to-zero value). This is the smallest
+// focused proof the macro/crossings runtime route is correct under real
+// per-iteration dynamism; the Brainfuck capstone now uses the same route to
+// walk its supported book pages.
 // HIR: entity-nbt-read
 // HIR: result_ty=String
 // CORE: entity_nbt_read

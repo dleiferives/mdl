@@ -13,29 +13,23 @@ export fn showcase_checksum(fuel: Int32) -> Int32 {
 }
 
 export fn selected_case_checksum(case: Int32, fuel: Int32) -> Int32 {
-    if (case == 0) {
-        return interpreter.run_text_checksum(
+    return switch (case) {
+        0 => interpreter.run_text_checksum(
             "", List.empty(), fuel, 8192, 8192, 4096, 4096,
-        );
-    }
-    if (case == 1) {
-        return interpreter.run_text_checksum(
+        ),
+        1 => interpreter.run_text_checksum(
             "-.", List.empty(), fuel, 8192, 8192, 4096, 4096,
-        );
-    }
-    if (case == 2) {
-        return interpreter.run_text_checksum(
+        ),
+        2 => interpreter.run_text_checksum(
             ",.", List.empty().push(65), fuel, 8192, 8192, 4096, 4096,
-        );
-    }
-    if (case == 3) {
-        return interpreter.run_text_checksum(
+        ),
+        3 => interpreter.run_text_checksum(
             "++[>++[>+<-]<-]>>.", List.empty(), fuel, 8192, 8192, 4096, 4096,
-        );
-    }
-    return interpreter.run_text_checksum(
-        "ignored prose 😀 +.", List.empty(), fuel, 8192, 8192, 4096, 4096,
-    );
+        ),
+        else => interpreter.run_text_checksum(
+            "ignored prose 😀 +.", List.empty(), fuel, 8192, 8192, 4096, 4096,
+        ),
+    };
 }
 
 export fn run_book_showcase() {

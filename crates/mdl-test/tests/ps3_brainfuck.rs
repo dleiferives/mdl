@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use mdl_compiler::analysis::minecraft::{
     AnalysisArithmeticCaps, CommandLimitStatus, NoFiniteBoundReason, TargetExecutionAnalysisLimits,
+    UnknownCostReason,
 };
 use mdl_compiler::datapack::EmissionOptions;
 use mdl_compiler::frontend::{
@@ -150,30 +151,32 @@ fn opcode_byte_tape_parser_and_io_boundaries_are_independently_observable() {
     assert_eq!(
         evaluate(
             "tape",
-            "right_left",
+            "move_right",
             &[
                 CoreValue::list_i32(vec![7]),
                 CoreValue::list_i32(vec![9, 3]),
             ],
         )
         .results(),
-        &[CoreValue::list_i32(vec![7, 3])]
-    );
-    assert_eq!(
-        evaluate("tape", "right_right", &[CoreValue::list_i32(vec![9, 3])],).results(),
-        &[CoreValue::list_i32(vec![9])]
+        &[
+            CoreValue::list_i32(vec![7, 3]),
+            CoreValue::list_i32(vec![9]),
+        ]
     );
     assert_eq!(
         evaluate(
             "tape",
-            "left_right",
+            "move_left",
             &[
                 CoreValue::list_i32(vec![7, 3]),
                 CoreValue::list_i32(vec![9]),
             ],
         )
         .results(),
-        &[CoreValue::list_i32(vec![9, 3])]
+        &[
+            CoreValue::list_i32(vec![7]),
+            CoreValue::list_i32(vec![9, 3]),
+        ]
     );
     assert_eq!(
         evaluate(
@@ -194,11 +197,11 @@ fn opcode_byte_tape_parser_and_io_boundaries_are_independently_observable() {
             &[CoreValue::list_i32(vec![93, 43, 91])],
         )
         .results(),
-        &[CoreValue::list_i32(vec![0, 0])]
+        &[CoreValue::I32(0), CoreValue::I32(0)]
     );
     assert_eq!(
-        evaluate("io", "read_or_zero", &[CoreValue::list_i32(vec![4, 8])],).results(),
-        &[CoreValue::I32(8)]
+        evaluate("io", "read", &[CoreValue::list_i32(vec![4, 8])],).results(),
+        &[CoreValue::I32(8), CoreValue::list_i32(vec![4]),]
     );
 }
 
@@ -211,13 +214,9 @@ fn package_boundary_and_book_case_schema_are_complete() {
             .all(|source| !source.contains("unsafe minecraft"))
     );
     let page_call = "components.\"minecraft:written_book_content\".pages[";
-    assert_eq!(INTERPRETER.matches(page_call).count(), 100);
-    for page in 0..100 {
-        assert!(
-            INTERPRETER.contains(&format!("{page_call}{page}].raw")),
-            "missing static page {page}"
-        );
-    }
+    assert_eq!(INTERPRETER.matches(page_call).count(), 1);
+    assert!(INTERPRETER.contains(&format!("{page_call}page_index].raw")));
+    assert!(INTERPRETER.contains("while (page_index >= 0)"));
     let book_cases: Vec<BookCase> = serde_json::from_str(BOOK_CASES).unwrap();
     assert_eq!(book_cases.len(), 3);
 
@@ -246,6 +245,7 @@ fn capstone_footprint_recipe_and_cost_evidence_is_pinned() {
         files: usize,
         functions: usize,
         lines: usize,
+        trace_records: usize,
         bytes: usize,
         max_line: usize,
         command_nodes: usize,
@@ -263,67 +263,71 @@ fn capstone_footprint_recipe_and_cost_evidence_is_pinned() {
             minecraft: MinecraftOptimizationLevel::None,
             files: 228,
             functions: 226,
-            lines: 2_610,
-            bytes: 211_996,
-            max_line: 163,
-            command_nodes: 3_158,
-            score_commands: 1_025,
-            data_commands: 1_144,
-            homes: 1_156,
-            realizations: 1_114,
-            materializations: 136,
-            physical_recipe_sequence: 136,
+            lines: 1_385,
+            trace_records: 1_384,
+            bytes: 101_867,
+            max_line: 160,
+            command_nodes: 1_824,
+            score_commands: 612,
+            data_commands: 430,
+            homes: 629,
+            realizations: 579,
+            materializations: 127,
+            physical_recipe_sequence: 127,
         },
         Expected {
             label: "none-baseline",
             core: CoreOptimizationLevel::None,
             minecraft: MinecraftOptimizationLevel::Baseline,
-            files: 221,
-            functions: 219,
-            lines: 1_961,
-            bytes: 156_837,
-            max_line: 161,
-            command_nodes: 2_502,
-            score_commands: 653,
-            data_commands: 874,
-            homes: 826,
-            realizations: 991,
-            materializations: 134,
-            physical_recipe_sequence: 134,
+            files: 220,
+            functions: 218,
+            lines: 1_054,
+            trace_records: 1_053,
+            bytes: 72_990,
+            max_line: 160,
+            command_nodes: 1_485,
+            score_commands: 455,
+            data_commands: 264,
+            homes: 432,
+            realizations: 506,
+            materializations: 125,
+            physical_recipe_sequence: 125,
         },
         Expected {
             label: "baseline-none",
             core: CoreOptimizationLevel::Baseline,
             minecraft: MinecraftOptimizationLevel::None,
-            files: 208,
-            functions: 206,
-            lines: 2_528,
-            bytes: 208_168,
-            max_line: 163,
-            command_nodes: 3_056,
-            score_commands: 966,
-            data_commands: 1_141,
-            homes: 1_092,
-            realizations: 1_050,
-            materializations: 76,
-            physical_recipe_sequence: 76,
+            files: 207,
+            functions: 205,
+            lines: 1_312,
+            trace_records: 1_311,
+            bytes: 98_615,
+            max_line: 160,
+            command_nodes: 1_730,
+            score_commands: 562,
+            data_commands: 428,
+            homes: 575,
+            realizations: 525,
+            materializations: 75,
+            physical_recipe_sequence: 75,
         },
         Expected {
             label: "baseline-baseline",
             core: CoreOptimizationLevel::Baseline,
             minecraft: MinecraftOptimizationLevel::Baseline,
-            files: 202,
-            functions: 200,
-            lines: 1_888,
-            bytes: 153_716,
-            max_line: 161,
-            command_nodes: 2_410,
-            score_commands: 599,
-            data_commands: 874,
-            homes: 772,
-            realizations: 924,
-            materializations: 76,
-            physical_recipe_sequence: 76,
+            files: 200,
+            functions: 198,
+            lines: 991,
+            trace_records: 990,
+            bytes: 70_408,
+            max_line: 160,
+            command_nodes: 1_402,
+            score_commands: 412,
+            data_commands: 264,
+            homes: 389,
+            realizations: 452,
+            materializations: 75,
+            physical_recipe_sequence: 75,
         },
     ];
     for expected in expected {
@@ -363,7 +367,7 @@ fn capstone_footprint_recipe_and_cost_evidence_is_pinned() {
         );
         assert_eq!(
             footprint.trace_records(),
-            expected.lines,
+            expected.trace_records,
             "{} trace",
             expected.label
         );
@@ -450,17 +454,45 @@ fn capstone_footprint_recipe_and_cost_evidence_is_pinned() {
                     CommandLimitStatus::NoFiniteBoundProven(NoFiniteBoundReason::PositiveCycle)
                 ))
                 .count(),
-            3,
+            2,
             "{} cyclic roots",
             expected.label,
         );
-        assert!(
+        assert_eq!(
             report
                 .roots()
                 .iter()
-                .all(|root| root.fork_limit_status() == CommandLimitStatus::ProvenWithin),
-            "{} fork proof",
-            expected.label
+                .filter(|root| matches!(
+                    root.sequence_limit_status(),
+                    CommandLimitStatus::Unknown(UnknownCostReason::RawCommand)
+                ))
+                .count(),
+            1,
+            "{} macro sequence root",
+            expected.label,
+        );
+        assert_eq!(
+            report
+                .roots()
+                .iter()
+                .filter(|root| { root.fork_limit_status() == CommandLimitStatus::ProvenWithin })
+                .count(),
+            3,
+            "{} proven fork roots",
+            expected.label,
+        );
+        assert_eq!(
+            report
+                .roots()
+                .iter()
+                .filter(|root| matches!(
+                    root.fork_limit_status(),
+                    CommandLimitStatus::Unknown(UnknownCostReason::RawCommand)
+                ))
+                .count(),
+            1,
+            "{} macro fork root",
+            expected.label,
         );
 
         let pack = output
@@ -470,7 +502,17 @@ fn capstone_footprint_recipe_and_cost_evidence_is_pinned() {
             .iter()
             .filter_map(|file| std::str::from_utf8(file.bytes()).ok())
             .collect::<String>();
-        assert!(!pack.lines().any(|line| line.starts_with('$')));
+        let macro_lines = pack
+            .lines()
+            .filter(|line| line.starts_with('$'))
+            .collect::<Vec<_>>();
+        assert_eq!(macro_lines.len(), 1, "{} macro lines", expected.label);
+        assert!(
+            macro_lines[0]
+                .contains("components.\"minecraft:written_book_content\".pages[$(i0)].raw"),
+            "{} dynamic page macro",
+            expected.label,
+        );
         assert!(!pack.contains("unsafe minecraft"));
         assert!(pack.contains("written_book_content"));
         assert!(pack.contains("MDL_PS3_BRAINFUCK_A"));

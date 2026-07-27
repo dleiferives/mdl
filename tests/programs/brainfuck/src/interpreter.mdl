@@ -16,6 +16,32 @@ const RunResult = struct {
     position: Int32,
 };
 
+fn parse_text(
+    source: String,
+    max_units: Int32,
+    max_instructions: Int32,
+) -> { List<Int32>, Int32, Int32 } {
+    var program := List.empty();
+    var status := 0;
+    var position := 0;
+    if (max_units < 0) {
+        status = 4;
+    } else if (source.length() > max_units) {
+        status = 4;
+    } else if (max_instructions < 0) {
+        status = 5;
+    } else {
+        program = parser.append_normalized(source, program);
+        if (program.length() > max_instructions) {
+            status = 5;
+            position = max_instructions;
+        } else {
+            |status, position| <= parser.bracket_validation(program);
+        }
+    }
+    return .{ program, status, position };
+}
+
 pub fn run_text(
     source: String,
     input: List<Int32>,
@@ -25,35 +51,89 @@ pub fn run_text(
     max_input: Int32,
     max_output: Int32,
 ) -> RunResult {
-    var program: List<Int32> = List.empty();
-    var parse_status: Int32 = 0;
-    var parse_position: Int32 = 0;
-    if (max_units < 0) {
-        parse_status = 4;
-    } else if (source.length() > max_units) {
-        parse_status = 4;
-    } else if (max_instructions < 0) {
-        parse_status = 5;
-    } else {
-        program = parser.append_normalized(source, program);
-        if (program.length() > max_instructions) {
-            parse_status = 5;
-            parse_position = max_instructions;
-        } else {
-            const validation: List<Int32> = parser.bracket_validation(program);
-            parse_status = validation.last_or_zero();
-            parse_position = validation.without_last().last_or_zero();
-        }
-    }
+    |const program, const status, const position| <= parse_text(
+        source,
+        max_units,
+        max_instructions,
+    );
     return run_parsed(
         program,
         input,
         fuel,
-        parse_status,
-        parse_position,
+        status,
+        position,
         max_input,
         max_output,
     );
+}
+
+fn input_status(
+    input: List<Int32>,
+    fuel: Int32,
+    max_input: Int32,
+    max_output: Int32,
+) -> Int32 {
+    if (fuel < 0) { return 9; }
+    if (max_input < 0) { return 7; }
+    if (input.length() > max_input) { return 7; }
+    if (max_output < 0) { return 6; }
+
+    var remaining := input;
+    while (remaining.length() > 0) {
+        const value := remaining.last_or_zero();
+        if (value < 0) { return 8; }
+        if (value > 255) { return 8; }
+        remaining = remaining.without_last();
+    }
+    return 0;
+}
+
+fn skip_loop(
+    past: List<Int32>,
+    future: List<Int32>,
+) -> { List<Int32>, List<Int32> } {
+    var next_past := past;
+    var next_future := future;
+    var depth := 0;
+    while (next_future.length() > 0) {
+        const operation := next_future.last_or_zero();
+        next_future = next_future.without_last();
+        next_past = next_past.push(operation);
+        if (operation == 91) {
+            depth = depth +% 1;
+        } else if (operation == 93) {
+            if (depth == 0) { break; }
+            depth = depth -% 1;
+        }
+    }
+    return .{ next_past, next_future };
+}
+
+fn repeat_loop(
+    past: List<Int32>,
+    future: List<Int32>,
+) -> { List<Int32>, List<Int32> } {
+    var next_past := past.without_last();
+    var next_future := future.push(93);
+    var depth := 0;
+    while (next_past.length() > 0) {
+        const operation := next_past.last_or_zero();
+        next_past = next_past.without_last();
+        if (operation == 93) {
+            depth = depth +% 1;
+            next_future = next_future.push(operation);
+        } else if (operation == 91) {
+            if (depth == 0) {
+                next_past = next_past.push(operation);
+                break;
+            }
+            depth = depth -% 1;
+            next_future = next_future.push(operation);
+        } else {
+            next_future = next_future.push(operation);
+        }
+    }
+    return .{ next_past, next_future };
 }
 
 fn run_parsed(
@@ -65,127 +145,75 @@ fn run_parsed(
     max_input: Int32,
     max_output: Int32,
 ) -> RunResult {
-    var left: List<Int32> = tape.empty_left();
-    var right: List<Int32> = tape.empty_right();
-    var past: List<Int32> = List.empty();
-    var future: List<Int32> = program;
-    var remaining_input: List<Int32> = input;
-    var output: List<Int32> = List.empty();
-    var remaining_fuel: Int32 = fuel;
-    var dispatches: Int32 = 0;
-    var status: Int32 = parse_status;
-    var position: Int32 = parse_position;
+    var left := tape.empty_left();
+    var right := tape.empty_right();
+    var past := List.empty();
+    var future := program;
+    var remaining_input := input;
+    var output := List.empty();
+    var remaining_fuel := fuel;
+    var dispatches := 0;
+    var status := parse_status;
+    var position := parse_position;
 
     if (status == 0) {
-        if (fuel < 0) {
-            status = 9;
-        } else if (max_input < 0) {
-            status = 7;
-        } else if (input.length() > max_input) {
-            status = 7;
-        } else if (max_output < 0) {
-            status = 6;
-        }
-    }
-    if (status == 0) {
-        var checked_input: List<Int32> = input;
-        while (checked_input.length() > 0) {
-            const input_byte: Int32 = checked_input.last_or_zero();
-            if (input_byte < 0) {
-                status = 8;
-                break;
-            } else if (input_byte > 255) {
-                status = 8;
-                break;
-            }
-            checked_input = checked_input.without_last();
-        }
+        status = input_status(input, fuel, max_input, max_output);
     }
 
     while (status == 0) {
         if (future.length() == 0) { break; }
         if (remaining_fuel <= 0) { break; }
 
-        const operation: Int32 = future.last_or_zero();
+        const operation := future.last_or_zero();
         future = future.without_last();
         past = past.push(operation);
         remaining_fuel = remaining_fuel -% 1;
         dispatches = dispatches +% 1;
 
-        if (operation == 62) {
-            const old_left: List<Int32> = left;
-            const old_right: List<Int32> = right;
-            left = tape.right_left(old_left, old_right);
-            right = tape.right_right(old_right);
-        } else if (operation == 60) {
-            const old_left: List<Int32> = left;
-            const old_right: List<Int32> = right;
-            left = tape.left_left(old_left);
-            right = tape.left_right(old_left, old_right);
-        } else if (operation == 43) {
-            right = tape.set_current(right, byte.increment(tape.current(right)));
-        } else if (operation == 45) {
-            right = tape.set_current(right, byte.decrement(tape.current(right)));
-        } else if (operation == 46) {
-            if (output.length() >= max_output) {
-                status = 6;
-                position = past.length();
-            } else {
-                output = io.emit(output, tape.current(right));
-            }
-        } else if (operation == 44) {
-            right = tape.set_current(right, io.read_or_zero(remaining_input));
-            remaining_input = io.after_read(remaining_input);
-        } else if (operation == 91) {
-            if (tape.current(right) == 0) {
-                var depth: Int32 = 0;
-                while (future.length() > 0) {
-                    const scanned: Int32 = future.last_or_zero();
-                    future = future.without_last();
-                    past = past.push(scanned);
-                    if (scanned == 91) {
-                        depth = depth +% 1;
-                    } else if (scanned == 93) {
-                        if (depth == 0) { break; }
-                        depth = depth -% 1;
-                    }
+        switch (operation) {
+            62 => {
+                |left, right| <= tape.move_right(left, right);
+            },
+            60 => {
+                |left, right| <= tape.move_left(left, right);
+            },
+            43 => {
+                right = tape.set_current(right, byte.increment(tape.current(right)));
+            },
+            45 => {
+                right = tape.set_current(right, byte.decrement(tape.current(right)));
+            },
+            46 => {
+                if (output.length() >= max_output) {
+                    status = 6;
+                    position = past.length();
+                } else {
+                    output = output.push(tape.current(right));
                 }
-            }
-        } else if (operation == 93) {
-            if (tape.current(right) != 0) {
-                past = past.without_last();
-                // Re-queue the closing bracket before the body. The backward scan
-                // then pushes the body in reverse so its first opcode is the tail.
-                future = future.push(93);
-                var depth: Int32 = 0;
-                while (past.length() > 0) {
-                    const scanned: Int32 = past.last_or_zero();
-                    past = past.without_last();
-                    if (scanned == 93) {
-                        depth = depth +% 1;
-                        future = future.push(scanned);
-                    } else if (scanned == 91) {
-                        if (depth == 0) {
-                            past = past.push(scanned);
-                            break;
-                        }
-                        depth = depth -% 1;
-                        future = future.push(scanned);
-                    } else {
-                        future = future.push(scanned);
-                    }
+            },
+            44 => {
+                |const value, remaining_input| <= io.read(remaining_input);
+                right = tape.set_current(right, value);
+            },
+            91 => {
+                if (tape.current(right) == 0) {
+                    |past, future| <= skip_loop(past, future);
                 }
-            }
+            },
+            93 => {
+                if (tape.current(right) != 0) {
+                    |past, future| <= repeat_loop(past, future);
+                }
+            },
+            else => {},
         }
     }
 
     if (status == 0) {
         if (future.length() > 0) {
             status = 1;
-            position = past.length();
-        } else {
-            position = past.length();
         }
+        position = past.length();
     }
 
     return RunResult{
@@ -203,8 +231,8 @@ fn run_parsed(
 }
 
 fn checksum(result: RunResult) -> Int32 {
-    var remaining: List<Int32> = result.output;
-    var value: Int32 = result.status +% result.dispatches +% result.remaining_fuel;
+    var remaining := result.output;
+    var value := result.status +% result.dispatches +% result.remaining_fuel;
     value = value +% tape.current(result.right);
     while (remaining.length() > 0) {
         value = value +% remaining.last_or_zero();
@@ -222,7 +250,7 @@ pub fn run_text_checksum(
     max_input: Int32,
     max_output: Int32,
 ) -> Int32 {
-    const result: RunResult = run_text(
+    return checksum(run_text(
         source,
         input,
         fuel,
@@ -230,358 +258,57 @@ pub fn run_text_checksum(
         max_instructions,
         max_input,
         max_output,
-    );
-    return checksum(result);
+    ));
 }
 
 pub fn run_book_showcase() {
     run.as(mc.entities(ArmorStand).with_tag("mdl_ps3_book").limit(1)) |reader| {
-        var program: List<Int32> = List.empty();
-        var units: Int32 = 0;
-        var page: String = reader.equipment.mainhand.components."minecraft:written_book_content".pages[99].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[98].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[97].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[96].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[95].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[94].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[93].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[92].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[91].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[90].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[89].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[88].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[87].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[86].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[85].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[84].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[83].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[82].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[81].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[80].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[79].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[78].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[77].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[76].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[75].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[74].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[73].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[72].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[71].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[70].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[69].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[68].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[67].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[66].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[65].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[64].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[63].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[62].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[61].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[60].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[59].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[58].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[57].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[56].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[55].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[54].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[53].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[52].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[51].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[50].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[49].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[48].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[47].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[46].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[45].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[44].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[43].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[42].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[41].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[40].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[39].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[38].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[37].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[36].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[35].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[34].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[33].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[32].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[31].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[30].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[29].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[28].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[27].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[26].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[25].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[24].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[23].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[22].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[21].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[20].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[19].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[18].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[17].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[16].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[15].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[14].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[13].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[12].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[11].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[10].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[9].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[8].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[7].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[6].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[5].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[4].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[3].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[2].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[1].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        page = reader.equipment.mainhand.components."minecraft:written_book_content".pages[0].raw;
-        units = units +% page.length();
-        program = parser.append_normalized(page, program);
-        var parse_status: Int32 = 0;
-        var parse_position: Int32 = 0;
+        var program := List.empty();
+        var units := 0;
+        var page_index := 99;
+        while (page_index >= 0) {
+            const page: String = reader.equipment.mainhand.components."minecraft:written_book_content".pages[page_index].raw;
+            units = units +% page.length();
+            program = parser.append_normalized(page, program);
+            page_index = page_index -% 1;
+        }
+
+        var parse_status := 0;
+        var parse_position := 0;
         if (units > 8192) {
             parse_status = 4;
         } else if (program.length() > 8192) {
             parse_status = 5;
             parse_position = 8192;
         } else {
-            const validation: List<Int32> = parser.bracket_validation(program);
-            parse_status = validation.last_or_zero();
-            parse_position = validation.without_last().last_or_zero();
+            |parse_status, parse_position| <= parser.bracket_validation(program);
         }
 
-        if (parse_status == 0) {
-            if (program.length() == 0) {
-                reader.say("MDL_PS3_BRAINFUCK_NO_PROGRAM");
-            } else {
-                const result: RunResult = run_parsed(
-                    program,
-                    List.empty(),
-                    256,
-                    parse_status,
-                    parse_position,
-                    4096,
-                    4096,
-                );
-                if (result.status == 0) {
-                    if (result.output.length() == 1) {
-                        if (result.output.last_or_zero() == 65) {
-                            reader.say("MDL_PS3_BRAINFUCK_A");
-                        } else {
-                            reader.say("MDL_PS3_BRAINFUCK_WRONG_OUTPUT");
-                        }
-                    } else {
-                        reader.say("MDL_PS3_BRAINFUCK_WRONG_OUTPUT");
-                    }
-                } else if (result.status == 1) {
-                    reader.say("MDL_PS3_BRAINFUCK_FUEL_EXHAUSTED");
-                } else {
-                    reader.say("MDL_PS3_BRAINFUCK_RUNTIME_ERROR");
-                }
-            }
-        } else {
+        if (parse_status != 0) {
             reader.say("MDL_PS3_BRAINFUCK_PARSE_ERROR");
+        } else if (program.length() == 0) {
+            reader.say("MDL_PS3_BRAINFUCK_NO_PROGRAM");
+        } else {
+            const result := run_parsed(
+                program,
+                List.empty(),
+                256,
+                parse_status,
+                parse_position,
+                4096,
+                4096,
+            );
+            if (result.status == 1) {
+                reader.say("MDL_PS3_BRAINFUCK_FUEL_EXHAUSTED");
+            } else if (result.status != 0) {
+                reader.say("MDL_PS3_BRAINFUCK_RUNTIME_ERROR");
+            } else if (result.output.length() != 1) {
+                reader.say("MDL_PS3_BRAINFUCK_WRONG_OUTPUT");
+            } else if (result.output.last_or_zero() == 65) {
+                reader.say("MDL_PS3_BRAINFUCK_A");
+            } else {
+                reader.say("MDL_PS3_BRAINFUCK_WRONG_OUTPUT");
+            }
         }
     }
 }
